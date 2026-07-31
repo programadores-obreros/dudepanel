@@ -95,6 +95,34 @@ services:
       #       sobre NFS) sí sirve; un FILESYSTEM de red, no.
       - ${DUDE_DATA:?falta DUDE_DATA en .env.prod}:/origen:ro
 
+    # 🔴 SIN ESTO EL ETL NO LEE NADA. Y la solución obvia es la equivocada.
+    #
+    #    The Dude corre como root y su base queda `600 root:root`. El ETL corre
+    #    como `dude` (uid 10001), así que se estrella con
+    #    `PermissionError: /origen/dude.db` y reinicia cada 30 s para siempre.
+    #    El panel levanta igual, con TLS y contraseña y todo — y sirve CERO
+    #    equipos. Un fallo que se ve como un panel vacío, no como un error.
+    #
+    #    Las dos salidas fáciles son peores que el problema:
+    #      · `chmod 644 dude.db` — esa base tiene el usuario y la contraseña de
+    #        acceso a TODOS los routers del ISP, en claro. Legible para todo el
+    #        mundo en la máquina, para que la lea UN proceso.
+    #      · `user: root` en el ETL — tirar a la basura `cap_drop: ALL` y el
+    #        usuario sin privilegios por un permiso de lectura.
+    #
+    #    Un grupo suplementario concede exactamente lo que hace falta y nada
+    #    más: la base pasa a `640 root:dudepanel`, el grupo NO TIENE MIEMBROS
+    #    HUMANOS, y el único que lo lleva puesto es este contenedor.
+    #
+    #      groupadd -g 3000 dudepanel
+    #      chgrp dudepanel /srv/thedude/data /srv/thedude/data/dude.db*
+    #      chmod 750 /srv/thedude/data && chmod 640 /srv/thedude/data/dude.db*
+    #
+    #    Va el GID numérico a propósito: dentro del contenedor no existe
+    #    `/etc/group` con ese nombre, y Docker no lo resuelve contra el
+    #    anfitrión. Un nombre acá falla al arrancar.
+    group_add: ["${DUDE_GID:-3000}"]
+
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     read_only: true

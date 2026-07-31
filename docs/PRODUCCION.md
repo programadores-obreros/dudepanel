@@ -106,6 +106,48 @@ POSTGRES_PASSWORD=<openssl rand -hex 24>
 DUDE_DATA=/srv/thedude/data
 ```
 
+### 🔴 Y una sexta que no falla ruidosamente: el permiso de lectura
+
+The Dude corre como root y deja su base en `600 root:root`. El ETL corre como
+`dude`, uid 10001. **No la puede abrir.**
+
+Y esto no se ve como un error: Compose levanta los cuatro servicios, Caddy
+consigue el certificado, el sitio contesta 200 con la contraseña — y muestra
+**cero equipos**. El único rastro está en `docker logs dudepanel-etl-1`:
+`PermissionError: [Errno 13] Permission denied: '/origen/dude.db'`, reiniciando
+cada 30 segundos para siempre.
+
+**Un panel vacío no se lee como un fallo. Se lee como una red sin equipos.**
+
+Hay que crear el grupo **antes** de levantar nada:
+
+```bash
+sudo groupadd -g 3000 dudepanel                       # sin miembros humanos
+sudo chgrp dudepanel /srv/thedude/data /srv/thedude/data/dude.db*
+sudo chmod 750 /srv/thedude/data
+sudo chmod 640 /srv/thedude/data/dude.db*
+```
+
+Y en `.env.prod`:
+
+```ini
+DUDE_GID=3000
+```
+
+> **Por qué así y no de la forma fácil.** `chmod 644 dude.db` resuelve el
+> síntoma y publica, para cualquiera que tenga una cuenta en la máquina, el
+> usuario y la contraseña de acceso a **todos los routers del ISP** — The Dude
+> los guarda en claro porque tiene que presentarlos. Y `user: root` en el ETL
+> tira `cap_drop: ALL` a la basura por un permiso de lectura.
+>
+> El grupo concede exactamente lo que hace falta: **un** proceso, **un** archivo,
+> **lectura**. Nadie más lo lleva puesto.
+
+> ⚠️ El `dude.db*` con comodín incluye el `dude.db-journal`. The Dude corre con
+> `journal_mode=PERSIST`, así que ese archivo **está siempre**, y SQLite le
+> copia los permisos de la base cuando lo recrea. Dejarlo afuera funciona hasta
+> el día que no.
+
 > 🔴 **`openssl rand -hex`, nunca `-base64`.** Base64 produce `/` y `+`, y la
 > contraseña se interpola cruda en `DATABASE_URL`. Una barra **termina la
 > sección de autoridad de la URI** y el arranque falla con
