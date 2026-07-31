@@ -1,8 +1,9 @@
 ---
-import type { ElementoMapa } from '@/lib/consultas';
-import { construirLienzo, TAMANIO_NODO } from '@/lib/mapa';
+import type { ElementoMapa, EnlacesFuera } from '@/lib/consultas';
+import { ALTO_LINEA, construirLienzo, TAMANIO_NODO } from '@/lib/mapa';
 import { juegoDeIconos } from '@/lib/iconos';
 import { metaEstado, type Estado, ESTADOS } from '@/lib/estado';
+import { numero } from '@/lib/formato';
 
 interface Props {
   mapaId: number;
@@ -10,9 +11,11 @@ interface Props {
   elementos: ElementoMapa[];
   /** Estado consolidado de cada submapa que aparece en este mapa. */
   submapas?: ReadonlyMap<number, Estado>;
+  /** Clasificación de los enlaces que no se pueden dibujar acá. */
+  fuera?: EnlacesFuera;
 }
 
-const { mapaId, nombre, elementos, submapas = new Map() } = Astro.props;
+const { mapaId, nombre, elementos, submapas = new Map(), fuera } = Astro.props;
 
 const lienzo = construirLienzo(elementos, submapas);
 
@@ -29,12 +32,25 @@ const { simbolos, porNodo } = await juegoDeIconos(
 
 const R = TAMANIO_NODO / 2;
 const LADO_ICONO = 22;
-/** Corte de la etiqueta. Con nombres tipo `Vega_P_Ponte_AC2` 20 alcanza. */
+/** Desplazamiento de la primera línea de base de una ficha de anotación. */
+const PRIMERA_BASE = 10;
+/** Corte de la etiqueta. Con nombres tipo `Vega_P_Aurora_AC2` 20 alcanza. */
 const MAX_ETIQUETA = 20;
 
 const recortar = (s: string) => (s.length > MAX_ETIQUETA ? s.slice(0, MAX_ETIQUETA - 1) + '…' : s);
 
 const vb = `${lienzo.vista.x} ${lienzo.vista.y} ${lienzo.vista.ancho} ${lienzo.vista.alto}`;
+
+// Cuántos enlaces quedaron sin trazar, y por qué.
+// `faltan` es la verdad de la pantalla: sale de comparar lo que trajo el mapa
+// con lo que realmente se dibujó. La clasificación viene de la base. Si las dos
+// no cierran, la diferencia se declara como "otro motivo" en vez de esconderse:
+// una cuenta que no cuadra es información, no algo que tapar.
+const faltan = lienzo.enlacesTotales - lienzo.enlaces.length;
+const enOtroMapa = Math.min(fuera?.otroMapa ?? 0, faltan);
+const rotos = Math.min(fuera?.rotos ?? 0, Math.max(faltan - enOtroMapa, 0));
+const sinClasificar = Math.max(faltan - enOtroMapa - rotos, 0);
+const destinos = enOtroMapa > 0 ? (fuera?.destinos ?? []) : [];
 ---
 
 <div
@@ -153,13 +169,21 @@ const vb = `${lienzo.vista.x} ${lienzo.vista.y} ${lienzo.vista.ancho} ${lienzo.v
         }
       </g>
 
-      {/* Rótulos `static`: texto libre del original (eth2, eth4…). Van entre
-          los enlaces y los nodos para que un nodo nunca quede tapado. */}
+      {/* Fichas de anotación (`static`): la configuración de VLAN de un puerto.
+          Van entre los enlaces y los nodos para que un nodo nunca quede tapado.
+          Los enlaces SÍ se enganchan a ellas — ver el comentario en `Rotulo`. */}
       <g data-rotulos>
         {
           lienzo.rotulos.map((r) => (
             <text class="rotulo-mapa" x={r.x} y={r.y}>
-              {r.texto}
+              <title>{r.lineas.join(' · ')}</title>
+              {/* La primera baja menos: la coordenada del origen es el borde
+                  superior del bloque, no la línea de base del texto. */}
+              {r.lineas.map((linea, i) => (
+                <tspan x={r.x} dy={i === 0 ? PRIMERA_BASE : ALTO_LINEA}>
+                  {linea}
+                </tspan>
+              ))}
             </text>
           ))
         }
@@ -194,14 +218,29 @@ const vb = `${lienzo.vista.x} ${lienzo.vista.y} ${lienzo.vista.ancho} ${lienzo.v
                 <circle class="halo" r={R + 6} />
                 <rect class="aro" x={-R} y={-R} width={TAMANIO_NODO} height={TAMANIO_NODO} rx="9" />
 
-                <use
-                  href={`#ico-${porNodo.get(n.id)}`}
-                  x={-LADO_ICONO / 2}
-                  y={-LADO_ICONO / 2}
-                  width={LADO_ICONO}
-                  height={LADO_ICONO}
-                  class="text-tinta"
-                />
+                {/* SVG incrustado o PNG servido del disco, según el formato
+                    real del icono de The Dude. Ver `Pincel`. */}
+                {(() => {
+                  const p = porNodo.get(n.id);
+                  const caja = {
+                    x: -LADO_ICONO / 2,
+                    y: -LADO_ICONO / 2,
+                    width: LADO_ICONO,
+                    height: LADO_ICONO,
+                  };
+                  // `preserveAspectRatio`: los iconos de Ubiquiti no son
+                  // cuadrados y sin esto se estiran, con lo que un nanostation
+                  // parece otra cosa.
+                  //
+                  // Sin carga diferida a propósito: un mapa de 400 nodos usa
+                  // apenas 21 URLs distintas, así que el navegador hace 21
+                  // peticiones y reusa. No hay nada que diferir.
+                  return p?.tipo === 'imagen' ? (
+                    <image href={p.url} {...caja} preserveAspectRatio="xMidYMid meet" />
+                  ) : (
+                    <use href={`#ico-${p?.clave ?? 'r-generico'}`} {...caja} class="text-tinta" />
+                  );
+                })()}
 
                 {/* La marca de estado: forma + glifo. Es la redundancia que
                     hace legible el mapa sin distinguir colores. */}
@@ -223,13 +262,74 @@ const vb = `${lienzo.vista.x} ${lienzo.vista.y} ${lienzo.vista.ancho} ${lienzo.v
     </g>
   </svg>
 
-  <p class="border-borde text-tenue text-2xs flex flex-wrap gap-x-4 gap-y-0.5 border-t px-3 py-1.5">
-    <span>Arrastrá para mover · rueda o pellizco para acercar</span>
-    <span class="hidden sm:inline">Con el foco en el mapa: flechas mueven, + − acercan, 0 ajusta</span>
-    <span class="ml-auto tabular-nums">
-      {lienzo.nodos.length} elementos · {lienzo.enlaces.length} enlaces
-    </span>
-  </p>
+  {/* ── Qué se dibujó y qué no ──────────────────────────────────────────────
+      Declarar la diferencia no es un detalle: en Segmentos hay 308 enlaces y sólo
+      107 se pueden trazar. Sin esta línea, el operador lee un mapa mucho menos
+      conectado de lo que es la red, y no tiene forma de darse cuenta. */}
+  <div class="border-borde text-2xs border-t">
+    <p class="text-tenue flex flex-wrap items-center gap-x-4 gap-y-0.5 px-3 py-1.5">
+      <span>Arrastrá para mover · rueda o pellizco para acercar</span>
+      <span class="hidden lg:inline">Con el foco en el mapa: flechas mueven, + − acercan, 0 ajusta</span>
+      <span class="ml-auto tabular-nums">
+        {numero(lienzo.nodos.length)} nodos ·{' '}
+        {
+          faltan > 0 ? (
+            <strong class="text-tinta font-semibold">
+              {numero(lienzo.enlacesTotales)} enlaces, {numero(lienzo.enlaces.length)} dibujados
+            </strong>
+          ) : (
+            <>{numero(lienzo.enlaces.length)} enlaces</>
+          )
+        }
+      </span>
+    </p>
+
+    {
+      faltan > 0 && (
+        <p class="border-borde/70 text-tenue flex flex-wrap items-center gap-x-3 gap-y-1 border-t px-3 py-1.5">
+          <span class="text-parcial-txt font-mono font-bold" aria-hidden="true">
+            !
+          </span>
+
+          {enOtroMapa > 0 && (
+            <span>
+              <strong class="font-semibold">{numero(enOtroMapa)}</strong> conectan con equipos
+              dibujados en otros mapas
+            </span>
+          )}
+
+          {/* Lo que faltaba se vuelve navegación: el otro extremo existe y
+              sabemos exactamente dónde está. */}
+          {destinos.map((d) => (
+            <a
+              href={`/mapas/${d.id}`}
+              class="border-borde bg-panel-2 hover:border-acento hover:text-acento-txt rounded-full border px-2 py-0.5 font-medium no-underline"
+            >
+              {d.nombre}
+              <span class="text-tenue tabular-nums"> · {numero(d.enlaces)}</span>
+              <span class="sr-only">
+                {d.enlaces === 1 ? ' enlace termina' : ' enlaces terminan'} en ese mapa
+              </span>
+            </a>
+          ))}
+
+          {rotos > 0 && (
+            <span title="Referencias colgadas del propio The Dude: el elemento del otro extremo ya no está en la base.">
+              <strong class="font-semibold">{numero(rotos)}</strong> tienen extremos que ya no
+              existen
+            </span>
+          )}
+
+          {sinClasificar > 0 && (
+            <span>
+              <strong class="font-semibold">{numero(sinClasificar)}</strong> sin dibujar por otro
+              motivo
+            </span>
+          )}
+        </p>
+      )
+    }
+  </div>
 </div>
 
 <script>

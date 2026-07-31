@@ -48,10 +48,11 @@ files/
 .env.*
 !.env.example
 
-# Salidas de los scripts de verificación: son volcados de la base REAL, con
-# direcciones y nombres de equipos de producción. Los scripts sí se versionan.
-qa/salida/
-qa/*.txt
+# Andamios de verificación. Se escribieron CONTRA la base real de producción y
+# tanto sus salidas como sus aserciones tienen direcciones y nombres de equipos.
+# No son el producto: son la prueba de que el producto anda, y esa prueba sólo
+# se puede reproducir teniendo la base — que no está acá y no va a estar.
+qa/
 
 # Node
 node_modules/

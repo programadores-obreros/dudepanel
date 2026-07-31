@@ -198,12 +198,25 @@ async function refrescarCaidas(p: Pulso) {
 
   const firma = p.caidas.map((c) => `${c.id}:${c.abierta ? 1 : 0}`).join(',');
   if (firma === firmaCaidas) return;
-  firmaCaidas = firma;
 
   try {
     const r = await fetch('/parciales/caidas', { headers: { accept: 'text/html' } });
+    // 🔴 El servidor contesta 503 cuando no pudo LEER las caídas, y ahí no hay
+    //    que pintar nada: la lista anterior es vieja pero verdadera, y el
+    //    fragmento de error diría «no sé» donde antes decía algo cierto.
+    //    Antes esto no existía porque el servidor devolvía 200 con la lista
+    //    vacía, que el operador lee como «no hay caídas».
     if (!r.ok) return;
     destino.innerHTML = await r.text();
+
+    // 🔴 La firma se guarda DESPUÉS de pintar, no antes.
+    //
+    //    Antes se guardaba arriba de todo: si el fetch fallaba, la firma ya
+    //    estaba anotada como si se hubiera pintado, así que la vuelta
+    //    siguiente la veía igual y NO reintentaba. La lista se quedaba
+    //    congelada hasta que cambiara el conjunto de caídas — o sea, hasta que
+    //    pasara justo lo que hay que mostrar.
+    firmaCaidas = firma;
   } catch {
     /* Se reintenta en la próxima vuelta; la lista anterior sigue siendo válida. */
   }

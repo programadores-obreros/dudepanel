@@ -2,6 +2,7 @@
 import Base from '@/layouts/Base.astro';
 import Pildora from '@/components/Pildora.astro';
 import { listarDispositivos, tiposDeDispositivo, type ColumnaOrden } from '@/lib/consultas';
+import { reportarError } from '@/lib/errores';
 import { aEstado, ESTADOS } from '@/lib/estado';
 import { numero } from '@/lib/formato';
 
@@ -45,7 +46,7 @@ try {
     tiposDeDispositivo(),
   ]);
 } catch (e) {
-  error = e instanceof Error ? e.message : String(e);
+  error = reportarError('dispositivos', e);
 }
 
 /** Arma una URL conservando el resto de los filtros. */

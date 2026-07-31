@@ -277,37 +277,60 @@
   font-size: 9px;
   font-weight: 700;
   text-anchor: middle;
-  fill: var(--color-panel);
 }
+
+/* Glifo OSCURO sobre el disco de color, no blanco.
+   Medido en los cuatro estados y en los dos temas: blanco sobre el verde da
+   3,3:1 y sobre el gris 3,1:1 — no llegan a AA. La tinta oscura, teñida del
+   mismo matiz para que no se vea sucia, va de 4,5:1 a 9,6:1 en las ocho
+   combinaciones. Menos convencional, legible siempre. */
 [data-estado='1'] .marca-estado .fondo {
   fill: var(--color-up);
 }
+[data-estado='1'] .marca-estado .glifo {
+  fill: oklch(0.16 0.05 152);
+}
+
 [data-estado='2'] .marca-estado .fondo {
   fill: var(--color-parcial);
 }
-[data-estado='3'] .marca-estado .fondo {
-  fill: var(--color-caido);
-}
-[data-estado='0'] .marca-estado .fondo {
-  fill: var(--color-desconocido);
-}
-/* Sobre ámbar el texto blanco no llega a AA. */
 [data-estado='2'] .marca-estado .glifo {
   fill: oklch(0.2 0.05 70);
 }
 
-/* Rótulos `static`. En gris y más chicos que las etiquetas de los nodos: son
-   anotaciones del original (nombres de puerto), no elementos monitoreados, y
-   confundirlos con nodos sería leer el mapa mal. */
+[data-estado='3'] .marca-estado .fondo {
+  fill: var(--color-caido);
+}
+[data-estado='3'] .marca-estado .glifo {
+  fill: oklch(0.15 0.06 24);
+}
+
+[data-estado='0'] .marca-estado .fondo {
+  fill: var(--color-desconocido);
+}
+[data-estado='0'] .marca-estado .glifo {
+  fill: oklch(0.16 0.01 258);
+}
+
+/* Fichas de anotación (`static`). Más chicas y en gris que las etiquetas de un
+   nodo: son configuración de puerto anotada en el original, no equipos
+   monitoreados, y confundirlas con nodos sería leer el mapa mal.
+   Monoespaciadas porque casi siempre son listas de VLAN y nombres de interfaz,
+   donde los dígitos alineados se comparan de un vistazo. */
 .rotulo-mapa {
-  font-size: 10px;
+  font-family: var(--font-mono);
+  font-size: 9px;
   font-weight: 500;
   fill: var(--color-tenue);
   paint-order: stroke;
   stroke: var(--color-lienzo);
   stroke-width: 3px;
   stroke-linejoin: round;
-  pointer-events: none;
+}
+/* La primera línea es el nombre del puerto: se destaca del resto. */
+.rotulo-mapa tspan:first-child {
+  font-weight: 700;
+  fill: var(--color-tinta);
 }
 
 .enlace-mapa {

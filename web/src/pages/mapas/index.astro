@@ -2,6 +2,7 @@
 import Base from '@/layouts/Base.astro';
 import TarjetaMapa from '@/components/TarjetaMapa.astro';
 import { listarMapas } from '@/lib/consultas';
+import { reportarError } from '@/lib/errores';
 import { numero } from '@/lib/formato';
 
 let mapas: Awaited<ReturnType<typeof listarMapas>> = [];
@@ -9,7 +10,7 @@ let error: string | null = null;
 try {
   mapas = await listarMapas();
 } catch (e) {
-  error = e instanceof Error ? e.message : String(e);
+  error = reportarError('mapas', e);
 }
 
 // Los que tienen algo roto van primero. El operador no busca "el mapa Sur":

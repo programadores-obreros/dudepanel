@@ -12,6 +12,7 @@ import {
   ultimaSincronizacion,
 } from '@/lib/consultas';
 import { numero, porcentaje } from '@/lib/formato';
+import { reportarError } from '@/lib/errores';
 
 /**
  * Lo primero que mira alguien a las 3 de la mañana.
@@ -37,7 +38,7 @@ try {
     listarDispositivos({ estado: 3, orden: 'nombre', porPagina: 10 }),
   ]);
 } catch (e) {
-  error = e instanceof Error ? e.message : String(e);
+  error = reportarError('index', e);
 }
 
 const mapasRotos = mapas.filter((m) => m.caidos > 0 || m.parcial > 0).slice(0, 8);
@@ -244,8 +245,4 @@ const eq = resumen?.equipos;
       </div>
     )
   }
-
-  <script>
-    import '@/scripts/vivo';
-  </script>
 </Base>

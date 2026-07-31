@@ -11,6 +11,7 @@ import {
   serviciosDe,
 } from '@/lib/consultas';
 import { desde, duracion, fechaLarga, numero } from '@/lib/formato';
+import { reportarError } from '@/lib/errores';
 
 const id = Number(Astro.params.id);
 if (!Number.isInteger(id) || id <= 0) return Astro.redirect('/dispositivos', 302);
@@ -35,7 +36,7 @@ try {
     ]);
   }
 } catch (e) {
-  error = e instanceof Error ? e.message : String(e);
+  error = reportarError('dispositivos/[id]', e);
 }
 
 if (!d && !error) return new Response('Equipo no encontrado', { status: 404 });

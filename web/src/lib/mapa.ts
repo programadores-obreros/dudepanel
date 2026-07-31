@@ -42,18 +42,56 @@ export interface Enlace {
 }
 
 /**
- * Elemento `static`: texto suelto sobre el lienzo.
+ * Elemento `static`: recuadro de anotación.
  *
- * En la base real hay 100, y son cosas como «eth2» o «eth4» puestas al lado de
- * un enlace para decir por qué puerto sale. No representan nada monitoreable:
- * no tienen icono, ni estado, ni adónde llevar. Dibujarlos como nodos sería
- * inventar cien equipos que no existen.
+ * 🔴 No son un adorno, y suponerlo costaba caro.
+ *
+ * En la base real son 100 y no dicen «eth2» a secas: son fichas de varias
+ * líneas que describen la configuración de un puerto —
+ *
+ *     bndn-SW16-Primero
+ *     v2703, v2701, v2216, v2214, v2211, v2213, v2218, v3210, v3215
+ *     Tagged
+ *
+ * — y, sobre todo, **los enlaces se conectan a ellas**. En el mapa Segmentos, 212
+ * de sus 308 enlaces tienen al menos una punta en un `static`. Tratarlos como
+ * texto decorativo y sacarlos del grafo dejaba el mapa con 18 líneas de 107
+ * dibujables: la red se veía desconectada.
+ *
+ * Así que anclan enlaces como cualquier nodo, pero **no son nodos**: no tienen
+ * estado, ni icono, ni adónde llevar. Se dibujan como texto.
  */
 export interface Rotulo {
   id: number;
+  /** Esquina superior izquierda del bloque de texto. */
   x: number;
   y: number;
-  texto: string;
+  /** Punto donde se enganchan los enlaces: el medio del borde izquierdo. */
+  ax: number;
+  ay: number;
+  lineas: string[];
+}
+
+/** Alto de una línea de anotación, en unidades del lienzo. */
+export const ALTO_LINEA = 12;
+/** Más de esto no entra sin tapar el mapa; el texto completo va en el `<title>`. */
+const MAX_LINEAS = 4;
+const MAX_CARACTERES = 34;
+
+/**
+ * Enlaces que existen en el mapa pero no se pudieron dibujar, y por qué.
+ *
+ * Que falten líneas no es lo grave: lo grave sería no decirlo. Un operador que
+ * abre Segmentos, ve 107 líneas donde hay 308 enlaces y no recibe ninguna
+ * explicación, concluye que la red está menos conectada de lo que está.
+ */
+export interface DiagnosticoEnlaces {
+  total: number;
+  dibujados: number;
+  /** Alguna punta vive en OTRO mapa. Se puede ir a verlo. */
+  otroMapa: number;
+  /** Alguna punta apunta a un objeto que ya no existe. Dato roto del origen. */
+  rotos: number;
 }
 
 export interface Lienzo {
@@ -64,6 +102,8 @@ export interface Lienzo {
   vista: { x: number; y: number; ancho: number; alto: number };
   /** Elementos que venían sin coordenadas y hubo que acomodar. */
   sinPosicion: number;
+  /** Cuántos enlaces traía el mapa y cuántos quedaron dibujados. */
+  enlacesTotales: number;
 }
 
 const MARGEN = 60;
@@ -120,41 +160,57 @@ export function construirLienzo(
     porId.set(nodo.id, nodo);
   }
 
-  // Los enlaces se resuelven contra los nodos ya ubicados. Uno cuyo extremo no
-  // está en este mapa se descarta: dibujarlo apuntando a (0,0) deforma el
-  // encuadre y confunde más de lo que informa.
+  // Rótulos. Van ANTES de los enlaces porque también los anclan.
+  const rotulos: Rotulo[] = [];
+  for (const e of elementos) {
+    if (e.kind !== 'static') continue;
+    const lineas = partirTexto(e.label ?? e.name);
+    if (!lineas.length || !esNum(e.x) || !esNum(e.y)) continue;
+    rotulos.push({
+      id: e.element_id,
+      x: e.x,
+      y: e.y,
+      ax: e.x,
+      ay: e.y + (lineas.length * ALTO_LINEA) / 2,
+      lineas,
+    });
+  }
+
+  // Puntos a los que un enlace se puede enganchar: nodos Y rótulos.
+  // Los rótulos no tienen estado, así que no tiñen el enlace — un enlace a una
+  // ficha de VLAN vale lo que valga el equipo del otro extremo.
+  const anclas = new Map<number, { x: number; y: number; estado: Estado | null }>();
+  for (const n of nodos) anclas.set(n.id, { x: n.cx, y: n.cy, estado: n.estado });
+  for (const r of rotulos) anclas.set(r.id, { x: r.ax, y: r.ay, estado: null });
+
+  // Un enlace con un extremo que no está en este mapa se descarta: dibujarlo
+  // apuntando a (0,0) deforma el encuadre y confunde más de lo que informa.
+  // Pero se CUENTA, y el visor lo declara. Ver `DiagnosticoEnlaces`.
   const enlaces: Enlace[] = [];
+  let enlacesTotales = 0;
   for (const e of elementos) {
     if (e.kind !== 'link') continue;
-    const a = e.link_from != null ? porId.get(e.link_from) : undefined;
-    const b = e.link_to != null ? porId.get(e.link_to) : undefined;
+    enlacesTotales++;
+    const a = e.link_from != null ? anclas.get(e.link_from) : undefined;
+    const b = e.link_to != null ? anclas.get(e.link_to) : undefined;
     if (!a || !b) continue;
 
     enlaces.push({
       id: e.element_id,
-      de: a.id,
-      a: b.id,
-      x1: a.cx,
-      y1: a.cy,
-      x2: b.cx,
-      y2: b.cy,
+      de: e.link_from as number,
+      a: e.link_to as number,
+      x1: a.x,
+      y1: a.y,
+      x2: b.x,
+      y2: b.y,
       // `link_width` viene en unidades de The Dude; 0 o nulo significa "el
       // grosor por defecto", no "invisible".
       ancho: Math.min(Math.max(e.link_width || 2, 1), 10),
       nombre: e.name ?? e.label ?? null,
-      // Un enlace está tan sano como sus dos puntas.
-      estado: estadoAgregado([a.estado, b.estado]),
+      // Un enlace está tan sano como sus dos puntas; las que no tienen estado
+      // (los rótulos) no cuentan, si no todo enlace a una ficha se vería gris.
+      estado: estadoAgregado([a.estado, b.estado].filter((s) => s !== null)),
     });
-  }
-
-  // Rótulos: texto y nada más. Se ignoran los que no tienen ni posición ni
-  // texto, que no aportarían nada al lienzo.
-  const rotulos: Rotulo[] = [];
-  for (const e of elementos) {
-    if (e.kind !== 'static') continue;
-    const texto = (e.label ?? e.name ?? '').trim();
-    if (!texto || !esNum(e.x) || !esNum(e.y)) continue;
-    rotulos.push({ id: e.element_id, x: e.x, y: e.y, texto });
   }
 
   return {
@@ -163,7 +219,25 @@ export function construirLienzo(
     rotulos,
     vista: encuadrar(nodos, rotulos),
     sinPosicion: huerfanos,
+    enlacesTotales,
   };
+}
+
+/**
+ * Parte la etiqueta de un rótulo en líneas dibujables.
+ *
+ * El origen las guarda con CR LF de Windows (son de 2011) y algunas llegan a
+ * 90 caracteres en cuatro renglones. Se recorta para que no tapen el mapa; el
+ * texto entero igual viaja en el `<title>` del elemento.
+ */
+export function partirTexto(bruto: string | null | undefined): string[] {
+  if (!bruto) return [];
+  return bruto
+    .split(/\r?\n|\r/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .slice(0, MAX_LINEAS)
+    .map((l) => (l.length > MAX_CARACTERES ? l.slice(0, MAX_CARACTERES - 1) + '…' : l));
 }
 
 /** Caja que contiene todo lo dibujable, con margen para iconos y etiquetas. */
@@ -171,8 +245,20 @@ function encuadrar(nodos: readonly Nodo[], rotulos: readonly Rotulo[]): Lienzo['
   if (nodos.length === 0 && rotulos.length === 0) {
     return { x: 0, y: 0, ancho: 400, alto: 300 };
   }
-  const xs = [...nodos.map((n) => n.cx), ...rotulos.map((r) => r.x)];
-  const ys = [...nodos.map((n) => n.cy), ...rotulos.map((r) => r.y)];
+  // De los rótulos se miden las dos esquinas: el texto crece hacia la derecha y
+  // hacia abajo, y una ficha de cuatro renglones en el borde quedaría cortada.
+  const ANCHO_CARACTER = 5.6;
+  const xs = [
+    ...nodos.map((n) => n.cx),
+    ...rotulos.flatMap((r) => [
+      r.x,
+      r.x + Math.max(...r.lineas.map((l) => l.length)) * ANCHO_CARACTER,
+    ]),
+  ];
+  const ys = [
+    ...nodos.map((n) => n.cy),
+    ...rotulos.flatMap((r) => [r.y, r.y + r.lineas.length * ALTO_LINEA]),
+  ];
   const x0 = Math.min(...xs) - MARGEN;
   const y0 = Math.min(...ys) - MARGEN;
   const x1 = Math.max(...xs) + MARGEN;

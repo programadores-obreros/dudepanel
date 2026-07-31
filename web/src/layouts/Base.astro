@@ -3,6 +3,8 @@ import '@/styles/global.css';
 import EstadoSync from '@/components/EstadoSync.astro';
 import Buscador from '@/components/Buscador.astro';
 import { ultimaSincronizacion } from '@/lib/consultas';
+import { reportarError } from '@/lib/errores';
+import { GUION_TEMA } from '@/lib/cabeceras';
 
 interface Props {
   titulo: string;
@@ -25,7 +27,7 @@ try {
 } catch (e) {
   // Que se caiga la base no puede dejar la página en blanco: el chrome de la
   // aplicación se dibuja igual y el error se muestra donde corresponde.
-  errorSync = e instanceof Error ? e.message : String(e);
+  errorSync = reportarError('Base/sync', e);
 }
 
 const ruta = Astro.url.pathname;
@@ -55,18 +57,13 @@ const NAV = [
 
     {/* Resolver el tema ANTES del primer pintado. Un flash blanco a las 3 de la
         mañana no es un detalle estético: encandila. Por eso va inline y no en
-        un módulo diferido. */}
-    <script is:inline>
-      (() => {
-        try {
-          const g = localStorage.getItem('tema');
-          const oscuro = g === 'oscuro' || (!g && matchMedia('(prefers-color-scheme: dark)').matches);
-          document.documentElement.classList.toggle('dark', oscuro);
-        } catch {
-          /* localStorage bloqueado: queda el tema claro, que es el valor por defecto. */
-        }
-      })();
-    </script>
+        un módulo diferido.
+
+        El texto viene de `GUION_TEMA` y no está escrito acá porque la CSP lo
+        habilita por HASH. Con una sola fuente, tocar el script recalcula el
+        hash solo; con el texto duplicado, el primer retoque lo dejaría
+        bloqueado y volvería el flash. */}
+    <script is:inline set:html={GUION_TEMA} />
   </head>
 
   <body class="bg-lienzo text-tinta flex min-h-full flex-col">
@@ -233,9 +230,19 @@ const NAV = [
 
     <Buscador />
 
+    {/* El refresco en vivo va en el layout, no en el tablero: el indicador de
+        sincronización está en TODAS las páginas, y si sólo latiera en la
+        portada, un operador parado en el detalle de un equipo vería un
+        "sincronizado hace 12 s" congelado desde que abrió la pestaña — que es
+        precisamente la mentira que este panel viene a no decir.
+
+        Los otros parches son condicionales: sólo tocan `[data-vivo]` y
+        `#lista-caidas` si existen. En una página que no los tiene, el costo es
+        una petición de medio kB cada 30 s. */}
     <script>
       import '@/scripts/tema';
       import '@/scripts/buscador';
+      import '@/scripts/vivo';
     </script>
   </body>
 </html>

@@ -2,6 +2,7 @@
 import Base from '@/layouts/Base.astro';
 import Pildora from '@/components/Pildora.astro';
 import { buscar } from '@/lib/consultas';
+import { reportarError } from '@/lib/errores';
 
 /**
  * Búsqueda como página.
@@ -17,7 +18,7 @@ let error: string | null = null;
 try {
   if (q.trim().length >= 2) resultados = await buscar(q, 100);
 } catch (e) {
-  error = e instanceof Error ? e.message : String(e);
+  error = reportarError('buscar', e);
 }
 ---
 

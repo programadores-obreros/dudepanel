@@ -324,6 +324,85 @@ export async function estadosDelMapa(mapId: number): Promise<{ id: number; s: Es
   ];
 }
 
+export interface DestinoEnlace {
+  id: number;
+  nombre: string;
+  enlaces: number;
+}
+
+export interface EnlacesFuera {
+  /** Enlaces con alguna punta en otro mapa. */
+  otroMapa: number;
+  /** Enlaces con alguna punta que apunta a un objeto que ya no existe. */
+  rotos: number;
+  /** A qué mapas se puede ir para ver el otro extremo, y cuántos llevan a cada uno. */
+  destinos: DestinoEnlace[];
+}
+
+/**
+ * Por qué un mapa tiene más enlaces que líneas.
+ *
+ * Un enlace se dibuja sólo si sus dos puntas son elementos de ESTE mapa. En la
+ * base real eso no siempre pasa, y por dos motivos que hay que separar porque
+ * significan cosas distintas:
+ *
+ *  · **La punta está en otro mapa.** Pasa mucho: `Segmentos` es un mapa de resumen
+ *    y 147 de sus enlaces terminan en elementos dibujados en `Aurora`. No falta
+ *    nada, está en otro lado — y eso se puede convertir en un enlace de
+ *    navegación en vez de un agujero.
+ *  · **La punta no existe.** Referencia colgada del propio The Dude: 78 en toda
+ *    la base. No hay nada que hacer salvo decirlo.
+ *
+ * El recuento se hace en SQL porque `v_map_canvas` sólo trae los elementos de
+ * un mapa: desde ahí es imposible saber si una punta está en otro lienzo o no
+ * está en ninguno.
+ */
+export async function enlacesFueraDelMapa(mapId: number): Promise<EnlacesFuera> {
+  const resumen = await consultarUna<{ otro_mapa: number; rotos: number }>(
+    `WITH r AS (
+       SELECT l.id, a.map_id AS ma, b.map_id AS mb,
+              (a.id IS NULL OR b.id IS NULL) AS roto
+       FROM map_elements l
+       LEFT JOIN map_elements a ON a.id = l.link_from
+       LEFT JOIN map_elements b ON b.id = l.link_to
+       WHERE l.map_id = $1 AND l.kind = 'link'
+     )
+     SELECT
+       count(*) FILTER (WHERE NOT roto AND (ma <> $1 OR mb <> $1))::int AS otro_mapa,
+       count(*) FILTER (WHERE roto)::int                                AS rotos
+     FROM r`,
+    [mapId],
+  );
+
+  const destinos = await consultar<DestinoEnlace>(
+    `WITH r AS (
+       SELECT l.id, a.map_id AS ma, b.map_id AS mb
+       FROM map_elements l
+       LEFT JOIN map_elements a ON a.id = l.link_from
+       LEFT JOIN map_elements b ON b.id = l.link_to
+       WHERE l.map_id = $1 AND l.kind = 'link'
+     ),
+     puntas AS (
+       SELECT id, ma AS mapa FROM r WHERE ma IS NOT NULL AND ma <> $1
+       UNION ALL
+       SELECT id, mb        FROM r WHERE mb IS NOT NULL AND mb <> $1
+     )
+     SELECT m.id, m.name AS nombre, count(DISTINCT p.id)::int AS enlaces
+     FROM puntas p
+     JOIN maps m ON m.id = p.mapa
+     GROUP BY m.id, m.name
+     ORDER BY enlaces DESC, m.name
+     LIMIT 6`,
+    [mapId],
+  );
+
+  return {
+    otroMapa: resumen?.otro_mapa ?? 0,
+    rotos: resumen?.rotos ?? 0,
+    destinos,
+  };
+}
+
 /** En qué mapas aparece un equipo. Para poder ir del detalle a la topología. */
 export async function mapasDeDispositivo(
   deviceId: number,
@@ -390,7 +469,15 @@ export interface PaginaDispositivos {
 }
 
 export async function listarDispositivos(f: FiltrosDispositivos = {}): Promise<PaginaDispositivos> {
-  const orden = ORDEN[f.orden ?? 'estado'] ? (f.orden ?? 'estado') : 'estado';
+  // `Object.hasOwn` y no `ORDEN[clave]` a secas: `ORDEN['constructor']` y
+  // `ORDEN['toString']` devuelven lo heredado del prototipo, que es truthy. La
+  // guarda dejaba pasar la clave y después `ORDEN[orden]` se concatenaba en la
+  // SQL. No era explotable —lo que se concatena es el valor heredado, no la
+  // cadena del atacante, y `Function.prototype.toString` no es SQL válida, así
+  // que la consulta rompe— pero una lista blanca que aprueba lo que no está en
+  // la lista no es una lista blanca.
+  const pedido = f.orden ?? 'estado';
+  const orden: ColumnaOrden = Object.hasOwn(ORDEN, pedido) ? pedido : 'estado';
   const dir = f.desc ? 'DESC' : 'ASC';
   const porPagina = Math.min(Math.max(f.porPagina ?? 50, 10), 200);
   const pagina = Math.max(f.pagina ?? 1, 1);
@@ -592,7 +679,7 @@ export interface Resultado {
  *
  * El operador que mira un ticket no sabe si tiene el nombre o la dirección: le
  * damos una caja y que el buscador se arregle. El prefijo de IP se prioriza
- * porque escribir "192.0.2" y que aparezcan primero los equipos de esa /16 es
+ * porque escribir el prefijo de una subred y que aparezcan primero sus equipos es
  * exactamente lo que se espera.
  */
 export async function buscar(q: string, limite = 20): Promise<Resultado[]> {

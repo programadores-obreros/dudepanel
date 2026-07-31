@@ -1,6 +1,7 @@
 ---
 import ListaCaidas from '@/components/ListaCaidas.astro';
 import { caidasRecientes } from '@/lib/consultas';
+import { reportarError } from '@/lib/errores';
 
 /**
  * Fragmento HTML de la lista de caídas, para el refresco en vivo.
@@ -9,15 +10,52 @@ import { caidasRecientes } from '@/lib/consultas';
  * lista se dibuja con la MISMA plantilla en el servidor y en el refresco, en
  * vez de tener una versión en Astro y otra en JavaScript que en tres meses
  * dicen cosas distintas.
+ *
+ * 🔴 ANTES ESTE FRAGMENTO MENTÍA, y mentía justo en la pregunta que el panel
+ *    existe para contestar.
+ *
+ *    El `catch` devolvía lista vacía, y `ListaCaidas` dibuja la lista vacía
+ *    como «Ninguna caída en el histórico. Buena noticia.» con HTTP 200. O sea
+ *    que un `statement_timeout` sobre `outages` —12.000 filas— o un reinicio
+ *    de PostgreSQL le ponían al operador de guardia, en pantalla, que no hay
+ *    caídas. Medido:
+ *
+ *        ALTER TABLE outages RENAME TO outages_x
+ *        curl .../parciales/caidas   → 200 · «Buena noticia»
+ *
+ *    Y el comentario que estaba acá decía que «el cliente conserva la lista
+ *    anterior», que tampoco era cierto: `vivo.ts` pinta en cuanto `r.ok`, y
+ *    200 es ok.
+ *
+ * La diferencia entre «cero caídas» y «no pude preguntar» ahora está EN EL
+ * TIPO, no en el texto: `caidas` es `null` cuando la consulta falló y `[]`
+ * cuando de verdad no hay ninguna. Dos estados distintos, dos dibujos
+ * distintos, y el compilador obliga a distinguirlos.
+ *
+ * Y va con 503, que es lo que hace que `vivo.ts` NO lo pinte: el cliente se
+ * queda con la última lista buena, que es vieja pero verdadera.
  */
 export const partial = true;
 
-let caidas: Awaited<ReturnType<typeof caidasRecientes>> = [];
+// `null` = no se pudo preguntar. `[]` = se preguntó y no hay ninguna.
+let caidas: Awaited<ReturnType<typeof caidasRecientes>> | null = null;
+let error: string | null = null;
+
 try {
   caidas = await caidasRecientes(12);
-} catch {
-  /* El cliente conserva la lista anterior si esto falla. */
+} catch (e) {
+  error = reportarError('parciales/caidas', e);
+  Astro.response.status = 503;
 }
 ---
 
-<ListaCaidas caidas={caidas} vacio="Ninguna caída en el histórico. Buena noticia." />
+{
+  caidas === null ? (
+    <p class="text-caido-txt bg-caido-bg border-caido rounded-lg border px-3 py-4 text-center text-xs">
+      <strong class="block font-bold">No se pudo leer el histórico de caídas.</strong>
+      <span class="mt-1 block font-mono break-all">{error}</span>
+    </p>
+  ) : (
+    <ListaCaidas caidas={caidas} vacio="Ninguna caída en el histórico. Buena noticia." />
+  )
+}

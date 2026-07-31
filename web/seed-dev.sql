@@ -1,17 +1,46 @@
 -- ════════════════════════════════════════════════════════════════════════════
 --  Datos de prueba para desarrollar el panel y correr los tests.
 --
---  NO son datos de el ISP: son inventados, pero con la forma de los reales.
---  Nombres al estilo `Vega_P_Ponte_AC2`, direcciones en 192.0.2.0/24, tres
---  mapas encadenados por submapas, coordenadas plausibles y una distribución de
---  estados parecida a la medida el 31/07/2026 (1→363 · 3→267 · 0→214 · 2→15).
+--  NO son datos de el ISP: son inventados. Antes acá decía eso mismo y era
+--  MENTIRA — el archivo traía la IP interna, la MAC y el hostname reales del
+--  servidor que corre The Dude, más los rangos de gestión y el dominio del ISP.
+--  La frase vuelve a estar porque ahora se puede sostener, y se sostiene sola:
+--  la vigila `test/seed.test.ts`, que falla si entra un identificador que no
+--  sea de un rango reservado para documentación.
+--
+--  Lo que se usa, y por qué esos rangos y no otros:
+--
+--   · Direcciones — RFC 5737, los tres bloques que existen para documentar:
+--       192.0.2.0/24     enlace ascendente y núcleo
+--       198.51.100.0/24  sitio Aurora y su repetidora Cumbre
+--       203.0.113.0/24   sitio Bahia
+--     No son ruteables en internet, así que ni el copiar y pegar más
+--     distraído le pega a un equipo de verdad.
+--
+--   · MAC — RFC 7042 §2.1.2: `00:00:5E:00:53:00` … `:FF`, el rango que IEEE
+--     reservó para documentación. Una MAC de verdad delata fabricante y modelo.
+--
+--   · Dominio — `example.net` (RFC 2606).
+--
+--   · Nombres de sitio y de equipo — inventados y VERIFICADOS contra la base
+--     real: `Aurora`, `Bahia`, `Cumbre`, `Vega_P_` no aparecen en ninguna de
+--     sus 885 filas. Tampoco reproducen las convenciones de nombre reales, que
+--     por sí solas ya dicen cómo está organizada la red.
+--
+--  Se conserva la FORMA de los datos reales —tres mapas encadenados por
+--  submapas, coordenadas plausibles, una distribución de estados parecida a la
+--  medida el 31/07/2026 (1→363 · 3→267 · 0→214 · 2→15)— porque de eso depende
+--  que los tests prueben algo. Lo que se fue son los identificadores.
 --
 --  Se aplica DESPUÉS de etl/schema.sql:
 --
 --      psql "$DATABASE_URL" -f ../etl/schema.sql
 --      psql "$DATABASE_URL" -f seed-dev.sql
 --
---  Es idempotente: limpia todo antes de cargar.
+--  🔴 Le hace TRUNCATE a todo antes de cargar. Es idempotente, y también es
+--     destructivo: apuntarlo a una base con datos que importan los borra. Los
+--     tests lo aplican solos, así que `TEST_DATABASE_URL`/`DATABASE_URL` al
+--     correrlos tiene que ser una base DESECHABLE.
 --
 --  🔴 No hay ni una columna de credenciales, igual que en el esquema real.
 -- ════════════════════════════════════════════════════════════════════════════
@@ -68,7 +97,20 @@ INSERT INTO snmp_profiles (id, name, version, port, try_count, try_timeout) VALU
 INSERT INTO notifications (id, name, type_id, type_label, enabled, subject) VALUES
   (951, 'Correo a guardia', 1, 'email',  true,  'The Dude: [Device.Name] está [Device.Status]'),
   (952, 'Registro',        10, 'log',    true,  NULL),
-  (953, 'Syslog NOC',       2, 'syslog', false, NULL);
+  (953, 'Syslog NOC',       2, 'syslog', false, NULL),
+  -- 🔴 CENTINELA — no lo borres, no lo renombres.
+  --
+  --    `notifications` es la única tabla del esquema con texto libre que el
+  --    panel NO consulta jamás: no hay página de notificaciones y `v_search`
+  --    sólo une `devices` y `maps`. Así que este valor está en la base y no
+  --    puede salir por ninguna respuesta.
+  --
+  --    Si algún día SALE, es que alguien ensanchó un SELECT. Eso es lo que
+  --    vigila «no deja escapar el centinela» en test/consultas.test.ts, que
+  --    busca el VALOR en la respuesta en vez de mirarle los nombres a las
+  --    claves — el test viejo comparaba contra `password`/`community` y las
+  --    claves del panel son alias en castellano, así que no podía fallar.
+  (954, 'zzz-no-usar',     10, 'log',    false, 'CENTINELA-FUGA-9f3a1c7e');
 
 -- ── Dispositivos ────────────────────────────────────────────────────────────
 -- La columna `status` se carga a mano y los servicios se derivan de ella más
@@ -79,45 +121,45 @@ INSERT INTO devices
    probe_enabled, probe_interval, probe_timeout, probe_down_count, dude_server, status)
 VALUES
   -- Núcleo
-  (100, 'WAN_Fibertel_Principal', '{200.10.5.1}',   'wan1.example.net',  '{}',                     606, NULL, false, true,  60, 3000, 3, false, 1),
-  (101, 'BR_Core_01',             '{192.0.2.2}',   'br01.example.net',  '{4C:5E:0C:11:22:01}',    601,  903, true,  true,  30, 2000, 3, false, 1),
-  (102, 'RT_Core_A',              '{192.0.2.3}',   'rta.example.net',   '{4C:5E:0C:11:22:02}',    601,  903, true,  true,  30, 2000, 3, false, 1),
-  (103, 'RT_Core_B',              '{192.0.2.4}',   'rtb.example.net',   '{4C:5E:0C:11:22:03}',    601,  903, true,  true,  30, 2000, 3, false, 2),
-  (104, 'SW_DC_01',               '{192.0.2.20}',  NULL,                '{4C:5E:0C:11:22:10}',    603,  901, false, true,  60, 2000, 3, false, 1),
-  (105, 'SRV_Dude_Monitor',       '{192.0.2.30,192.0.2.200}', 'host-de-ejemplo', '{02:00:00:00:00:01}', 605, 901, false, true,  30, 2000, 3, true,  1),
+  (100, 'WAN_Proveedor_Principal', '{192.0.2.1}',   'wan1.example.net',  '{}',                     606, NULL, false, true,  60, 3000, 3, false, 1),
+  (101, 'BR_Core_01',             '{192.0.2.10}',   'br01.example.net',  '{00:00:5E:00:53:01}',    601,  903, true,  true,  30, 2000, 3, false, 1),
+  (102, 'RT_Core_A',              '{192.0.2.11}',   'rta.example.net',   '{00:00:5E:00:53:02}',    601,  903, true,  true,  30, 2000, 3, false, 1),
+  (103, 'RT_Core_B',              '{192.0.2.12}',   'rtb.example.net',   '{00:00:5E:00:53:03}',    601,  903, true,  true,  30, 2000, 3, false, 2),
+  (104, 'SW_DC_01',               '{192.0.2.20}',  NULL,                '{00:00:5E:00:53:10}',    603,  901, false, true,  60, 2000, 3, false, 1),
+  (105, 'SRV_Dude_Monitor',       '{192.0.2.30,198.51.100.250}', 'nms-lab-01', '{00:00:5E:00:53:20}', 605, 901, false, true,  30, 2000, 3, true,  1),
   (106, 'SRV_NAS_Backup',         '{192.0.2.31}',  NULL,                '{}',                     605,  901, false, true, 300, 5000, 5, false, 0),
   (137, 'SRV_Radius',             '{192.0.2.40}',  'radius.example.net','{}',                     605,  901, false, true,  60, 2000, 3, false, 1),
   (138, 'SRV_DNS_01',             '{192.0.2.41}',  'ns1.example.net',   '{}',                     605,  901, false, true,  60, 2000, 3, false, 1),
   (139, 'SRV_DNS_02',             '{192.0.2.42}',  'ns2.example.net',   '{}',                     605,  901, false, true,  60, 2000, 3, false, 2),
-  (140, 'UPS_DC_Principal',       '{192.0.2.41}',  NULL,                '{}',                     607,  902, false, true, 120, 4000, 3, false, 1),
+  (140, 'UPS_DC_Principal',       '{192.0.2.50}',  NULL,                '{}',                     607,  902, false, true, 120, 4000, 3, false, 1),
 
   -- Zona Norte · Aurora
-  (117, 'RT_Ponte_Torre',         '{192.0.2.8054}', NULL,               '{48:8F:5A:0B:11:FE}',    601,  901, true,  true,  30, 2000, 3, false, 1),
-  (130, 'SW_Ponte_01',            '{192.0.2.8040}', NULL,               '{48:8F:5A:0B:11:F0}',    603,  901, false, true,  60, 2000, 3, false, 1),
-  (110, 'Vega_P_Ponte_AC2',        '{192.0.2.79}',   NULL,               '{48:8F:5A:0B:11:01}',    602,  901, true,  true,  30, 2000, 3, false, 1),
-  (111, 'Vega_P_Ponte_SEC',        '{192.0.2.80}',   NULL,               '{48:8F:5A:0B:11:02}',    602,  901, true,  true,  30, 2000, 3, false, 1),
-  (112, 'CPE_Ponte_0142',         '{192.0.2.120}',  NULL,               '{}',                     604, NULL, true,  true,  60, 3000, 4, false, 1),
-  (113, 'CPE_Ponte_0187',         '{192.0.2.165}',  NULL,               '{}',                     604, NULL, true,  true,  60, 3000, 4, false, 3),
-  (114, 'CPE_Ponte_0203',         '{192.0.2.7903}', NULL,               '{}',                     604, NULL, true,  true,  60, 3000, 4, false, 1),
-  (115, 'CPE_Ponte_0219',         '{192.0.2.7919}', NULL,               '{}',                     604, NULL, true,  true,  60, 3000, 4, false, 1),
-  (116, 'CPE_Ponte_0244',         '{192.0.2.7944}', NULL,               '{}',                     604, NULL, true,  false, 60, 3000, 4, false, 0),
+  (117, 'RT_Aurora_Torre',         '{198.51.100.254}', NULL,               '{00:00:5E:00:53:AE}',    601,  901, true,  true,  30, 2000, 3, false, 1),
+  (130, 'SW_Aurora_01',            '{198.51.100.240}', NULL,               '{00:00:5E:00:53:A0}',    603,  901, false, true,  60, 2000, 3, false, 1),
+  (110, 'Vega_P_Aurora_AC2',        '{198.51.100.1}',   NULL,               '{00:00:5E:00:53:A1}',    602,  901, true,  true,  30, 2000, 3, false, 1),
+  (111, 'Vega_P_Aurora_SEC',        '{198.51.100.2}',   NULL,               '{00:00:5E:00:53:A2}',    602,  901, true,  true,  30, 2000, 3, false, 1),
+  (112, 'CPE_Aurora_0142',         '{198.51.100.42}',  NULL,               '{}',                     604, NULL, true,  true,  60, 3000, 4, false, 1),
+  (113, 'CPE_Aurora_0187',         '{198.51.100.87}',  NULL,               '{}',                     604, NULL, true,  true,  60, 3000, 4, false, 3),
+  (114, 'CPE_Aurora_0203',         '{198.51.100.103}', NULL,               '{}',                     604, NULL, true,  true,  60, 3000, 4, false, 1),
+  (115, 'CPE_Aurora_0219',         '{198.51.100.119}', NULL,               '{}',                     604, NULL, true,  true,  60, 3000, 4, false, 1),
+  (116, 'CPE_Aurora_0244',         '{198.51.100.144}', NULL,               '{}',                     604, NULL, true,  false, 60, 3000, 4, false, 0),
 
-  -- Repetidora Cerro (cuelga de Aurora)
-  (132, 'RT_Repetidora_Cerro',    '{192.0.2.212}',   NULL,               '{48:8F:5A:0C:30:01}',    601,  901, true,  true,  30, 2000, 3, false, 1),
-  (133, 'Vega_P_Cerro_AC1',        '{192.0.2.213}',   NULL,               '{48:8F:5A:0C:30:02}',    602,  901, true,  true,  30, 2000, 3, false, 1),
-  (134, 'CPE_Cerro_0011',         '{192.0.2.2121}',  NULL,               '{}',                     604, NULL, true,  true,  60, 3000, 4, false, 1),
-  (135, 'CPE_Cerro_0025',         '{192.0.2.2135}',  NULL,               '{}',                     604, NULL, true,  true,  60, 3000, 4, false, 0),
+  -- Repetidora Cumbre (cuelga de Aurora)
+  (132, 'RT_Repetidora_Cumbre',    '{198.51.100.201}',   NULL,               '{00:00:5E:00:53:C1}',    601,  901, true,  true,  30, 2000, 3, false, 1),
+  (133, 'Vega_P_Cumbre_AC1',        '{198.51.100.202}',   NULL,               '{00:00:5E:00:53:C2}',    602,  901, true,  true,  30, 2000, 3, false, 1),
+  (134, 'CPE_Cumbre_0011',         '{198.51.100.211}',  NULL,               '{}',                     604, NULL, true,  true,  60, 3000, 4, false, 1),
+  (135, 'CPE_Cumbre_0025',         '{198.51.100.225}',  NULL,               '{}',                     604, NULL, true,  true,  60, 3000, 4, false, 0),
 
-  -- Zona Sur · Alvear — acá está el problema del turno
-  (126, 'RT_Alvear_Torre',        '{192.0.2.15754}', NULL,               '{48:8F:5A:0B:22:FE}',    601,  901, true,  true,  30, 2000, 3, false, 1),
-  (131, 'SW_Alvear_01',           '{192.0.2.15740}', NULL,               '{48:8F:5A:0B:22:F0}',    603,  901, false, true,  60, 2000, 3, false, 1),
-  (120, 'Vega_P_Alvear_AC1',       '{192.0.2.156}',   NULL,               '{48:8F:5A:0B:22:01}',    602,  901, true,  true,  30, 2000, 3, false, 2),
-  (121, 'Vega_P_Alvear_AC2',       '{192.0.2.157}',   NULL,               '{48:8F:5A:0B:22:02}',    602,  901, true,  true,  30, 2000, 3, false, 3),
-  (122, 'CPE_Alvear_0031',        '{192.0.2.186}',  NULL,               '{}',                     604, NULL, true,  true,  60, 3000, 4, false, 3),
-  (123, 'CPE_Alvear_0058',        '{192.0.2.213}',  NULL,               '{}',                     604, NULL, true,  true,  60, 3000, 4, false, 3),
-  (124, 'CPE_Alvear_0072',        '{192.0.2.227}',  NULL,               '{}',                     604, NULL, true,  true,  60, 3000, 4, false, 1),
-  (125, 'CPE_Alvear_0099',        '{192.0.2.254}',  NULL,               '{}',                     604, NULL, true,  true,  60, 3000, 4, false, 1),
-  (136, 'PRT_Oficina_Central',    '{192.168.2.50}',  NULL,               '{}',                     607, NULL, false, true, 300, 5000, 3, false, 1);
+  -- Zona Sur · Bahia — acá está el problema del turno
+  (126, 'RT_Bahia_Torre',        '{203.0.113.254}', NULL,               '{00:00:5E:00:53:BE}',    601,  901, true,  true,  30, 2000, 3, false, 1),
+  (131, 'SW_Bahia_01',           '{203.0.113.240}', NULL,               '{00:00:5E:00:53:B0}',    603,  901, false, true,  60, 2000, 3, false, 1),
+  (120, 'Vega_P_Bahia_AC1',       '{203.0.113.1}',   NULL,               '{00:00:5E:00:53:B1}',    602,  901, true,  true,  30, 2000, 3, false, 2),
+  (121, 'Vega_P_Bahia_AC2',       '{203.0.113.2}',   NULL,               '{00:00:5E:00:53:B2}',    602,  901, true,  true,  30, 2000, 3, false, 3),
+  (122, 'CPE_Bahia_0031',        '{203.0.113.31}',  NULL,               '{}',                     604, NULL, true,  true,  60, 3000, 4, false, 3),
+  (123, 'CPE_Bahia_0058',        '{203.0.113.58}',  NULL,               '{}',                     604, NULL, true,  true,  60, 3000, 4, false, 3),
+  (124, 'CPE_Bahia_0072',        '{203.0.113.72}',  NULL,               '{}',                     604, NULL, true,  true,  60, 3000, 4, false, 1),
+  (125, 'CPE_Bahia_0099',        '{203.0.113.99}',  NULL,               '{}',                     604, NULL, true,  true,  60, 3000, 4, false, 1),
+  (136, 'PRT_Oficina_Central',    '{192.0.2.60}',  NULL,               '{}',                     607, NULL, false, true, 300, 5000, 3, false, 1);
 
 UPDATE devices SET status_label = CASE status
   WHEN 1 THEN 'arriba' WHEN 2 THEN 'caída parcial' WHEN 3 THEN 'caído' ELSE 'sin datos' END;
@@ -204,13 +246,13 @@ UPDATE services SET status_label = CASE status
 -- `master_interface` es el ÍNDICE SNMP de la interfaz, no su nombre: en el
 -- origen viene como entero y el esquema lo respeta.
 INSERT INTO links (id, name, type_id, master_device_id, master_interface, history) VALUES
-  (4001, 'Fibra WAN Fibertel',       801, 101, 1, true),
+  (4001, 'Fibra WAN Proveedor',       801, 101, 1, true),
   (4002, 'Core A ↔ Core B',          801, 102, 9, true),
   (4003, 'PtP Núcleo → Aurora',       802, 102, 3, true),
-  (4004, 'PtP Núcleo → Alvear',      802, 103, 3, true),
-  (4005, 'PtP Aurora → Cerro',        802, 117, 4, true),
+  (4004, 'PtP Núcleo → Bahia',      802, 103, 3, true),
+  (4005, 'PtP Aurora → Cumbre',        802, 117, 4, true),
   (4006, 'Sector Aurora AC2',         804, 110, 2, false),
-  (4007, 'Sector Alvear AC1',        804, 120, 2, false);
+  (4007, 'Sector Bahia AC1',        804, 120, 2, false);
 
 -- ── Mapas ───────────────────────────────────────────────────────────────────
 -- 🔴 `elements_id` es la clave del JOIN en el origen: el `sys-type` de un
@@ -219,9 +261,9 @@ INSERT INTO links (id, name, type_id, master_device_id, master_interface, histor
 
 INSERT INTO maps (id, name, elements_id, background_color,
                   up_color, down_color, partial_color, unknown_color, acked_color) VALUES
-  (1001, 'el ISP — Núcleo',    2001, 16777215, 32768, 16711680, 16753920, 8421504, 255),
+  (1001, 'Ejemplo — Núcleo',    2001, 16777215, 32768, 16711680, 16753920, 8421504, 255),
   (1002, 'Zona Norte — Aurora',   2002, 16777215, 32768, 16711680, 16753920, 8421504, 255),
-  (1003, 'Zona Sur — Alvear',    2003, 16777215, 32768, 16711680, 16753920, 8421504, 255),
+  (1003, 'Zona Sur — Bahia',    2003, 16777215, 32768, 16711680, 16753920, 8421504, 255),
   (1004, 'Mapa vacío (heredado)',2004, 16777215, 32768, 16711680, 16753920, 8421504, 255);
 
 -- Núcleo. Los dos nodos de submapa llevan a los otros mapas.
@@ -269,18 +311,18 @@ INSERT INTO map_elements (id, map_id, kind, x, y, shape, image_id, label, device
   (5208, 1003, 'device', 660, 440, 0, 504, NULL, 125, NULL),
   (5209, 1003, 'device', NULL, NULL, 0, 507, NULL, 136, NULL);
 
--- Rótulos `static`: texto libre del original. En la base real hay 100 y son
--- nombres de puerto puestos al lado de un enlace. No son equipos: no tienen
--- estado, ni icono, ni adónde llevar.
+-- Fichas de anotación (`static`). En la base real hay 100 y NO son adornos:
+-- describen la configuración de VLAN de un puerto, vienen en varias líneas con
+-- CR LF de Windows, y **los enlaces se conectan a ellas**.
 INSERT INTO map_elements (id, map_id, kind, x, y, shape, label) VALUES
-  (5301, 1001, 'static', 300,  95, NULL, 'ether1'),
-  (5302, 1001, 'static', 470, 215, NULL, 'sfp-plus1'),
-  (5303, 1001, 'static', 200, 470, NULL, 'wlan1'),
-  (5304, 1002, 'static', 420, 120, NULL, 'ether5'),
-  (5305, 1002, 'static', 700, 130, NULL, 'wlan2'),
-  (5306, 1003, 'static', 420, 120, NULL, 'ether5'),
+  (5301, 1001, 'static', 300,  95, 0, E'ether1\r\nVLAN2701\r\nUntagged'),
+  (5302, 1001, 'static', 470, 215, 0, E'sfp-plus1-Core\r\nv2703, v2701, v2216, v2214, v2211\r\nTagged'),
+  (5303, 1001, 'static', 200, 470, 0, 'wlan1'),
+  (5304, 1002, 'static', 420, 120, 0, E'ether5\r\nVLAN2211\r\nUntagged'),
+  (5305, 1002, 'static', 700, 130, 0, E'wlan2-Cumbre\r\nVlan3210\r\nTagged'),
+  (5306, 1003, 'static', 420, 120, 0, E'ether5\r\nVLAN2214'),
   -- Sin texto: se descarta en silencio en vez de dibujar un hueco.
-  (5307, 1003, 'static', 700, 120, NULL, '   ');
+  (5307, 1003, 'static', 700, 120, 0, '   ');
 
 -- Enlaces dibujados. `link_from`/`link_to` son ids de OTROS elementos del mismo
 -- mapa, no de dispositivos: eso es lo que resuelve el ETL.
@@ -298,9 +340,13 @@ INSERT INTO map_elements (id, map_id, kind, x, y, shape, link_id, link_from, lin
   (5060, 1001, 'link', NULL, NULL, NULL, 4004, 5004, 5011, 3),
   (5061, 1001, 'link', NULL, NULL, NULL, NULL, 5002, 5012, 2),
   (5062, 1001, 'link', NULL, NULL, NULL, NULL, 5005, 5013, 1),
-  -- Enlace colgado: apunta a un elemento que no está en este mapa. El visor lo
-  -- tiene que descartar sin romper el encuadre.
+  -- 🔴 Los dos casos que el visor tiene que DECLARAR, no esconder.
+  -- Extremo inexistente: referencia colgada, como las 78 de la base real.
   (5063, 1001, 'link', NULL, NULL, NULL, NULL, 5003, 5999, 2),
+  -- Extremo en OTRO mapa: el elemento 5101 se dibuja en «Zona Norte». Es el
+  -- caso de Segmentos, donde 147 enlaces terminan en elementos de Aurora. No se
+  -- puede trazar la línea acá, pero sí ofrecer ir a verla.
+  (5064, 1001, 'link', NULL, NULL, NULL, NULL, 5004, 5101, 2),
 
   (5150, 1002, 'link', NULL, NULL, NULL, NULL, 5101, 5104, 3),
   (5151, 1002, 'link', NULL, NULL, NULL, NULL, 5104, 5102, 2),
@@ -314,6 +360,10 @@ INSERT INTO map_elements (id, map_id, kind, x, y, shape, link_id, link_from, lin
   (5159, 1002, 'link', NULL, NULL, NULL, NULL, 5110, 5111, 2),
   (5160, 1002, 'link', NULL, NULL, NULL, NULL, 5111, 5112, 1),
   (5161, 1002, 'link', NULL, NULL, NULL, NULL, 5111, 5113, 1),
+  -- Enlace que termina en una ficha de anotación. En Segmentos, 212 de 308 son así:
+  -- si el visor no ancla los `static`, estas líneas desaparecen.
+  (5162, 1002, 'link', NULL, NULL, NULL, NULL, 5101, 5304, 1),
+  (5163, 1002, 'link', NULL, NULL, NULL, NULL, 5110, 5305, 1),
 
   (5250, 1003, 'link', NULL, NULL, NULL, NULL, 5201, 5202, 3),
   (5251, 1003, 'link', NULL, NULL, NULL, NULL, 5202, 5203, 2),

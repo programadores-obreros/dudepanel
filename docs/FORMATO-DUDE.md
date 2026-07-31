@@ -28,7 +28,7 @@ alfabéticamente** por nombre de campo.
 |---|---|---|
 | **Todo entero de 4 bytes** | **u32 little-endian, sin excepciones** | `51 02 00 00` = 593 |
 | Puertos | u32 little-endian, como el resto | `A1 00 00 00` = 161 |
-| Direcciones IP | **4 bytes big-endian** | `0A E3 0B 13` = 192.0.2.799 |
+| Direcciones IP | **4 bytes big-endian** | `C0 00 02 0B` = 192.0.2.11 |
 | Listas de IP | N × 4 bytes | 8 bytes = 2 direcciones |
 | Booleanos | 1 byte | `00` no · `01` sí |
 | «Ninguno» | `FF FF FF FF` | **no es 4.294.967.295** |

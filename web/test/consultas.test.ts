@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { construirLienzo } from '@/lib/mapa';
 
 /**
  * Capa de datos contra PostgreSQL de verdad.
@@ -24,6 +25,28 @@ const hayBase = Boolean(URL_BASE) && tienePsql();
 // `describe.skipIf` en vez de fallar: quien clona el repo y corre los tests sin
 // Docker levantado merece un aviso, no un rojo que no dice nada.
 const conBase = describe.skipIf(!hayBase);
+
+/**
+ * En CI, saltear NO es una opción.
+ *
+ * 🔴 `skipIf` hace desaparecer estos tests sin base y la corrida sale VERDE.
+ *    Para el que clona el repo eso está bien. En CI es una mentira: un verde
+ *    que no ejecutó nada se ve igual que un verde que ejecutó todo, y así una
+ *    base mal configurada pasa por «todo en orden» durante meses.
+ *
+ * Vitest resuelve `runIf` al recolectar, así que si esto falla es lo único
+ * rojo y el mensaje dice exactamente qué falta.
+ */
+const EN_CI = !!process.env.CI && process.env.CI !== 'false' && process.env.CI !== '0';
+
+describe('entorno de los tests de base de datos', () => {
+  it.runIf(EN_CI)('en CI la base es obligatoria: saltear sería un verde vacío', () => {
+    expect({
+      hay_TEST_DATABASE_URL_o_DATABASE_URL: Boolean(URL_BASE),
+      hay_psql_en_el_PATH: tienePsql(),
+    }).toEqual({ hay_TEST_DATABASE_URL_o_DATABASE_URL: true, hay_psql_en_el_PATH: true });
+  });
+});
 
 let q: typeof import('@/lib/consultas');
 let db: typeof import('@/lib/db');
@@ -193,6 +216,63 @@ conBase('lienzoMapa', () => {
   });
 });
 
+conBase('enlacesFueraDelMapa', () => {
+  // El silencio es el peligro: si el visor dibuja 107 líneas donde hay 308
+  // enlaces y no dice nada, el operador lee una red menos conectada de la que
+  // tiene. Esta consulta es la que le permite decirlo, y distinguir los dos
+  // motivos, que no son lo mismo.
+  it('separa "está en otro mapa" de "ya no existe"', async () => {
+    const f = await q.enlacesFueraDelMapa(1001);
+    expect(f.otroMapa).toBe(1);
+    expect(f.rotos).toBe(1);
+  });
+
+  it('dice a QUÉ mapa ir, que es lo que vuelve útil la carencia', async () => {
+    const f = await q.enlacesFueraDelMapa(1001);
+    expect(f.destinos).toHaveLength(1);
+    expect(f.destinos[0]).toMatchObject({ id: 1002, nombre: 'Zona Norte — Aurora', enlaces: 1 });
+  });
+
+  it('un mapa con todo resuelto no reporta nada', async () => {
+    const f = await q.enlacesFueraDelMapa(1003);
+    expect(f).toMatchObject({ otroMapa: 0, rotos: 0, destinos: [] });
+  });
+
+  it('la cuenta cierra contra lo que el visor puede dibujar', async () => {
+    // Es la invariante de la barra: total = dibujados + otroMapa + rotos.
+    // Si deja de cerrar, el visor lo declara como "otro motivo" en vez de
+    // esconderlo, pero acá queremos saberlo.
+    const elementos = await q.lienzoMapa(1001);
+    const l = construirLienzo(elementos, await q.estadoSubmapas(1001));
+    const f = await q.enlacesFueraDelMapa(1001);
+    expect(l.enlaces.length + f.otroMapa + f.rotos).toBe(l.enlacesTotales);
+  });
+
+  it('un mapa inexistente no explota', async () => {
+    await expect(q.enlacesFueraDelMapa(999_999)).resolves.toMatchObject({
+      otroMapa: 0,
+      rotos: 0,
+      destinos: [],
+    });
+  });
+});
+
+conBase('lienzoMapa + construirLienzo · las fichas anclan enlaces', () => {
+  it('los enlaces que terminan en una ficha se dibujan', async () => {
+    const l = construirLienzo(await q.lienzoMapa(1002));
+    // 5162 y 5163 del seed van de un equipo a una ficha de anotación.
+    const aFichas = l.enlaces.filter((e) => [5304, 5305].includes(e.a));
+    expect(aFichas).toHaveLength(2);
+  });
+
+  it('las fichas de varias líneas llegan partidas y con el CR limpio', async () => {
+    const l = construirLienzo(await q.lienzoMapa(1002));
+    const ficha = l.rotulos.find((r) => r.id === 5304)!;
+    expect(ficha.lineas).toEqual(['ether5', 'VLAN2211', 'Untagged']);
+    expect(ficha.lineas.join('')).not.toContain('\r');
+  });
+});
+
 conBase('estadoSubmapas y estadosDelMapa', () => {
   it('un submapa con un equipo caído adentro se reporta caído', async () => {
     const m = await q.estadoSubmapas(1001);
@@ -231,15 +311,15 @@ conBase('listarDispositivos', () => {
   });
 
   it('busca por prefijo de IP', async () => {
-    const p = await q.listarDispositivos({ texto: '192.0.2.22' });
+    const p = await q.listarDispositivos({ texto: '203.0.113' });
     expect(p.filas.length).toBeGreaterThan(0);
-    expect(p.filas.every((d) => d.direcciones.some((a) => a.startsWith('192.0.2.22')))).toBe(true);
+    expect(p.filas.every((d) => d.direcciones.some((a) => a.startsWith('203.0.113')))).toBe(true);
   });
 
   it('busca por nombre parcial, sin importar mayúsculas', async () => {
-    const p = await q.listarDispositivos({ texto: 'alvear' });
+    const p = await q.listarDispositivos({ texto: 'bahia' });
     expect(p.filas.length).toBeGreaterThan(0);
-    expect(p.filas.every((d) => /alvear/i.test(d.nombre))).toBe(true);
+    expect(p.filas.every((d) => /bahia/i.test(d.nombre))).toBe(true);
   });
 
   it('una columna de orden inventada no rompe ni inyecta', async () => {
@@ -280,17 +360,23 @@ conBase('obtenerDispositivo', () => {
     expect(d!.nombre).toBe('SRV_Dude_Monitor');
     expect(d!.direcciones).toContain('192.0.2.30');
     expect(d!.dude_server).toBe(true);
-    expect(d!.macs).toContain('02:00:00:00:00:01');
+    expect(d!.macs).toContain('00:00:5E:00:53:20');
   });
 
-  it('no expone ninguna columna de credenciales', async () => {
-    // Contrato del proyecto: el ETL no las lee y el panel no las tiene. Este
-    // test existe para que nadie las agregue "por conveniencia".
-    const d = await q.obtenerDispositivo(105)!;
-    const prohibidas = ['user', 'pwd', 'password', 'community', 'snmp_community', 'secret'];
-    for (const k of Object.keys(d as object)) {
-      expect(prohibidas).not.toContain(k.toLowerCase());
-    }
+  it('expone exactamente los campos acordados, ni uno más', async () => {
+    // Lista CONGELADA. No está para documentar: está para que agregar un campo
+    // al SELECT rompa el test y obligue a mirarlo. Si el campo nuevo
+    // corresponde, se agrega acá y en la misma revisión se ve qué se sumó.
+    const d = await q.obtenerDispositivo(105);
+    expect(Object.keys(d!).sort()).toEqual(
+      [
+        'id', 'nombre', 'tipo', 'tipo_id', 'status', 'status_label',
+        'direcciones', 'dns_names', 'macs', 'perfil_snmp', 'snmp_version',
+        'router_os', 'probe_enabled', 'probe_interval', 'probe_timeout',
+        'probe_down_count', 'dude_server', 'services_total', 'services_up',
+        'services_down',
+      ].sort(),
+    );
   });
 
   it('devuelve null si no existe', async () => {
@@ -312,10 +398,10 @@ conBase('serviciosDe', () => {
 
 conBase('cadenaDePadres / hijosDe', () => {
   it('sube toda la cadena hasta la raíz', async () => {
-    // CPE_Alvear_0031 → AC1 → SW_Alvear → RT_Alvear_Torre → RT_Core_B → BR → WAN
+    // CPE_Bahia_0031 → AC1 → SW_Bahia → RT_Bahia_Torre → RT_Core_B → BR → WAN
     const ps = await q.cadenaDePadres(122);
-    expect(ps.map((p) => p.nombre)).toContain('WAN_Fibertel_Principal');
-    expect(ps[0]!.nombre).toBe('Vega_P_Alvear_AC1');
+    expect(ps.map((p) => p.nombre)).toContain('WAN_Proveedor_Principal');
+    expect(ps[0]!.nombre).toBe('Vega_P_Bahia_AC1');
     expect(ps[0]!.nivel).toBe(1);
   });
 
@@ -332,14 +418,14 @@ conBase('cadenaDePadres / hijosDe', () => {
 
   it('hijosDe devuelve los que cuelgan directamente', async () => {
     const hs = await q.hijosDe(120);
-    expect(hs.map((h) => h.nombre).sort()).toEqual(['CPE_Alvear_0031', 'CPE_Alvear_0058']);
+    expect(hs.map((h) => h.nombre).sort()).toEqual(['CPE_Bahia_0031', 'CPE_Bahia_0058']);
   });
 });
 
 conBase('mapasDeDispositivo', () => {
   it('dice en qué mapas aparece', async () => {
     const ms = await q.mapasDeDispositivo(121);
-    expect(ms.map((m) => m.nombre)).toContain('Zona Sur — Alvear');
+    expect(ms.map((m) => m.nombre)).toContain('Zona Sur — Bahia');
   });
 });
 
@@ -349,19 +435,19 @@ conBase('buscar', () => {
   it('encuentra por nombre', async () => {
     const rs = await q.buscar('Aurora');
     expect(rs.length).toBeGreaterThan(0);
-    expect(rs.every((r) => /ponte/i.test(r.nombre) || /ponte/i.test(r.detalle ?? ''))).toBe(true);
+    expect(rs.every((r) => /aurora/i.test(r.nombre) || /aurora/i.test(r.detalle ?? ''))).toBe(true);
   });
 
   it('encuentra por IP con el MISMO campo', async () => {
     // El operador que llega con un ticket no sabe si tiene el nombre o la IP.
-    const rs = await q.buscar('192.0.2.186');
-    expect(rs[0]!.nombre).toBe('CPE_Alvear_0031');
+    const rs = await q.buscar('203.0.113.31');
+    expect(rs[0]!.nombre).toBe('CPE_Bahia_0031');
   });
 
   it('prioriza la coincidencia de IP por prefijo', async () => {
-    const rs = await q.buscar('192.0.2.11');
+    const rs = await q.buscar('198.51.100');
     expect(rs.length).toBeGreaterThan(0);
-    expect(rs[0]!.detalle).toMatch(/^10\.227\.11/);
+    expect(rs[0]!.detalle).toMatch(/^198\.51\.100/);
   });
 
   it('encuentra mapas además de equipos', async () => {
@@ -382,6 +468,65 @@ conBase('buscar', () => {
   it('respeta el límite', async () => {
     expect((await q.buscar('1', 5)).length).toBeLessThanOrEqual(5);
     expect((await q.buscar('CPE', 3)).length).toBeLessThanOrEqual(3);
+  });
+});
+
+// ── Fuga de datos ───────────────────────────────────────────────────────────
+
+conBase('el panel no filtra lo que no consulta', () => {
+  /**
+   * Busca un VALOR, no un nombre de clave.
+   *
+   * 🔴 Acá había un test que comparaba las claves de la respuesta contra
+   *    `['user','pwd','password','community',…]`. Las claves del panel son
+   *    alias en castellano —`nombre`, `direcciones`, `perfil_snmp`— así que
+   *    NUNCA iban a coincidir: el test no podía fallar. Un `sp.community AS
+   *    clave_snmp` pasaba en verde.
+   *
+   *    El seed planta `CENTINELA-FUGA-9f3a1c7e` en `notifications.subject`,
+   *    la única tabla con texto libre que el panel no consulta jamás. Si el
+   *    valor aparece en alguna respuesta, alguien ensanchó un SELECT.
+   */
+  const CENTINELA = 'CENTINELA-FUGA-9f3a1c7e';
+
+  it('el centinela está en la base — si no, el test no probaría nada', async () => {
+    // Sin esto, borrar la fila del seed dejaría el test verde para siempre.
+    const fila = await db.consultarUna<{ n: number }>(
+      `SELECT count(*)::int AS n FROM notifications WHERE subject = $1`,
+      [CENTINELA],
+    );
+    expect(fila!.n).toBe(1);
+  });
+
+  it('no sale por ninguna respuesta del panel', async () => {
+    const respuestas = await Promise.all([
+      q.ultimaSincronizacion(),
+      q.resumenRed(),
+      q.caidasRecientes(50),
+      q.caidasDe(121, 50),
+      q.listarMapas(),
+      q.obtenerMapa(1001),
+      q.lienzoMapa(1001),
+      q.enlacesFueraDelMapa(1001),
+      q.mapasDeDispositivo(121),
+      q.listarDispositivos({ porPagina: 200 }),
+      q.tiposDeDispositivo(),
+      q.obtenerDispositivo(105),
+      q.serviciosDe(105),
+      q.cadenaDePadres(122),
+      q.hijosDe(120),
+      q.buscar('e', 100),
+      q.buscar('CENTINELA', 100),
+      q.buscar('9f3a1c7e', 100),
+    ]);
+
+    // Serializar y buscar el valor alcanza y sobra: recorre toda la estructura
+    // sin importar en qué campo, a qué profundidad ni con qué nombre aparezca.
+    const todo = JSON.stringify(respuestas, (_k, v) =>
+      v instanceof Map ? Object.fromEntries(v) : v,
+    );
+    expect(todo).not.toContain(CENTINELA);
+    expect(todo).not.toContain('9f3a1c7e');
   });
 });
 

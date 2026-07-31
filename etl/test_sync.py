@@ -191,12 +191,15 @@ def test_el_esquema_no_tiene_columnas_de_credenciales():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_ip_en_big_endian():
-    assert dudeobj.direcciones(bytes.fromhex("0AE30B13")) == ["192.0.2.799"]
+    # C0 00 02 0B → 192.0.2.11. Se usa un rango de documentación (RFC 5737) a
+    # propósito: un test es un archivo público, y una dirección real de la red
+    # de un cliente no tiene por qué vivir en uno.
+    assert dudeobj.direcciones(bytes.fromhex("C000020B")) == ["192.0.2.11"]
 
 
 def test_lista_de_ips():
-    v = bytes.fromhex("0AE30B13") + bytes.fromhex("C0A80001")
-    assert dudeobj.direcciones(v) == ["192.0.2.799", "192.168.0.1"]
+    v = bytes.fromhex("C000020B") + bytes.fromhex("C6336401")
+    assert dudeobj.direcciones(v) == ["192.0.2.11", "198.51.100.1"]
 
 
 def test_ffffffff_es_null_y_no_un_numero():
