@@ -1,0 +1,241 @@
+---
+import '@/styles/global.css';
+import EstadoSync from '@/components/EstadoSync.astro';
+import Buscador from '@/components/Buscador.astro';
+import { ultimaSincronizacion } from '@/lib/consultas';
+
+interface Props {
+  titulo: string;
+  /** Encabezado grande de la página; si falta se usa `titulo`. */
+  encabezado?: string;
+  descripcion?: string;
+  /** El visor de mapas ocupa toda la pantalla y maneja su propio andamiaje. */
+  ancho?: 'normal' | 'completo';
+}
+
+const { titulo, encabezado, descripcion, ancho = 'normal' } = Astro.props;
+
+// La barra de sincronización está en TODAS las páginas, no sólo en el tablero.
+// Si el operador entra directo al detalle de un equipo desde un enlace, tiene
+// que ver igual que los datos están viejos.
+let sync = null;
+let errorSync: string | null = null;
+try {
+  sync = await ultimaSincronizacion();
+} catch (e) {
+  // Que se caiga la base no puede dejar la página en blanco: el chrome de la
+  // aplicación se dibuja igual y el error se muestra donde corresponde.
+  errorSync = e instanceof Error ? e.message : String(e);
+}
+
+const ruta = Astro.url.pathname;
+const activo = (prefijo: string) =>
+  prefijo === '/' ? ruta === '/' : ruta === prefijo || ruta.startsWith(prefijo + '/');
+
+const NAV = [
+  { href: '/', texto: 'Panel', glifo: '▚' },
+  { href: '/mapas', texto: 'Mapas', glifo: '◈' },
+  { href: '/dispositivos', texto: 'Equipos', glifo: '▤' },
+] as const;
+---
+
+<!doctype html>
+<html lang="es-AR" class="h-full">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>{titulo} · Red el ISP</title>
+    {descripcion && <meta name="description" content={descripcion} />}
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f7f8fa" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#1a1c22" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    {/* Es una herramienta interna: no hay nada que indexar. */}
+    <meta name="robots" content="noindex, nofollow" />
+
+    {/* Resolver el tema ANTES del primer pintado. Un flash blanco a las 3 de la
+        mañana no es un detalle estético: encandila. Por eso va inline y no en
+        un módulo diferido. */}
+    <script is:inline>
+      (() => {
+        try {
+          const g = localStorage.getItem('tema');
+          const oscuro = g === 'oscuro' || (!g && matchMedia('(prefers-color-scheme: dark)').matches);
+          document.documentElement.classList.toggle('dark', oscuro);
+        } catch {
+          /* localStorage bloqueado: queda el tema claro, que es el valor por defecto. */
+        }
+      })();
+    </script>
+  </head>
+
+  <body class="bg-lienzo text-tinta flex min-h-full flex-col">
+    <a
+      href="#contenido"
+      class="bg-acento sr-only rounded-md px-3 py-2 text-white focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50"
+    >
+      Saltar al contenido
+    </a>
+
+    <header class="border-borde bg-panel/85 sticky top-0 z-30 border-b backdrop-blur-md">
+      <div class="mx-auto flex h-14 max-w-[1600px] items-center gap-3 px-3 sm:px-5">
+        <a href="/" class="flex shrink-0 items-center gap-2 no-underline" aria-label="Ir al panel">
+          <span
+            class="bg-acento grid size-7 place-items-center rounded-md font-mono text-sm font-bold text-white"
+            aria-hidden="true">T</span
+          >
+          <span class="hidden text-sm leading-tight font-semibold sm:block">
+            el ISP<span class="text-tenue font-normal"> · Red</span>
+          </span>
+        </a>
+
+        <nav aria-label="Secciones" class="ml-1 hidden items-center gap-0.5 md:flex">
+          {
+            NAV.map((n) => (
+              <a
+                href={n.href}
+                aria-current={activo(n.href) ? 'page' : undefined}
+                class:list={[
+                  'rounded-md px-2.5 py-1.5 text-sm font-medium no-underline transition-colors',
+                  activo(n.href)
+                    ? 'bg-acento-bg text-acento-txt'
+                    : 'text-tenue hover:bg-panel-2 hover:text-tinta',
+                ]}
+              >
+                {n.texto}
+              </a>
+            ))
+          }
+        </nav>
+
+        <div class="ml-auto flex items-center gap-2">
+          <div class="hidden sm:block">
+            <EstadoSync sync={sync} variante="chip" />
+          </div>
+
+          <button
+            type="button"
+            data-abrir-buscador
+            class="border-borde bg-panel-2 text-tenue hover:text-tinta hover:border-borde-fuerte flex items-center gap-2 rounded-lg border py-1.5 pr-1.5 pl-2.5 text-sm transition-colors"
+            aria-label="Buscar equipos y mapas"
+          >
+            <svg class="size-4" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="1.8"></circle>
+              <path d="m16 16 4.5 4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+              ></path>
+            </svg>
+            <span class="hidden lg:inline">Buscar</span>
+            <kbd
+              class="border-borde bg-panel text-2xs text-tenue hidden rounded border px-1.5 py-0.5 font-sans lg:inline"
+              >Ctrl K</kbd
+            >
+          </button>
+
+          <button
+            type="button"
+            data-cambiar-tema
+            class="border-borde bg-panel-2 text-tenue hover:text-tinta grid size-8 place-items-center rounded-lg border transition-colors"
+            aria-label="Cambiar entre tema claro y oscuro"
+          >
+            <svg class="size-4 dark:hidden" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"
+                stroke="currentColor"
+                stroke-width="1.7"
+                stroke-linejoin="round"></path>
+            </svg>
+            <svg class="hidden size-4 dark:block" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="1.7"></circle>
+              <path
+                d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.4 1.4"
+                stroke="currentColor"
+                stroke-width="1.7"
+                stroke-linecap="round"></path>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      {/* En pantallas chicas el chip no entra arriba, así que va en su propia
+          línea: es información que no puede quedar afuera por falta de lugar. */}
+      <div class="border-borde/70 bg-panel-2/60 border-t px-3 py-1 sm:hidden">
+        <EstadoSync sync={sync} variante="chip" />
+      </div>
+    </header>
+
+    <main
+      id="contenido"
+      class:list={[
+        'flex-1',
+        ancho === 'normal' && 'mx-auto w-full max-w-[1600px] px-3 py-4 pb-24 sm:px-5 sm:py-6 md:pb-8',
+        ancho === 'completo' && 'flex min-h-0 flex-col pb-20 md:pb-0',
+      ]}
+    >
+      {
+        errorSync && (
+          <div class="border-caido bg-caido-bg text-caido-txt mx-3 mb-4 rounded-xl border-2 p-4 sm:mx-0">
+            <p class="font-bold">No se puede consultar la base del panel</p>
+            <p class="mt-1 font-mono text-xs break-all">{errorSync}</p>
+            <p class="mt-2 text-xs opacity-90">
+              Revisá <code class="font-mono">DATABASE_URL</code> y que PostgreSQL esté levantado.
+            </p>
+          </div>
+        )
+      }
+
+      {
+        encabezado !== undefined && ancho === 'normal' && (
+          <div class="mb-4 flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <h1 class="text-xl font-bold tracking-tight sm:text-2xl">{encabezado || titulo}</h1>
+              {descripcion && <p class="text-tenue mt-0.5 text-sm">{descripcion}</p>}
+            </div>
+            <slot name="acciones" />
+          </div>
+        )
+      }
+
+      <slot />
+    </main>
+
+    {/* Barra inferior: en un celular, durante una guardia, el pulgar no llega
+        arriba. Se oculta en escritorio, donde ya está la nav del header. */}
+    <nav
+      aria-label="Secciones"
+      class="border-borde bg-panel/95 fixed inset-x-0 bottom-0 z-30 grid grid-cols-4 border-t pb-[env(safe-area-inset-bottom)] backdrop-blur-md md:hidden"
+    >
+      {
+        NAV.map((n) => (
+          <a
+            href={n.href}
+            aria-current={activo(n.href) ? 'page' : undefined}
+            class:list={[
+              'flex flex-col items-center gap-0.5 py-2 text-2xs font-medium no-underline',
+              activo(n.href) ? 'text-acento-txt' : 'text-tenue',
+            ]}
+          >
+            <span class="text-base leading-none" aria-hidden="true">
+              {n.glifo}
+            </span>
+            {n.texto}
+          </a>
+        ))
+      }
+      <button
+        type="button"
+        data-abrir-buscador
+        class="text-tenue text-2xs flex flex-col items-center gap-0.5 py-2 font-medium"
+      >
+        <span class="text-base leading-none" aria-hidden="true">⌕</span>
+        Buscar
+      </button>
+    </nav>
+
+    <Buscador />
+
+    <script>
+      import '@/scripts/tema';
+      import '@/scripts/buscador';
+    </script>
+  </body>
+</html>

@@ -1,0 +1,333 @@
+---
+import Base from '@/layouts/Base.astro';
+import Pildora from '@/components/Pildora.astro';
+import ListaCaidas from '@/components/ListaCaidas.astro';
+import {
+  cadenaDePadres,
+  caidasDe,
+  hijosDe,
+  mapasDeDispositivo,
+  obtenerDispositivo,
+  serviciosDe,
+} from '@/lib/consultas';
+import { desde, duracion, fechaLarga, numero } from '@/lib/formato';
+
+const id = Number(Astro.params.id);
+if (!Number.isInteger(id) || id <= 0) return Astro.redirect('/dispositivos', 302);
+
+let d = null;
+let servicios: Awaited<ReturnType<typeof serviciosDe>> = [];
+let padres: Awaited<ReturnType<typeof cadenaDePadres>> = [];
+let hijos: Awaited<ReturnType<typeof hijosDe>> = [];
+let mapas: Awaited<ReturnType<typeof mapasDeDispositivo>> = [];
+let caidas: Awaited<ReturnType<typeof caidasDe>> = [];
+let error: string | null = null;
+
+try {
+  d = await obtenerDispositivo(id);
+  if (d) {
+    [servicios, padres, hijos, mapas, caidas] = await Promise.all([
+      serviciosDe(id),
+      cadenaDePadres(id),
+      hijosDe(id),
+      mapasDeDispositivo(id),
+      caidasDe(id, 20),
+    ]);
+  }
+} catch (e) {
+  error = e instanceof Error ? e.message : String(e);
+}
+
+if (!d && !error) return new Response('Equipo no encontrado', { status: 404 });
+
+// El padre caído es el dato que resuelve la guardia: si el troncal está abajo,
+// que este equipo esté abajo no es una falla propia, es una consecuencia.
+const padreCaido = padres.find((p) => p.status === 3);
+
+const SNMP = ['v1', 'v2c', 'v3'];
+---
+
+<Base titulo={d?.nombre ?? 'Equipo'}>
+  {
+    error ? (
+      <div class="border-caido bg-caido-bg text-caido-txt rounded-xl border-2 p-4">
+        <p class="font-bold">No se pudo leer el equipo</p>
+        <p class="mt-1 font-mono text-xs break-all">{error}</p>
+      </div>
+    ) : (
+      <div class="flex flex-col gap-4">
+        {/* ── Encabezado ─────────────────────────────────────────────────── */}
+        <div>
+          <nav aria-label="Migas" class="text-tenue text-2xs">
+            <a href="/dispositivos" class="enlace">Equipos</a>
+            <span aria-hidden="true"> / </span>
+          </nav>
+          <div class="mt-0.5 flex flex-wrap items-center gap-2.5">
+            <h1 class="text-xl font-bold tracking-tight sm:text-2xl">{d!.nombre}</h1>
+            <Pildora estado={d!.status} />
+            {d!.router_os && (
+              <span class="border-borde text-tenue text-2xs rounded border px-1.5 py-0.5 font-semibold">
+                RouterOS
+              </span>
+            )}
+            {d!.dude_server && (
+              <span class="border-acento/50 bg-acento-bg text-acento-txt text-2xs rounded border px-1.5 py-0.5 font-semibold">
+                Servidor de The Dude
+              </span>
+            )}
+          </div>
+          {d!.direcciones.length > 0 && (
+            <p class="text-tenue mt-1 font-mono text-sm">{d!.direcciones.join(' · ')}</p>
+          )}
+        </div>
+
+        {padreCaido && (
+          <div class="border-parcial bg-parcial-bg text-parcial-txt rounded-xl border-2 p-3">
+            <p class="text-sm font-bold">Puede ser arrastre, no falla propia</p>
+            <p class="mt-0.5 text-xs">
+              De este equipo depende{' '}
+              <a href={`/dispositivos/${padreCaido.id}`} class="font-semibold underline">
+                {padreCaido.nombre ?? `#${padreCaido.id}`}
+              </a>
+              , que también está caído. Arreglá ese primero.
+            </p>
+          </div>
+        )}
+
+        <div class="grid gap-4 lg:grid-cols-[2fr_1fr]">
+          <div class="flex flex-col gap-4">
+            {/* ── Servicios ───────────────────────────────────────────────── */}
+            <section class="tarjeta overflow-hidden" aria-labelledby="t-srv">
+              <header class="border-borde flex items-center justify-between gap-2 border-b px-3 py-2">
+                <h2 id="t-srv" class="text-sm font-semibold">Servicios monitoreados</h2>
+                <span class="text-tenue text-2xs cifra">
+                  {d!.services_up} de {d!.services_total} arriba
+                </span>
+              </header>
+
+              {servicios.length === 0 ? (
+                <p class="text-tenue px-3 py-6 text-center text-xs">
+                  Sin servicios monitoreados. El equipo está cargado pero nadie lo sondea.
+                </p>
+              ) : (
+                <div class="overflow-x-auto">
+                  <table class="w-full border-collapse text-left">
+                    <thead>
+                      <tr class="border-borde bg-panel-2 text-2xs border-b uppercase">
+                        <th scope="col" class="w-28 px-2.5 py-1.5 font-semibold">Estado</th>
+                        <th scope="col" class="px-2.5 py-1.5 font-semibold">Sonda</th>
+                        <th scope="col" class="px-2.5 py-1.5 text-right font-semibold">
+                          Así desde hace
+                        </th>
+                        {/* 🔴 `timeLastDown` es una DURACIÓN, no una fecha: es
+                            cuánto duró la última caída. Ver `Servicio`. */}
+                        <th scope="col" class="hidden px-2.5 py-1.5 text-right font-semibold sm:table-cell">
+                          Última caída duró
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody class="divide-borde divide-y">
+                      {servicios.map((s) => (
+                        <tr>
+                          <td class="px-2.5 py-1.5">
+                            <Pildora estado={s.status} />
+                          </td>
+                          <td class="px-2.5 py-1.5 text-sm">
+                            {s.sonda ?? <span class="text-tenue">sonda #{s.id}</span>}
+                            {s.probe_port ? (
+                              <span class="text-tenue text-2xs font-mono"> :{s.probe_port}</span>
+                            ) : null}
+                            <span class="mt-0.5 flex flex-wrap gap-1.5">
+                              {s.enabled === false && (
+                                <span class="text-tenue border-borde text-2xs rounded border px-1">
+                                  deshabilitada
+                                </span>
+                              )}
+                              {s.acked && (
+                                <span class="text-acento-txt border-acento/40 text-2xs rounded border px-1">
+                                  reconocida
+                                </span>
+                              )}
+                              {(s.probes_down ?? 0) > 0 && (
+                                <span class="text-caido-txt text-2xs">
+                                  {s.probes_down} fallos seguidos
+                                </span>
+                              )}
+                            </span>
+                          </td>
+                          <td
+                            class="px-2.5 py-1.5 text-right text-xs tabular-nums"
+                            title={fechaLarga(s.cambio_en)}
+                          >
+                            {desde(s.cambio_en)}
+                          </td>
+                          <td class="text-tenue hidden px-2.5 py-1.5 text-right text-xs tabular-nums sm:table-cell">
+                            {s.duro_caido_s ? duracion(s.duro_caido_s) : '—'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+
+            {/* ── Historial ───────────────────────────────────────────────── */}
+            <section class="tarjeta overflow-hidden" aria-labelledby="t-hist">
+              <header class="border-borde flex items-center justify-between gap-2 border-b px-3 py-2">
+                <h2 id="t-hist" class="text-sm font-semibold">Historial de caídas</h2>
+                <span class="text-tenue text-2xs">últimas {numero(caidas.length)}</span>
+              </header>
+              <ListaCaidas
+                caidas={caidas}
+                conEquipo={false}
+                vacio="Este equipo nunca registró una caída."
+              />
+            </section>
+          </div>
+
+          {/* ── Barra lateral ─────────────────────────────────────────────── */}
+          <aside class="flex flex-col gap-4">
+            <section class="tarjeta p-3" aria-labelledby="t-ficha">
+              <h2 id="t-ficha" class="text-tenue text-2xs mb-2 font-semibold tracking-wide uppercase">
+                Ficha
+              </h2>
+              <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-xs">
+                <dt class="text-tenue">Tipo</dt>
+                <dd>{d!.tipo ?? '—'}</dd>
+
+                <dt class="text-tenue">Direcciones</dt>
+                <dd class="font-mono break-all">{d!.direcciones.join(', ') || '—'}</dd>
+
+                {d!.dns_names && (
+                  <>
+                    <dt class="text-tenue">DNS</dt>
+                    <dd class="font-mono break-all">{d!.dns_names}</dd>
+                  </>
+                )}
+
+                {d!.macs?.length > 0 && (
+                  <>
+                    <dt class="text-tenue">MAC</dt>
+                    <dd class="font-mono break-all">{d!.macs.join(', ')}</dd>
+                  </>
+                )}
+
+                <dt class="text-tenue">SNMP</dt>
+                <dd>
+                  {d!.perfil_snmp ? (
+                    <>
+                      {d!.perfil_snmp}
+                      {d!.snmp_version != null && (
+                        <span class="text-tenue"> ({SNMP[d!.snmp_version] ?? '?'})</span>
+                      )}
+                    </>
+                  ) : (
+                    <span class="text-tenue">hereda del servidor</span>
+                  )}
+                </dd>
+
+                <dt class="text-tenue">Sondeo</dt>
+                <dd>
+                  {d!.probe_enabled === false ? (
+                    <span class="text-parcial-txt font-semibold">deshabilitado</span>
+                  ) : (
+                    <>
+                      cada {d!.probe_interval ? `${d!.probe_interval} s` : 'lo del servidor'}
+                      {d!.probe_down_count ? `, ${d!.probe_down_count} fallos para caer` : ''}
+                    </>
+                  )}
+                </dd>
+
+                <dt class="text-tenue">Id</dt>
+                <dd class="font-mono">{d!.id}</dd>
+              </dl>
+
+              {/* Nota permanente: el panel NO tiene las credenciales y eso es
+                  deliberado, no un olvido. Que quede escrito evita que alguien
+                  "arregle" el ETL agregándolas. */}
+              <p class="border-borde text-tenue text-2xs mt-3 border-t pt-2">
+                El panel no guarda usuarios ni contraseñas de los equipos. El ETL no los lee.
+              </p>
+            </section>
+
+            {/* ── Dependencias ────────────────────────────────────────────── */}
+            <section class="tarjeta overflow-hidden" aria-labelledby="t-dep">
+              <h2 id="t-dep" class="border-borde border-b px-3 py-2 text-sm font-semibold">
+                Depende de
+              </h2>
+              {padres.length === 0 ? (
+                <p class="text-tenue px-3 py-4 text-xs">
+                  No cuelga de ningún equipo. Es raíz de la topología.
+                </p>
+              ) : (
+                <ul class="divide-borde divide-y">
+                  {padres.map((v) => (
+                    <li>
+                      <a
+                        href={`/dispositivos/${v.id}`}
+                        class="hover:bg-panel-2 flex items-center gap-2 px-3 py-1.5 no-underline"
+                        style={`padding-left:${0.75 + (v.nivel - 1) * 0.75}rem`}
+                      >
+                        {v.nivel > 1 && (
+                          <span class="text-tenue text-2xs" aria-hidden="true">
+                            ↳
+                          </span>
+                        )}
+                        <Pildora estado={v.status} compacta />
+                        <span class="truncate text-xs">{v.nombre ?? `#${v.id}`}</span>
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+
+            {hijos.length > 0 && (
+              <section class="tarjeta overflow-hidden" aria-labelledby="t-hijos">
+                <h2 id="t-hijos" class="border-borde border-b px-3 py-2 text-sm font-semibold">
+                  Cuelgan de este · {hijos.length}
+                </h2>
+                <ul class="divide-borde max-h-72 divide-y overflow-y-auto">
+                  {hijos.map((v) => (
+                    <li>
+                      <a
+                        href={`/dispositivos/${v.id}`}
+                        class="hover:bg-panel-2 flex items-center gap-2 px-3 py-1.5 no-underline"
+                      >
+                        <Pildora estado={v.status} compacta />
+                        <span class="truncate text-xs">{v.nombre ?? `#${v.id}`}</span>
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+
+            <section class="tarjeta overflow-hidden" aria-labelledby="t-mapas-d">
+              <h2 id="t-mapas-d" class="border-borde border-b px-3 py-2 text-sm font-semibold">
+                Aparece en
+              </h2>
+              {mapas.length === 0 ? (
+                <p class="text-tenue px-3 py-4 text-xs">En ningún mapa.</p>
+              ) : (
+                <ul class="divide-borde divide-y">
+                  {mapas.map((m) => (
+                    <li>
+                      <a
+                        href={`/mapas/${m.id}`}
+                        class="hover:bg-panel-2 block truncate px-3 py-1.5 text-xs no-underline"
+                      >
+                        {m.nombre}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          </aside>
+        </div>
+      </div>
+    )
+  }
+</Base>

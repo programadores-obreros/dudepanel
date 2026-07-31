@@ -38,7 +38,19 @@ CREATE TABLE IF NOT EXISTS sync_runs (
     links           integer,
     maps            integer,
     map_elements    integer,
-    duration_ms     integer
+    duration_ms     integer,
+
+    -- Agregado el 31/07/2026. The Dude confirma a disco cada 10 s, así que el
+    -- mtime del archivo cambia siempre aunque no haya cambiado ni un objeto.
+    -- Este hash es del contenido ya transformado: si coincide con el de la
+    -- corrida anterior, el ETL no reescribe el snapshot. Sin esto, 30 s de
+    -- intervalo son ~12.000 tuplas muertas por minuto que nadie leyó nunca.
+    snapshot_hash   text,
+    snapshot_reused boolean NOT NULL DEFAULT false,
+
+    -- La historia es incremental: interesa cuánto entró en ESTA corrida.
+    outages_upserted      integer,
+    chart_values_inserted integer
 );
 
 CREATE INDEX IF NOT EXISTS sync_runs_started_idx ON sync_runs (started_at DESC);
@@ -124,6 +136,9 @@ CREATE TABLE IF NOT EXISTS devices (
     id                bigint PRIMARY KEY,
     name              text NOT NULL,
     addresses         inet[] NOT NULL DEFAULT '{}',
+    -- En el origen `dnsNames` es una lista: cada nombre viene precedido por su
+    -- largo en u32 LE. Casi siempre trae uno solo; acá se unen con ', ' para
+    -- no cambiar el tipo de la columna, que ya es contrato con el frontend.
     dns_names         text,
     macs              text[] NOT NULL DEFAULT '{}',
     type_id           bigint REFERENCES device_types(id) ON DELETE SET NULL,
@@ -165,17 +180,50 @@ CREATE TABLE IF NOT EXISTS services (
     probe_interval    integer,
     probe_timeout     integer,
     probe_port        integer,
-    time_last_up      bigint,
-    time_last_down    bigint,
-    time_since_changed bigint
+
+    -- 🔴 Los nombres de estos tres campos vienen de The Dude y MIENTEN sobre lo
+    --    que contienen. Medido el 31/07/2026:
+    --
+    --      timeLastUp / timeLastDown  →  DURACIONES en segundos, no instantes.
+    --        `timeLastDown` coincide exactamente con `outages.duration` de la
+    --        última caída registrada en 251 de los 311 servicios que tienen
+    --        historial. Los valores típicos son 1, 41, 4009: no son fechas.
+    --
+    --      timeSinceChanged  →  al revés: SÍ es un instante, epoch unix.
+    --        732 de 859 servicios caen en el rango del último mes.
+    --
+    --    Se conservan los nombres de origen para que se pueda rastrear de dónde
+    --    salió cada número, y se agrega abajo la columna que el panel necesita.
+    time_last_up      bigint,      -- segundos
+    time_last_down    bigint,      -- segundos
+    time_since_changed bigint,     -- epoch unix
+
+    status_changed_at timestamptz
+        GENERATED ALWAYS AS (to_timestamp(time_since_changed)) STORED
 );
+COMMENT ON COLUMN services.status_changed_at IS
+  'time_since_changed convertido a fecha. Es lo que el panel muestra como '
+  '"caído desde"; la columna cruda queda para poder auditar la conversión.';
 
 CREATE TABLE IF NOT EXISTS links (
     id                bigint PRIMARY KEY,
     name              text,
     type_id           bigint REFERENCES link_types(id) ON DELETE SET NULL,
     master_device_id  bigint REFERENCES devices(id) ON DELETE SET NULL,
-    master_interface  text,
+    -- 🔴 Era `text`, y el cambio es incómodo a propósito. En el origen
+    --    `masterInterface` es un u32 en los 1.171 enlaces, sin una sola
+    --    excepción: es el ifIndex SNMP (2, 3, 5, 2801…), no el nombre.
+    --
+    --    O sea: **el nombre de la interfaz no está en el objeto enlace.** Lo
+    --    tentador era dejar la columna en `text` y escribir "2801" adentro,
+    --    pero eso disfraza el hueco de dato. Un panel que muestra
+    --    "Fibra WAN — 2801" se ve roto, que es lo correcto; uno que muestra
+    --    "Fibra WAN — ether1" con un nombre inventado, no.
+    --
+    --    Dónde SÍ está el nombre: en `chart_sources.name`, que llega como
+    --    'ether10-Wan-aPenielRS (10) @ PenielBS2 tx' — nombre y ifIndex entre
+    --    paréntesis. Ahí se puede resolver, con un JOIN por índice y equipo.
+    master_interface  integer,
     history           boolean
 );
 
@@ -198,6 +246,10 @@ CREATE TABLE IF NOT EXISTS maps (
     devices_down      integer NOT NULL DEFAULT 0,
     elements_total    integer NOT NULL DEFAULT 0
 );
+COMMENT ON TABLE maps IS
+  'Los seis colores son enteros 0xRRGGBB: el frontend los pinta con '
+  '"#" + n.toString(16).padStart(6, "0"). En el origen son cuatro bytes en '
+  'orden R, G, B, 0 — leerlos como u32 little-endian pinta el rojo de azul.';
 COMMENT ON COLUMN maps.elements_id IS
   'El sys-type de los elementos de este mapa ES este número. Ese es el JOIN, y '
   'no es obvio: en el origen no hay ninguna columna que diga "pertenezco al '
@@ -220,8 +272,19 @@ CREATE TABLE IF NOT EXISTS map_elements (
     link_to      bigint,
     link_width   integer,
     CONSTRAINT map_elements_kind_chk
-        CHECK (kind IN ('device', 'network', 'submap', 'link'))
+        CHECK (kind IN ('device', 'network', 'submap', 'link', 'static'))
 );
+COMMENT ON COLUMN map_elements.kind IS
+  '🔴 Se agregó ''static'' el 31/07/2026 al medir que el origen clasifica con '
+  'DOS campos, no con uno: type=1 es enlace (1.170) y sólo si type=0 manda '
+  'itemType (884 device · 2 network · 161 submap · 100 static). Los 100 '
+  '''static'' son rótulos de texto libre —"eth2", "eth4"— sin itemID ni '
+  'linkID: no representan a ningún objeto, sólo se dibujan. Ver dudeobj.ELEMENTO.';
+COMMENT ON COLUMN map_elements.link_from IS
+  'Id de OTRO map_elements. Sin clave foránea a propósito: 58 de los 1.170 '
+  'enlaces apuntan a elementos que ya no existen —restos de borrados en The '
+  'Dude— y 69 apuntan a elementos de OTRO mapa, que es legítimo. El ETL '
+  'resuelve lo que puede y deja NULL lo que no, en vez de rechazar el enlace.';
 
 
 -- ── Historia ────────────────────────────────────────────────────────────────
@@ -234,22 +297,65 @@ CREATE TABLE IF NOT EXISTS outages (
     id            bigserial PRIMARY KEY,
     service_id    bigint,
     device_id     bigint,
+    map_id        bigint,
     started_at    timestamptz,
     ended_at      timestamptz,
     duration_s    bigint,
     UNIQUE (service_id, started_at)
 );
+COMMENT ON TABLE outages IS
+  'Origen: la tabla `outages` de SQLite, que sí es una tabla de verdad y no '
+  'un blob. Su clave `timeAndServiceID` es (time << 32) | serviceID — '
+  'verificado contra sus propias columnas `time` y `serviceID` en las 11.988 '
+  'filas. `ended_at` sale de started_at + duration_s.';
+COMMENT ON COLUMN outages.map_id IS
+  'El origen guarda en qué mapa se vio la caída. Sin clave foránea: los mapas '
+  'se borran y las caídas viejas quedan apuntando a la nada.';
+
+-- Qué es cada `chart_values.source_id`. Sin esta tabla la historia es un
+-- montón de números sin etiqueta: el frontend no puede ni titular un gráfico.
+-- Las 1.083 fuentes distintas de chart_values son EXACTAMENTE los 1.083
+-- objetos running_probe (sys-type 0x29) — coincidencia total, no aproximada.
+CREATE TABLE IF NOT EXISTS chart_sources (
+    id          bigint PRIMARY KEY,
+    name        text NOT NULL,     -- 'ether10-Wan (10) @ PenielBS2 tx'
+    device_id   bigint REFERENCES devices(id) ON DELETE SET NULL,
+    service_id  bigint REFERENCES services(id) ON DELETE SET NULL,
+    link_id     bigint REFERENCES links(id) ON DELETE SET NULL,
+    unit        text,              -- 's' · 'bit/s' · '%'
+    enabled     boolean
+);
+COMMENT ON COLUMN chart_sources.device_id IS
+  'El objeto running_probe TIENE un campo `functionDevice`, y es una trampa: '
+  'está en 0xFFFFFFFF en 1.082 de los 1.083. El equipo se resuelve al revés, '
+  'desde quien consume la fuente — services.dataSourceID (734 sondas) y '
+  'links.rx/txDataSourceID (348) — que juntos cubren 1.082 de 1.083.';
 
 CREATE TABLE IF NOT EXISTS chart_values (
     source_id   bigint NOT NULL,
     bucket      text   NOT NULL,   -- raw · 10min · 2hour · 1day
     ts          timestamptz NOT NULL,
     value       double precision,
-    PRIMARY KEY (source_id, bucket, ts)
+    PRIMARY KEY (source_id, bucket, ts),
+    CONSTRAINT chart_values_bucket_chk
+        CHECK (bucket IN ('raw', '10min', '2hour', '1day'))
 );
 COMMENT ON TABLE chart_values IS
-  'En el origen la clave es sourceIDandTime: un solo entero de 64 bits que '
-  'empaqueta el id de la fuente y el tiempo. El ETL lo desempaqueta.';
+  'En el origen la clave es sourceIDandTime: un entero de 64 bits que empaqueta '
+  '(sourceID << 32) | epoch_unix. El ETL lo desempaqueta. '
+  'El empaquetado NO se dedujo: se comprobó por tres caminos independientes. '
+  '(1) La tabla hermana `outages` trae la misma clase de clave —'
+  'timeAndServiceID— junto a las columnas sueltas `time` y `serviceID`, y ahí '
+  '(time << 32) | serviceID reproduce la clave exacta en las 11.988 filas. '
+  '(2) Los 32 bits altos de chart_values dan 1.083 valores distintos y los '
+  '1.083 están en objs como running_probe: coincidencia perfecta. '
+  '(3) Los 32 bits bajos, leídos como epoch, caen clavados en la grilla de '
+  'cada bucket: 1day a las 00:00:00 UTC exactas, 2hour a las horas pares, '
+  '10min a los múltiplos de 600 s. Un desempaquetado equivocado no produce '
+  'timestamps redondos por casualidad.';
+COMMENT ON COLUMN chart_values.value IS
+  'Puede ser NULL: el origen guarda huecos explícitos para los períodos en que '
+  'la sonda no midió. NULL es "no hay dato", que no es lo mismo que 0.';
 
 
 -- ── Índices ─────────────────────────────────────────────────────────────────
@@ -265,7 +371,11 @@ CREATE INDEX IF NOT EXISTS map_elements_map_idx    ON map_elements (map_id);
 CREATE INDEX IF NOT EXISTS map_elements_device_idx ON map_elements (device_id);
 CREATE INDEX IF NOT EXISTS device_parents_parent_idx ON device_parents (parent_id);
 CREATE INDEX IF NOT EXISTS outages_device_idx      ON outages (device_id, started_at DESC);
-CREATE INDEX IF NOT EXISTS chart_values_lookup_idx ON chart_values (source_id, bucket, ts DESC);
+CREATE INDEX IF NOT EXISTS outages_service_idx     ON outages (service_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS chart_sources_device_idx ON chart_sources (device_id);
+-- La clave primaria ya sirve para (source_id, bucket, ts), y de paso es lo que
+-- el ETL usa para saber hasta dónde replicó cada fuente: `max(ts) GROUP BY
+-- (source_id, bucket)` se resuelve por índice, sin tocar 1,5 millones de filas.
 
 -- Búsqueda por texto. `pg_trgm` permite encontrar "Aurora" dentro de
 -- "Vega_P_Ponte_AC2" y tolera errores de tipeo — con LIKE '%...%' sobre 885

@@ -1,0 +1,29 @@
+---
+import { metaEstado } from '@/lib/estado';
+
+interface Props {
+  estado: unknown;
+  /** En tablas apretadas se muestra sólo el glifo, con el texto accesible. */
+  compacta?: boolean;
+  /** Texto alternativo, p. ej. el `status_label` que viene de The Dude. */
+  texto?: string | null;
+  class?: string;
+}
+
+const { estado, compacta = false, texto, class: clase = '' } = Astro.props;
+const m = metaEstado(estado);
+const etiqueta = texto?.trim() || m.etiqueta;
+---
+
+{/* El glifo va aria-hidden y la palabra siempre está en el DOM: quien usa
+    lector de pantalla escucha "Caído", no "equis". */}
+<span class={`pildora pildora-${m.clave} ${clase}`} title={compacta ? etiqueta : undefined}>
+  <span class="glifo" aria-hidden="true">{m.glifo}</span>
+  {
+    compacta ? (
+      <span class="sr-only">{etiqueta}</span>
+    ) : (
+      <span>{etiqueta}</span>
+    )
+  }
+</span>

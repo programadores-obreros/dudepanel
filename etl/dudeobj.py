@@ -61,9 +61,31 @@ TIPO = {
     0x01: "list",
 }
 
-#: itemType de un elemento de mapa. Medido, no supuesto:
-#: 2.054 dispositivos · 2 redes · 161 submapas · 100 enlaces.
-ELEMENTO = {0: "device", 1: "network", 2: "submap", 3: "link"}
+#: 🔴 CORREGIDO el 31/07/2026. Un elemento de mapa se clasifica con DOS campos,
+#:    no con uno, y FORMATO-DUDE.md documenta mal este punto.
+#:
+#:    `type` es el discriminador de primer nivel:
+#:        type = 1  → es un ENLACE   (usa linkID / linkFrom / linkTo)
+#:        type = 0  → es un NODO     (y recién ahí manda `itemType`)
+#:
+#:    Medida completa sobre los 2.317 elementos, cruzando ambos campos:
+#:
+#:      type  itemType   n     linkID   itemID apunta a
+#:      ───────────────────────────────────────────────────
+#:        0       0     884       —     device   (884/884)
+#:        0       1       2       —     network  (2/2)
+#:        0       2     161       —     map      (161/161)
+#:        0       3     100       —     nada  → rótulo de texto libre
+#:        1       0   1.170    1.170    nada  → enlace
+#:
+#:    El doc dice «itemType 0 = dispositivo (2.054), itemType 3 = enlace (100)».
+#:    Los 2.054 son 884 dispositivos + 1.170 enlaces sumados por ignorar `type`,
+#:    y los «100 enlaces» son en realidad 100 rótulos: ninguno tiene linkID.
+#:    Los enlaces de verdad son 1.170 — uno por cada objeto enlace menos uno.
+ELEMENTO = {0: "device", 1: "network", 2: "submap", 3: "static"}
+
+#: Un elemento con `type` = 1 es un enlace, sin importar su `itemType`.
+ELEMENTO_ENLACE = 1
 
 #: status de un servicio. Derivado de los cuatro colores que define la
 #: configuración del servidor y verificado contra la interfaz web de The Dude.
@@ -73,8 +95,15 @@ ESTADO = {0: "unknown", 1: "up", 2: "partial", 3: "down"}
 #: en forma recuperable —tiene que presentarlas al autenticarse, no puede usar
 #: hashes— y un panel de sólo lectura no tiene razón para conocerlas.
 #: No se enmascaran: no se leen. Una base que no las contiene no las filtra.
+#:
+#: 🔴 `customField` se agregó el 31/07/2026 y NO es paranoia preventiva: en la
+#:    base de el ISP seis dispositivos tienen la contraseña del equipo escrita
+#:    a mano en `customField1`, en claro y con formato `usuario:clave`. El campo
+#:    es texto libre, así que la convención de nombres no protege nada: lo único
+#:    que protege es no leerlo.
 SECRETO = re.compile(
-    r"(pass|pwd|secret|community|privkey|authkey|wpa|psk|^user$)", re.I
+    r"(pass|pwd|secret|community|privkey|authkey|wpa|psk|customField|^user$)",
+    re.I,
 )
 
 #: Campos que SIEMPRE son números aunque sus bytes caigan en rango imprimible.
@@ -85,8 +114,27 @@ _NUMERICO = re.compile(
     re.I,
 )
 
-#: Estos van en big-endian. El resto de los enteros va en little-endian.
-_BIG_ENDIAN = re.compile(r"(port|^time|snmpType)", re.I)
+#: 🔴 CORREGIDO el 31/07/2026. Acá había una regla `(port|^time|snmpType)` que
+#:    leía esos campos en big-endian. **Está mal: TODO entero de 4 bytes de este
+#:    formato es little-endian.** Sólo son big-endian el `u16` de largo del
+#:    encabezado de cada registro y las IPv4, que se decodifican aparte.
+#:
+#:    Medido sobre la base real, comparando las dos lecturas:
+#:
+#:      campo                bytes          little-endian   big-endian
+#:      ────────────────────────────────────────────────────────────────────
+#:      probe 'http'.defaultPort   50 00 00 00        80    1.342.177.280
+#:      probe 'ssh'.defaultPort    16 00 00 00        22      369.098.752
+#:      snmpProfile.port           a1 00 00 00       161    2.701.131.776
+#:      config.webServerPort       91 1f 00 00     8.081    2.434.727.936
+#:      config.snmpTrapPort        a2 00 00 00       162    2.717.908.992
+#:      linkType 'ethernet'.snmpType 06 00 00 00       6      100.663.296
+#:
+#:    80, 22, 161, 8081, 162 y el ifType 6 de IANA no son coincidencias.
+#:
+#:    El error venía del propio FORMATO-DUDE.md, que documenta «puertos en
+#:    big-endian, `00 A1` = 161». Los bytes reales son `A1 00 00 00`: alguien
+#:    vio el `A1` primero y lo leyó al revés.
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -128,18 +176,18 @@ def texto(v: bytes) -> str | None:
 
 
 def entero(nombre: str, v: bytes) -> int | None:
-    """Entero, respetando el endianness que corresponde al campo.
+    """Entero little-endian. Devuelve None para 0xFFFFFFFF («ninguno»).
 
-    Devuelve None para 0xFFFFFFFF, que en The Dude significa «ninguno».
+    `nombre` ya no decide el endianness —ver la nota de arriba: no hay campos
+    big-endian— pero sigue en la firma porque toda la API del módulo es
+    `(campo, bytes)` y porque, si algún día apareciera una excepción medida,
+    este es el único lugar donde tendría que vivir.
     """
     if len(v) not in (1, 2, 4):
         return None
-    if len(v) == 4 and v == b"\xff\xff\xff\xff":
-        return None
     if len(v) == 1:
         return v[0]
-    orden = "big" if _BIG_ENDIAN.search(nombre) else "little"
-    n = int.from_bytes(v, orden)
+    n = int.from_bytes(v, "little")
     return None if n == NINGUNO else n
 
 
@@ -169,6 +217,49 @@ def ids(v: bytes) -> list[int]:
     ]
 
 
+def cadenas(v: bytes) -> list[str]:
+    """Lista de cadenas, cada una precedida por su largo en u32 little-endian.
+
+    Es un tercer encaje de listas que FORMATO-DUDE.md no menciona —hay listas
+    de 4 bytes (ids, IPs) y de 6 (MAC), pero las de texto son de largo variable
+    y necesitan el prefijo. Se usa al menos en `dnsNames`.
+
+    Si el recorrido no cierra exacto en el final del campo, devuelve [] en vez
+    de adivinar: un nombre DNS mal cortado es peor que ninguno.
+    """
+    salida: list[str] = []
+    i = 0
+    while i + 4 <= len(v):
+        (n,) = struct.unpack_from("<I", v, i)
+        i += 4
+        if n > len(v) - i:
+            return []
+        salida.append(v[i:i + n].decode("latin-1", "replace"))
+        i += n
+    return salida if i == len(v) else []
+
+
+def color(v: bytes) -> int | None:
+    """Color de The Dude → entero 0xRRGGBB, listo para `#%06x`.
+
+    Son 4 bytes en orden R, G, B, 0 (el COLORREF de Windows leído como entero
+    little-endian da lo mismo). El cuarto byte es siempre 0 y NO es alfa.
+
+    Medido contra los colores que el propio The Dude usa para pintar el mapa:
+
+        upColor            1b d0 11 00  →  #1bd011   verde
+        downCompleteColor  ff 06 06 00  →  #ff0606   rojo
+        downPartialColor   ff 80 00 00  →  #ff8000   naranja
+        unknownColor       d2 d2 d2 00  →  #d2d2d2   gris
+
+    Leerlo como u32 little-endian daría #0606ff para «caído»: azul. Que el rojo
+    salga rojo y el naranja naranja es la prueba de que el orden es R, G, B.
+    """
+    if v is None or len(v) != 4 or v == b"\xff\xff\xff\xff":
+        return None
+    return (v[0] << 16) | (v[1] << 8) | v[2]
+
+
 def macs(v: bytes) -> list[str]:
     """Direcciones MAC, 6 bytes cada una."""
     if not v or len(v) % 6:
@@ -194,6 +285,11 @@ def valor(nombre: str, v: bytes):
     if nombre == "macs":
         m = macs(v)
         return m or None
+    if nombre == "dnsNames":
+        c = cadenas(v)
+        return c or None
+    if nombre.endswith("Color"):
+        return color(v)
     if len(v) == 1:
         return v[0]
     if _NUMERICO.search(nombre) or not _imprimible(v):
@@ -254,6 +350,18 @@ class Objeto:
     def ips(self, nombre: str) -> list[str]:
         v = self.campos.get(nombre)
         return [] if v is None else direcciones(v)
+
+    def macs(self, nombre: str = "macs") -> list[str]:
+        v = self.campos.get(nombre)
+        return [] if v is None else macs(v)
+
+    def cadenas(self, nombre: str) -> list[str]:
+        v = self.campos.get(nombre)
+        return [] if v is None else cadenas(v)
+
+    def color(self, nombre: str) -> int | None:
+        v = self.campos.get(nombre)
+        return None if v is None else color(v)
 
 
 def objeto(oid: int, blob: bytes) -> Objeto:

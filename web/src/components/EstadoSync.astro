@@ -1,0 +1,88 @@
+---
+import { saludSync, type Sincronizacion, type SaludSync } from '@/lib/consultas';
+import { duracion, fechaLarga } from '@/lib/formato';
+import { TEXTOS_SYNC } from '@/lib/textos-sync';
+
+interface Props {
+  sync: Sincronizacion | null;
+  /** `chip` va en la barra superior; `aviso` es el cartel de alarma. */
+  variante: 'chip' | 'aviso';
+}
+
+const { sync, variante } = Astro.props;
+const salud: SaludSync = saludSync(sync);
+const t = TEXTOS_SYNC[salud];
+const edad = sync ? duracion(sync.edad_s) : null;
+---
+
+{
+  variante === 'chip' && (
+    <div
+      id="chip-sync"
+      data-salud={salud}
+      class="group inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-2xs font-medium whitespace-nowrap
+             border-borde bg-panel-2 text-tenue
+             data-[salud=demorada]:border-parcial/50 data-[salud=demorada]:bg-parcial-bg data-[salud=demorada]:text-parcial-txt
+             data-[salud=vieja]:border-caido/50 data-[salud=vieja]:bg-caido-bg data-[salud=vieja]:text-caido-txt
+             data-[salud=fallida]:border-caido/50 data-[salud=fallida]:bg-caido-bg data-[salud=fallida]:text-caido-txt
+             data-[salud=sin-datos]:border-caido/50 data-[salud=sin-datos]:bg-caido-bg data-[salud=sin-datos]:text-caido-txt"
+      title={
+        sync
+          ? `Última sincronización: ${fechaLarga(sync.terminada ?? sync.iniciada)}` +
+            (sync.snapshot_reused ? ' · sin cambios respecto de la anterior' : '')
+          : t.corto
+      }
+    >
+      {/* El punto no lleva significado propio: al lado siempre va el texto. */}
+      <span
+        aria-hidden="true"
+        class="size-1.5 rounded-full bg-up
+               group-data-[salud=demorada]:bg-parcial
+               group-data-[salud=vieja]:bg-caido
+               group-data-[salud=fallida]:bg-caido
+               group-data-[salud=sin-datos]:bg-caido"
+      />
+      <span class="sr-only">Estado de la sincronización de datos:</span>
+      <span data-sync-texto>
+        {salud === 'fresca' && edad ? `Sincronizado hace ${edad}` : t.corto}
+      </span>
+    </div>
+  )
+}
+
+{
+  variante === 'aviso' && (
+    /* Siempre en el DOM aunque esté sano: así el refresco en vivo puede
+       mostrarlo sin reconstruir la página, que es justo lo que no queremos. */
+    <div
+      id="aviso-sync"
+      data-salud={salud}
+      role="status"
+      aria-live="polite"
+      hidden={salud === 'fresca'}
+      class="rounded-xl border-2 p-3 sm:p-4
+             border-parcial bg-parcial-bg text-parcial-txt
+             data-[salud=vieja]:border-caido data-[salud=vieja]:bg-caido-bg data-[salud=vieja]:text-caido-txt
+             data-[salud=fallida]:border-caido data-[salud=fallida]:bg-caido-bg data-[salud=fallida]:text-caido-txt
+             data-[salud=sin-datos]:border-caido data-[salud=sin-datos]:bg-caido-bg data-[salud=sin-datos]:text-caido-txt"
+    >
+      <div class="flex items-start gap-2.5">
+        <span class="mt-px font-mono text-base leading-none font-bold" aria-hidden="true">
+          !
+        </span>
+        <div class="min-w-0">
+          <p class="text-sm font-bold" data-aviso-titulo>
+            {t.corto}
+            {edad && salud !== 'sin-datos' && <span class="font-semibold"> · hace {edad}</span>}
+          </p>
+          <p class="mt-0.5 text-xs opacity-90" data-aviso-detalle>
+            {t.largo}
+          </p>
+          {sync?.error && (
+            <p class="mt-1 font-mono text-2xs break-all opacity-80">{sync.error}</p>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}

@@ -1,0 +1,251 @@
+---
+import Base from '@/layouts/Base.astro';
+import Kpi from '@/components/Kpi.astro';
+import Pildora from '@/components/Pildora.astro';
+import EstadoSync from '@/components/EstadoSync.astro';
+import ListaCaidas from '@/components/ListaCaidas.astro';
+import {
+  caidasRecientes,
+  listarDispositivos,
+  listarMapas,
+  resumenRed,
+  ultimaSincronizacion,
+} from '@/lib/consultas';
+import { numero, porcentaje } from '@/lib/formato';
+
+/**
+ * Lo primero que mira alguien a las 3 de la mañana.
+ *
+ * Orden deliberado: primero si los datos sirven, después qué está roto, y sólo
+ * al final cuánto hay en total. Los números grandes son un contexto agradable,
+ * no la pregunta que se viene a contestar.
+ */
+
+let error: string | null = null;
+let resumen = null;
+let caidas: Awaited<ReturnType<typeof caidasRecientes>> = [];
+let mapas: Awaited<ReturnType<typeof listarMapas>> = [];
+let peores: Awaited<ReturnType<typeof listarDispositivos>> | null = null;
+let sync = null;
+
+try {
+  [sync, resumen, caidas, mapas, peores] = await Promise.all([
+    ultimaSincronizacion(),
+    resumenRed(),
+    caidasRecientes(10),
+    listarMapas(),
+    listarDispositivos({ estado: 3, orden: 'nombre', porPagina: 10 }),
+  ]);
+} catch (e) {
+  error = e instanceof Error ? e.message : String(e);
+}
+
+const mapasRotos = mapas.filter((m) => m.caidos > 0 || m.parcial > 0).slice(0, 8);
+const eq = resumen?.equipos;
+---
+
+<Base
+  titulo="Panel"
+  encabezado="Estado de la red"
+  descripcion="el ISP — monitoreo en vivo"
+>
+  <div slot="acciones" class="flex gap-2">
+    <a
+      href="/dispositivos?estado=3"
+      class="border-caido/50 bg-caido-bg text-caido-txt hover:border-caido rounded-lg border px-3 py-1.5 text-xs font-semibold no-underline"
+    >
+      Ver equipos caídos
+    </a>
+  </div>
+
+  {
+    error ? (
+      <div class="border-caido bg-caido-bg text-caido-txt rounded-xl border-2 p-4">
+        <p class="font-bold">No se pudo leer el estado de la red</p>
+        <p class="mt-1 font-mono text-xs break-all">{error}</p>
+      </div>
+    ) : (
+      <div class="flex flex-col gap-4">
+        {/* 1 · ¿Los datos sirven? Antes que cualquier número. */}
+        <EstadoSync sync={sync} variante="aviso" />
+
+        {/* 2 · Titular. Cuántos equipos hay que mirar ahora mismo. */}
+        <section aria-labelledby="t-equipos">
+          <h2 id="t-equipos" class="text-tenue mb-2 text-2xs font-semibold tracking-wide uppercase">
+            Equipos · {numero(eq?.total ?? 0)} en total
+          </h2>
+          <div class="grid grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-4">
+            <Kpi
+              titulo="Caídos"
+              valor={eq?.caidos ?? 0}
+              total={eq?.total}
+              tono="caido"
+              glifo="✕"
+              clave="eq-caidos"
+              href="/dispositivos?estado=3"
+            />
+            <Kpi
+              titulo="Caída parcial"
+              valor={eq?.parcial ?? 0}
+              total={eq?.total}
+              tono="parcial"
+              glifo="!"
+              clave="eq-parcial"
+              href="/dispositivos?estado=2"
+            />
+            <Kpi
+              titulo="Sin datos"
+              valor={eq?.desconocidos ?? 0}
+              total={eq?.total}
+              tono="desconocido"
+              glifo="?"
+              clave="eq-desc"
+              href="/dispositivos?estado=0"
+            />
+            <Kpi
+              titulo="Arriba"
+              valor={eq?.arriba ?? 0}
+              total={eq?.total}
+              tono="up"
+              glifo="✓"
+              clave="eq-arriba"
+              href="/dispositivos?estado=1"
+            />
+          </div>
+        </section>
+
+        {/* 3 · Lo que está pasando. Dos columnas en escritorio, apiladas en
+            celular con las caídas arriba: es lo urgente. */}
+        <div class="grid gap-4 lg:grid-cols-2">
+          <section class="tarjeta flex flex-col overflow-hidden" aria-labelledby="t-caidas">
+            <header class="border-borde flex items-center justify-between gap-2 border-b px-3 py-2">
+              <h2 id="t-caidas" class="text-sm font-semibold">Caídas recientes</h2>
+              <span class="text-tenue text-2xs cifra">
+                <span data-vivo="caidas-abiertas">{numero(resumen?.caidas_abiertas ?? 0)}</span>{' '}
+                abiertas ·{' '}
+                <span data-vivo="caidas-24h">{numero(resumen?.caidas_24h ?? 0)}</span> en 24 h
+              </span>
+            </header>
+            {/* El id lo usa el refresco en vivo para reemplazar sólo esto. */}
+            <div id="lista-caidas" class="min-h-[6rem]">
+              <ListaCaidas caidas={caidas} vacio="Ninguna caída en el histórico. Buena noticia." />
+            </div>
+          </section>
+
+          <section class="tarjeta flex flex-col overflow-hidden" aria-labelledby="t-mapas">
+            <header class="border-borde flex items-center justify-between gap-2 border-b px-3 py-2">
+              <h2 id="t-mapas" class="text-sm font-semibold">Mapas con problemas</h2>
+              <a href="/mapas" class="text-acento-txt text-2xs font-semibold no-underline hover:underline">
+                Ver los {numero(mapas.length)}
+              </a>
+            </header>
+
+            {mapasRotos.length === 0 ? (
+              <p class="text-tenue px-3 py-6 text-center text-xs">
+                Ningún mapa con equipos caídos.
+              </p>
+            ) : (
+              <ul class="divide-borde divide-y">
+                {mapasRotos.map((m) => (
+                  <li>
+                    <a
+                      href={`/mapas/${m.id}`}
+                      class="hover:bg-panel-2 flex items-center gap-3 px-3 py-2 no-underline"
+                    >
+                      <span class="min-w-0 flex-1 truncate text-sm font-medium">{m.nombre}</span>
+                      <span class="flex shrink-0 items-center gap-1.5">
+                        {m.caidos > 0 && (
+                          <span class="pildora pildora-caido">
+                            <span class="glifo" aria-hidden="true">✕</span>
+                            <span>{m.caidos}</span>
+                            <span class="sr-only">caídos</span>
+                          </span>
+                        )}
+                        {m.parcial > 0 && (
+                          <span class="pildora pildora-parcial">
+                            <span class="glifo" aria-hidden="true">!</span>
+                            <span>{m.parcial}</span>
+                            <span class="sr-only">en caída parcial</span>
+                          </span>
+                        )}
+                        <span class="text-tenue text-2xs cifra w-14 text-right">
+                          {porcentaje(m.arriba, m.equipos)} ok
+                        </span>
+                      </span>
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </div>
+
+        {/* 4 · Equipos caídos ahora, con nombre y apellido. */}
+        {peores && peores.filas.length > 0 && (
+          <section class="tarjeta overflow-hidden" aria-labelledby="t-peores">
+            <header class="border-borde flex items-center justify-between gap-2 border-b px-3 py-2">
+              <h2 id="t-peores" class="text-sm font-semibold">Equipos caídos ahora</h2>
+              {peores.total > peores.filas.length && (
+                <a
+                  href="/dispositivos?estado=3"
+                  class="text-acento-txt text-2xs font-semibold no-underline hover:underline"
+                >
+                  Ver los {numero(peores.total)}
+                </a>
+              )}
+            </header>
+            <ul class="divide-borde divide-y">
+              {peores.filas.map((d) => (
+                <li>
+                  <a
+                    href={`/dispositivos/${d.id}`}
+                    class="hover:bg-panel-2 flex items-center gap-3 px-3 py-2 no-underline"
+                  >
+                    <Pildora estado={d.status} compacta />
+                    <span class="min-w-0 flex-1">
+                      <span class="block truncate text-sm font-medium">{d.nombre}</span>
+                      {d.direcciones.length > 0 && (
+                        <span class="text-tenue text-2xs block truncate font-mono">
+                          {d.direcciones.join(' · ')}
+                        </span>
+                      )}
+                    </span>
+                    <span class="text-tenue text-2xs cifra shrink-0">
+                      {d.services_down}/{d.services_total} sondas
+                    </span>
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
+        {/* 5 · Contexto. Deliberadamente al final y en gris. */}
+        <section aria-labelledby="t-inventario" class="tarjeta p-3">
+          <h2 id="t-inventario" class="text-tenue text-2xs mb-2 font-semibold tracking-wide uppercase">
+            Inventario
+          </h2>
+          <dl class="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-4">
+            {[
+              ['Servicios monitoreados', resumen?.servicios.total ?? 0, 'sv-total'],
+              ['Servicios caídos', resumen?.servicios.caidos ?? 0, 'sv-caidos'],
+              ['Enlaces', resumen?.enlaces ?? 0, 'enlaces'],
+              ['Mapas', resumen?.mapas ?? 0, 'mapas'],
+            ].map(([t, v, clave]) => (
+              <div>
+                <dt class="text-tenue text-2xs">{t}</dt>
+                <dd class="cifra text-lg font-semibold tabular-nums" data-vivo={clave as string}>
+                  {numero(v as number)}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+      </div>
+    )
+  }
+
+  <script>
+    import '@/scripts/vivo';
+  </script>
+</Base>

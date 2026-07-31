@@ -1,0 +1,90 @@
+---
+import type { ResumenMapa } from '@/lib/consultas';
+import { estadoAgregado, metaEstado } from '@/lib/estado';
+import { numero } from '@/lib/formato';
+
+interface Props {
+  mapa: ResumenMapa;
+}
+
+const { mapa: m } = Astro.props;
+
+// El estado de la tarjeta es el peor de sus equipos: un mapa con 40 verdes y un
+// rojo NO es un mapa verde.
+const estado = estadoAgregado([
+  ...Array<number>(m.caidos).fill(3),
+  ...Array<number>(m.parcial).fill(2),
+  ...Array<number>(m.arriba).fill(1),
+  ...Array<number>(m.desconocidos).fill(0),
+]);
+const meta = metaEstado(estado);
+
+// Barra de proporción. Se dibuja con anchos calculados y no con flex-grow para
+// que un solo equipo caído entre 400 siga siendo visible.
+// Las clases van completas y literales: Tailwind escanea el archivo como texto
+// y `bg-${clave}` no lo detectaría nunca.
+const partes = (
+  [
+    ['bg-caido', m.caidos],
+    ['bg-parcial', m.parcial],
+    ['bg-desconocido', m.desconocidos],
+    ['bg-up', m.arriba],
+  ] as const
+).filter(([, n]) => n > 0);
+const totalBarra = partes.reduce((a, [, n]) => a + n, 0) || 1;
+const MINIMO_VISIBLE = 3; // en porcentaje
+---
+
+<li>
+  <a
+    href={`/mapas/${m.id}`}
+    class="tarjeta hover:border-borde-fuerte flex h-full flex-col gap-2 p-3 no-underline transition-shadow hover:shadow-md focus-visible:shadow-md"
+  >
+    <div class="flex items-start gap-2">
+      <span class={`pildora pildora-${meta.clave} mt-px shrink-0`}>
+        <span class="glifo" aria-hidden="true">{meta.glifo}</span>
+        <span class="sr-only">{meta.etiqueta}</span>
+      </span>
+      <span class="min-w-0 flex-1">
+        <span class="block truncate text-sm font-semibold">{m.nombre}</span>
+        <span class="text-tenue text-2xs cifra block">
+          {numero(m.equipos)} equipos · {numero(m.elementos)} elementos
+          {m.submapas > 0 && ` · ${m.submapas} submapas`}
+        </span>
+      </span>
+    </div>
+
+    {
+      m.equipos > 0 && (
+        <>
+          <div class="bg-panel-2 flex h-1.5 overflow-hidden rounded-full" aria-hidden="true">
+            {partes.map(([clase, n]) => (
+              <span class={clase} style={`width:${Math.max((n / totalBarra) * 100, MINIMO_VISIBLE)}%`} />
+            ))}
+          </div>
+
+          <p class="text-2xs cifra flex flex-wrap gap-x-3 gap-y-0.5">
+            {m.caidos > 0 && (
+              <span class="text-caido-txt font-semibold">
+                <span aria-hidden="true">✕</span> {m.caidos} caídos
+              </span>
+            )}
+            {m.parcial > 0 && (
+              <span class="text-parcial-txt font-semibold">
+                <span aria-hidden="true">!</span> {m.parcial} parcial
+              </span>
+            )}
+            {m.desconocidos > 0 && (
+              <span class="text-desconocido-txt">
+                <span aria-hidden="true">?</span> {m.desconocidos} s/d
+              </span>
+            )}
+            <span class="text-up-txt">
+              <span aria-hidden="true">✓</span> {m.arriba} arriba
+            </span>
+          </p>
+        </>
+      )
+    }
+  </a>
+</li>

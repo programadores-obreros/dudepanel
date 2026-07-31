@@ -1,0 +1,68 @@
+---
+import Base from '@/layouts/Base.astro';
+import TarjetaMapa from '@/components/TarjetaMapa.astro';
+import { listarMapas } from '@/lib/consultas';
+import { numero } from '@/lib/formato';
+
+let mapas: Awaited<ReturnType<typeof listarMapas>> = [];
+let error: string | null = null;
+try {
+  mapas = await listarMapas();
+} catch (e) {
+  error = e instanceof Error ? e.message : String(e);
+}
+
+// Los que tienen algo roto van primero. El operador no busca "el mapa Sur":
+// busca dónde está el problema.
+const conProblemas = mapas.filter((m) => m.caidos > 0 || m.parcial > 0);
+const sanos = mapas.filter((m) => m.caidos === 0 && m.parcial === 0);
+---
+
+<Base
+  titulo="Mapas"
+  encabezado="Mapas de red"
+  descripcion={`${numero(mapas.length)} mapas con topología dibujada`}
+>
+  {
+    error ? (
+      <div class="border-caido bg-caido-bg text-caido-txt rounded-xl border-2 p-4">
+        <p class="font-bold">No se pudieron listar los mapas</p>
+        <p class="mt-1 font-mono text-xs break-all">{error}</p>
+      </div>
+    ) : mapas.length === 0 ? (
+      <p class="text-tenue tarjeta p-8 text-center text-sm">
+        No hay mapas cargados. ¿Corrió alguna vez el ETL?
+      </p>
+    ) : (
+      <div class="flex flex-col gap-6">
+        {conProblemas.length > 0 && (
+          <section aria-labelledby="t-rotos">
+            <h2 id="t-rotos" class="text-tenue text-2xs mb-2 font-semibold tracking-wide uppercase">
+              Con problemas · {conProblemas.length}
+            </h2>
+            <ul class="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+              {conProblemas.map((m) => (
+                <TarjetaMapa mapa={m} />
+              ))}
+            </ul>
+          </section>
+        )}
+
+        <section aria-labelledby="t-sanos">
+          <h2 id="t-sanos" class="text-tenue text-2xs mb-2 font-semibold tracking-wide uppercase">
+            Sin novedades · {sanos.length}
+          </h2>
+          {sanos.length === 0 ? (
+            <p class="text-tenue text-xs">Todos los mapas tienen algo caído.</p>
+          ) : (
+            <ul class="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+              {sanos.map((m) => (
+                <TarjetaMapa mapa={m} />
+              ))}
+            </ul>
+          )}
+        </section>
+      </div>
+    )
+  }
+</Base>

@@ -1,0 +1,63 @@
+---
+/**
+ * Buscador global (Ctrl/⌘ + K).
+ *
+ * Un `<dialog>` nativo, no un div con `position:fixed`: el navegador ya sabe
+ * atrapar el foco, cerrar con Escape y marcar el resto de la página como inerte
+ * para los lectores de pantalla. Reimplementar eso a mano es donde se pierde la
+ * accesibilidad.
+ *
+ * El campo es uno solo para nombre e IP a propósito. El operador que llega con
+ * un ticket no sabe cuál de los dos tiene a mano.
+ */
+---
+
+<dialog
+  id="dlg-buscador"
+  aria-label="Buscar equipos y mapas"
+  class="bg-panel text-tinta border-borde m-0 w-full max-w-[42rem] rounded-none border p-0 backdrop:bg-black/50 backdrop:backdrop-blur-[2px] sm:mx-auto sm:mt-[8vh] sm:rounded-xl sm:shadow-2xl"
+>
+  <form method="dialog" class="contents">
+    <div class="border-borde flex items-center gap-2.5 border-b px-3.5 py-3">
+      <svg class="text-tenue size-4 shrink-0" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="1.8"></circle>
+        <path d="m16 16 4.5 4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+        ></path>
+      </svg>
+      <input
+        id="q-buscador"
+        type="search"
+        autocomplete="off"
+        spellcheck="false"
+        enterkeyhint="go"
+        placeholder="Nombre o IP — p. ej. Aurora, o 192.0.2"
+        class="placeholder:text-tenue/70 min-w-0 flex-1 bg-transparent text-base outline-none sm:text-sm"
+        role="combobox"
+        aria-expanded="false"
+        aria-controls="res-buscador"
+        aria-autocomplete="list"
+      />
+      <button
+        type="submit"
+        class="border-borde text-tenue hover:text-tinta text-2xs shrink-0 rounded border px-1.5 py-0.5"
+        aria-label="Cerrar buscador">Esc</button
+      >
+    </div>
+  </form>
+
+  <ul
+    id="res-buscador"
+    role="listbox"
+    aria-label="Resultados"
+    class="max-h-[60vh] min-h-[4.5rem] overflow-y-auto overscroll-contain py-1"
+  >
+  </ul>
+
+  <p
+    id="ayuda-buscador"
+    class="border-borde text-tenue text-2xs flex items-center justify-between gap-2 border-t px-3.5 py-2"
+  >
+    <span>↑ ↓ para moverte · Enter para abrir</span>
+    <span aria-live="polite" data-conteo></span>
+  </p>
+</dialog>

@@ -1,0 +1,67 @@
+---
+import Base from '@/layouts/Base.astro';
+import VisorMapa from '@/components/VisorMapa.astro';
+import { estadoSubmapas, lienzoMapa, obtenerMapa } from '@/lib/consultas';
+
+const id = Number(Astro.params.id);
+if (!Number.isInteger(id) || id <= 0) return Astro.redirect('/mapas', 302);
+
+let mapa = null;
+let elementos: Awaited<ReturnType<typeof lienzoMapa>> = [];
+let submapas = new Map<number, 0 | 1 | 2 | 3>();
+let error: string | null = null;
+
+try {
+  mapa = await obtenerMapa(id);
+  if (mapa) {
+    [elementos, submapas] = await Promise.all([lienzoMapa(id), estadoSubmapas(id)]);
+  }
+} catch (e) {
+  error = e instanceof Error ? e.message : String(e);
+}
+
+if (!mapa && !error) {
+  return new Response('Mapa no encontrado', { status: 404 });
+}
+---
+
+<Base titulo={mapa?.nombre ?? 'Mapa'} ancho="completo">
+  <div class="mx-auto flex min-h-0 w-full max-w-[1600px] flex-1 flex-col gap-3 px-3 py-4 sm:px-5">
+    <div class="flex flex-wrap items-end justify-between gap-3">
+      <div class="min-w-0">
+        <nav aria-label="Migas" class="text-tenue text-2xs">
+          <a href="/mapas" class="enlace">Mapas</a>
+          <span aria-hidden="true"> / </span>
+        </nav>
+        <h1 class="truncate text-xl font-bold tracking-tight sm:text-2xl">{mapa?.nombre}</h1>
+      </div>
+      <a
+        href="/mapas"
+        class="border-borde bg-panel hover:border-borde-fuerte shrink-0 rounded-lg border px-3 py-1.5 text-xs font-semibold no-underline"
+      >
+        Volver a los mapas
+      </a>
+    </div>
+
+    {
+      error ? (
+        <div class="border-caido bg-caido-bg text-caido-txt rounded-xl border-2 p-4">
+          <p class="font-bold">No se pudo dibujar el mapa</p>
+          <p class="mt-1 font-mono text-xs break-all">{error}</p>
+        </div>
+      ) : elementos.length === 0 ? (
+        <div class="tarjeta text-tenue grid flex-1 place-items-center p-8 text-center text-sm">
+          <p>
+            Este mapa está vacío.
+            <br />
+            <span class="text-2xs">
+              En The Dude hay mapas sin elementos: no es un error del panel.
+            </span>
+          </p>
+        </div>
+      ) : (
+        <VisorMapa mapaId={id} nombre={mapa!.nombre} elementos={elementos} submapas={submapas} />
+      )
+    }
+  </div>
+</Base>

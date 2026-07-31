@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Tres nodos y sus enlaces: la topología, que es de lo que trata el panel. -->
+  <rect width="32" height="32" rx="7" fill="#2f5bd7"/>
+  <g stroke="#ffffff" stroke-width="2" stroke-linecap="round" opacity=".85">
+    <path d="M16 11v5M14.2 18.4 10 21.5M17.8 18.4 22 21.5"/>
+  </g>
+  <g fill="#ffffff">
+    <circle cx="16" cy="9" r="3.2"/>
+    <circle cx="9" cy="23" r="3.2"/>
+    <circle cx="23" cy="23" r="3.2"/>
+  </g>
+</svg>

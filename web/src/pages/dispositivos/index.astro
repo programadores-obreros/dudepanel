@@ -1,0 +1,300 @@
+---
+import Base from '@/layouts/Base.astro';
+import Pildora from '@/components/Pildora.astro';
+import { listarDispositivos, tiposDeDispositivo, type ColumnaOrden } from '@/lib/consultas';
+import { aEstado, ESTADOS } from '@/lib/estado';
+import { numero } from '@/lib/formato';
+
+/**
+ * Los 885 equipos.
+ *
+ * Filtro, orden y paginación viajan en la URL y los resuelve PostgreSQL. Se
+ * podría virtualizar en el cliente, pero eso significa mandar 885 filas a un
+ * celular en 4G, y encima rompe Ctrl+F, el enlace compartible y el botón de
+ * atrás. Con la URL como estado, un operador le puede pasar a otro
+ * `/dispositivos?estado=3&orden=tipo` por WhatsApp y ve exactamente lo mismo.
+ */
+
+const p = Astro.url.searchParams;
+
+const crudoEstado = p.get('estado');
+const estado = crudoEstado !== null && /^[0-3]$/.test(crudoEstado) ? aEstado(crudoEstado) : null;
+const tipoId = Number(p.get('tipo')) || null;
+const texto = p.get('q');
+const ordenPedido = p.get('orden') as ColumnaOrden | null;
+const COLUMNAS: { clave: ColumnaOrden; titulo: string; clase?: string }[] = [
+  { clave: 'estado', titulo: 'Estado', clase: 'w-28' },
+  { clave: 'nombre', titulo: 'Equipo' },
+  { clave: 'ip', titulo: 'Direcciones', clase: 'hidden md:table-cell' },
+  { clave: 'tipo', titulo: 'Tipo', clase: 'hidden sm:table-cell w-32' },
+  { clave: 'servicios', titulo: 'Sondas', clase: 'w-24 text-right' },
+];
+const orden: ColumnaOrden = COLUMNAS.some((c) => c.clave === ordenPedido)
+  ? (ordenPedido as ColumnaOrden)
+  : 'estado';
+const desc = p.get('dir') === 'desc';
+const pagina = Math.max(Number(p.get('pag')) || 1, 1);
+
+let datos: Awaited<ReturnType<typeof listarDispositivos>> | null = null;
+let tipos: Awaited<ReturnType<typeof tiposDeDispositivo>> = [];
+let error: string | null = null;
+
+try {
+  [datos, tipos] = await Promise.all([
+    listarDispositivos({ estado, tipoId, texto, orden, desc, pagina, porPagina: 50 }),
+    tiposDeDispositivo(),
+  ]);
+} catch (e) {
+  error = e instanceof Error ? e.message : String(e);
+}
+
+/** Arma una URL conservando el resto de los filtros. */
+function url(cambios: Record<string, string | number | null>): string {
+  const q = new URLSearchParams(p);
+  for (const [k, v] of Object.entries(cambios)) {
+    if (v === null || v === '') q.delete(k);
+    else q.set(k, String(v));
+  }
+  // Cualquier cambio de filtro u orden vuelve a la primera página: quedarse en
+  // la 7 de un listado que ahora tiene 2 es de las cosas que más irritan.
+  if (!('pag' in cambios)) q.delete('pag');
+  const s = q.toString();
+  return s ? `/dispositivos?${s}` : '/dispositivos';
+}
+
+const hayFiltros = estado !== null || tipoId !== null || !!texto;
+---
+
+<Base
+  titulo="Equipos"
+  encabezado="Equipos"
+  descripcion={
+    datos ? `${numero(datos.total)} ${hayFiltros ? 'coinciden con el filtro' : 'monitoreados'}` : undefined
+  }
+>
+  {
+    error ? (
+      <div class="border-caido bg-caido-bg text-caido-txt rounded-xl border-2 p-4">
+        <p class="font-bold">No se pudo listar</p>
+        <p class="mt-1 font-mono text-xs break-all">{error}</p>
+      </div>
+    ) : (
+      <div class="flex flex-col gap-3">
+        {/* ── Filtros ─────────────────────────────────────────────────────
+            Un <form> de verdad con method GET: funciona sin JavaScript, el
+            navegador arma la URL solo y el botón de atrás hace lo esperable. */}
+        <form
+          method="get"
+          action="/dispositivos"
+          class="tarjeta flex flex-wrap items-end gap-2 p-2.5"
+          role="search"
+        >
+          <div class="min-w-[12rem] flex-1">
+            <label for="f-q" class="text-tenue text-2xs mb-0.5 block font-semibold">
+              Nombre o IP
+            </label>
+            <input
+              id="f-q"
+              name="q"
+              type="search"
+              value={texto ?? ''}
+              placeholder="Aurora, 192.0.2…"
+              class="border-borde bg-panel-2 focus:border-acento w-full rounded-lg border px-2.5 py-1.5 text-sm outline-none"
+            />
+          </div>
+
+          <div>
+            <label for="f-estado" class="text-tenue text-2xs mb-0.5 block font-semibold">
+              Estado
+            </label>
+            <select
+              id="f-estado"
+              name="estado"
+              class="border-borde bg-panel-2 focus:border-acento rounded-lg border px-2.5 py-1.5 text-sm outline-none"
+            >
+              <option value="">Todos</option>
+              {ESTADOS.map((e) => (
+                <option value={e.valor} selected={estado === e.valor}>
+                  {e.glifo} {e.etiqueta}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label for="f-tipo" class="text-tenue text-2xs mb-0.5 block font-semibold">
+              Tipo
+            </label>
+            <select
+              id="f-tipo"
+              name="tipo"
+              class="border-borde bg-panel-2 focus:border-acento max-w-[10rem] rounded-lg border px-2.5 py-1.5 text-sm outline-none"
+            >
+              <option value="">Todos</option>
+              {tipos.map((t) => (
+                <option value={t.id} selected={tipoId === t.id}>
+                  {t.nombre} ({t.n})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* El orden viaja escondido para que no se pierda al filtrar. */}
+          <input type="hidden" name="orden" value={orden} />
+          {desc && <input type="hidden" name="dir" value="desc" />}
+
+          <button
+            type="submit"
+            class="bg-acento rounded-lg px-3 py-1.5 text-sm font-semibold text-white"
+          >
+            Filtrar
+          </button>
+          {hayFiltros && (
+            <a
+              href="/dispositivos"
+              class="border-borde text-tenue hover:text-tinta rounded-lg border px-3 py-1.5 text-sm no-underline"
+            >
+              Limpiar
+            </a>
+          )}
+        </form>
+
+        {/* ── Tabla ──────────────────────────────────────────────────────── */}
+        <div class="tarjeta overflow-hidden">
+          <div class="overflow-x-auto">
+            <table class="w-full border-collapse text-left">
+              <caption class="sr-only">
+                Equipos monitoreados. Los encabezados son enlaces para reordenar.
+              </caption>
+              <thead>
+                <tr class="border-borde bg-panel-2 border-b">
+                  {COLUMNAS.map((c) => {
+                    const activa = orden === c.clave;
+                    return (
+                      <th
+                        scope="col"
+                        class:list={['text-2xs px-2.5 py-2 font-semibold uppercase', c.clase]}
+                        aria-sort={activa ? (desc ? 'descending' : 'ascending') : 'none'}
+                      >
+                        <a
+                          href={url({ orden: c.clave, dir: activa && !desc ? 'desc' : null })}
+                          class="text-tenue hover:text-tinta inline-flex items-center gap-1 no-underline aria-[current]:text-inherit"
+                          aria-current={activa ? 'true' : undefined}
+                        >
+                          {c.titulo}
+                          <span class="text-[9px] leading-none" aria-hidden="true">
+                            {activa ? (desc ? '▼' : '▲') : '↕'}
+                          </span>
+                          {activa && (
+                            <span class="sr-only">
+                              (ordenado {desc ? 'descendente' : 'ascendente'})
+                            </span>
+                          )}
+                        </a>
+                      </th>
+                    );
+                  })}
+                </tr>
+              </thead>
+              <tbody class="divide-borde divide-y">
+                {datos?.filas.map((d) => (
+                  <tr class="hover:bg-panel-2/70">
+                    <td class="px-2.5 py-1.5">
+                      <Pildora estado={d.status} />
+                    </td>
+                    <td class="px-2.5 py-1.5">
+                      <a href={`/dispositivos/${d.id}`} class="enlace text-sm font-medium">
+                        {d.nombre}
+                      </a>
+                      {/* En celular las IP no entran en su columna, así que
+                          van debajo del nombre en vez de desaparecer. */}
+                      {d.direcciones.length > 0 && (
+                        <span class="text-tenue text-2xs block font-mono md:hidden">
+                          {d.direcciones.join(' · ')}
+                        </span>
+                      )}
+                    </td>
+                    <td class="text-tenue hidden px-2.5 py-1.5 font-mono text-xs md:table-cell">
+                      {d.direcciones.join(' · ') || '—'}
+                    </td>
+                    <td class="text-tenue hidden px-2.5 py-1.5 text-xs sm:table-cell">
+                      {d.tipo ?? '—'}
+                    </td>
+                    <td class="px-2.5 py-1.5 text-right text-xs tabular-nums">
+                      {d.services_total === 0 ? (
+                        <span class="text-tenue">—</span>
+                      ) : (
+                        <span class={d.services_down > 0 ? 'text-caido-txt font-semibold' : 'text-tenue'}>
+                          {d.services_down > 0 ? `${d.services_down} de ` : ''}
+                          {d.services_total}
+                          <span class="sr-only">
+                            {d.services_down > 0
+                              ? ` sondas caídas de ${d.services_total}`
+                              : ' sondas, todas bien'}
+                          </span>
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {datos?.filas.length === 0 && (
+            <p class="text-tenue px-3 py-10 text-center text-sm">
+              Ningún equipo coincide con el filtro.
+              {hayFiltros && (
+                <>
+                  {' '}
+                  <a href="/dispositivos" class="text-acento-txt font-semibold">
+                    Limpiar
+                  </a>
+                </>
+              )}
+            </p>
+          )}
+        </div>
+
+        {/* ── Paginación ─────────────────────────────────────────────────── */}
+        {datos && datos.paginas > 1 && (
+          <nav
+            class="flex flex-wrap items-center justify-between gap-2"
+            aria-label="Paginación de equipos"
+          >
+            <p class="text-tenue text-2xs cifra">
+              {numero((datos.pagina - 1) * datos.porPagina + 1)}–
+              {numero(Math.min(datos.pagina * datos.porPagina, datos.total))} de{' '}
+              {numero(datos.total)}
+            </p>
+            <div class="flex items-center gap-1">
+              <a
+                href={url({ pag: datos.pagina - 1 })}
+                class:list={[
+                  'border-borde rounded-lg border px-2.5 py-1.5 text-xs font-semibold no-underline',
+                  datos.pagina <= 1 && 'pointer-events-none opacity-40',
+                ]}
+                aria-disabled={datos.pagina <= 1}
+              >
+                ← Anterior
+              </a>
+              <span class="text-tenue text-2xs cifra px-2">
+                {datos.pagina} / {datos.paginas}
+              </span>
+              <a
+                href={url({ pag: datos.pagina + 1 })}
+                class:list={[
+                  'border-borde rounded-lg border px-2.5 py-1.5 text-xs font-semibold no-underline',
+                  datos.pagina >= datos.paginas && 'pointer-events-none opacity-40',
+                ]}
+                aria-disabled={datos.pagina >= datos.paginas}
+              >
+                Siguiente →
+              </a>
+            </div>
+          </nav>
+        )}
+      </div>
+    )
+  }
+</Base>

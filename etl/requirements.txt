@@ -1,0 +1,11 @@
+# Una sola dependencia, y a propósito.
+#
+# `[binary]` trae libpq compilada en la rueda: sin eso hay que instalar
+# libpq-dev y gcc, y un compilador dentro de la imagen final es superficie de
+# ataque que no vuelve a usarse nunca después del build.
+#
+# No hay ORM. El ETL escribe trece INSERT fijos y dos COPY binarios contra un
+# esquema que ya está escrito a mano en schema.sql: SQLAlchemy no aportaría
+# nada que no tengamos, y sí traería un modelo de datos duplicado que se puede
+# desincronizar del SQL de verdad.
+psycopg[binary]==3.2.3

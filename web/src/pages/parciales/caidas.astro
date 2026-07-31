@@ -1,0 +1,23 @@
+---
+import ListaCaidas from '@/components/ListaCaidas.astro';
+import { caidasRecientes } from '@/lib/consultas';
+
+/**
+ * Fragmento HTML de la lista de caídas, para el refresco en vivo.
+ *
+ * `partial` hace que Astro devuelva sólo esto, sin `<html>` ni layout. Así la
+ * lista se dibuja con la MISMA plantilla en el servidor y en el refresco, en
+ * vez de tener una versión en Astro y otra en JavaScript que en tres meses
+ * dicen cosas distintas.
+ */
+export const partial = true;
+
+let caidas: Awaited<ReturnType<typeof caidasRecientes>> = [];
+try {
+  caidas = await caidasRecientes(12);
+} catch {
+  /* El cliente conserva la lista anterior si esto falla. */
+}
+---
+
+<ListaCaidas caidas={caidas} vacio="Ninguna caída en el histórico. Buena noticia." />

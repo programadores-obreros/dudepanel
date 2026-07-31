@@ -1,0 +1,84 @@
+---
+import Base from '@/layouts/Base.astro';
+import Pildora from '@/components/Pildora.astro';
+import { buscar } from '@/lib/consultas';
+
+/**
+ * Búsqueda como página.
+ *
+ * El buscador de Ctrl+K necesita JavaScript. Esta página es la misma búsqueda
+ * sin nada de eso: sirve de red de contención, de destino compartible por
+ * WhatsApp (`/buscar?q=192.0.2`) y de lugar donde ver más de veinte resultados.
+ */
+const q = Astro.url.searchParams.get('q') ?? '';
+
+let resultados: Awaited<ReturnType<typeof buscar>> = [];
+let error: string | null = null;
+try {
+  if (q.trim().length >= 2) resultados = await buscar(q, 100);
+} catch (e) {
+  error = e instanceof Error ? e.message : String(e);
+}
+---
+
+<Base titulo={q ? `Buscar: ${q}` : 'Buscar'} encabezado="Buscar">
+  <form method="get" action="/buscar" role="search" class="tarjeta mb-4 flex gap-2 p-2.5">
+    <label for="q" class="sr-only">Nombre o dirección IP</label>
+    <input
+      id="q"
+      name="q"
+      type="search"
+      value={q}
+      autofocus
+      placeholder="Nombre o IP — p. ej. Aurora, o 192.0.2"
+      class="border-borde bg-panel-2 focus:border-acento min-w-0 flex-1 rounded-lg border px-2.5 py-1.5 text-base outline-none sm:text-sm"
+    />
+    <button type="submit" class="bg-acento rounded-lg px-4 py-1.5 text-sm font-semibold text-white">
+      Buscar
+    </button>
+  </form>
+
+  {
+    error ? (
+      <div class="border-caido bg-caido-bg text-caido-txt rounded-xl border-2 p-4">
+        <p class="font-bold">No se pudo buscar</p>
+        <p class="mt-1 font-mono text-xs break-all">{error}</p>
+      </div>
+    ) : q.trim().length < 2 ? (
+      <p class="text-tenue text-sm">
+        Escribí al menos dos caracteres. Podés buscar por nombre de equipo, por nombre de mapa o
+        por dirección IP — es el mismo campo.
+      </p>
+    ) : resultados.length === 0 ? (
+      <p class="text-tenue tarjeta p-8 text-center text-sm">Nada coincide con «{q}».</p>
+    ) : (
+      <div class="tarjeta overflow-hidden">
+        <p class="border-borde text-tenue text-2xs border-b px-3 py-1.5">
+          {resultados.length} resultado{resultados.length === 1 ? '' : 's'}
+        </p>
+        <ul class="divide-borde divide-y">
+          {resultados.map((r) => (
+            <li>
+              <a
+                href={r.kind === 'device' ? `/dispositivos/${r.id}` : `/mapas/${r.id}`}
+                class="hover:bg-panel-2 flex items-center gap-3 px-3 py-2 no-underline"
+              >
+                {r.kind === 'device' ? (
+                  <Pildora estado={r.status} compacta />
+                ) : (
+                  <span class="text-tenue text-2xs w-6 shrink-0 font-semibold uppercase">Mapa</span>
+                )}
+                <span class="min-w-0 flex-1">
+                  <span class="block truncate text-sm font-medium">{r.nombre}</span>
+                  {r.detalle && (
+                    <span class="text-tenue text-2xs block truncate font-mono">{r.detalle}</span>
+                  )}
+                </span>
+              </a>
+            </li>
+          ))}
+        </ul>
+      </div>
+    )
+  }
+</Base>

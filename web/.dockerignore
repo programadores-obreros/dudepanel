@@ -1,0 +1,10 @@
+node_modules
+dist
+.astro
+.env
+.env.local
+.git
+datos
+test
+*.log
+README.md

@@ -1,0 +1,237 @@
+---
+import type { ElementoMapa } from '@/lib/consultas';
+import { construirLienzo, TAMANIO_NODO } from '@/lib/mapa';
+import { juegoDeIconos } from '@/lib/iconos';
+import { metaEstado, type Estado, ESTADOS } from '@/lib/estado';
+
+interface Props {
+  mapaId: number;
+  nombre: string;
+  elementos: ElementoMapa[];
+  /** Estado consolidado de cada submapa que aparece en este mapa. */
+  submapas?: ReadonlyMap<number, Estado>;
+}
+
+const { mapaId, nombre, elementos, submapas = new Map() } = Astro.props;
+
+const lienzo = construirLienzo(elementos, submapas);
+
+// Los submapas y las redes casi nunca traen icono asignado en The Dude, así que
+// se le da al buscador de repuestos la palabra que necesita para acertar.
+const { simbolos, porNodo } = await juegoDeIconos(
+  lienzo.nodos.map((n) => ({
+    id: n.id,
+    icono: n.icono,
+    pista:
+      n.kind === 'submap' ? `submapa ${n.nombre}` : n.kind === 'network' ? `red ${n.nombre}` : n.nombre,
+  })),
+);
+
+const R = TAMANIO_NODO / 2;
+const LADO_ICONO = 22;
+/** Corte de la etiqueta. Con nombres tipo `Vega_P_Ponte_AC2` 20 alcanza. */
+const MAX_ETIQUETA = 20;
+
+const recortar = (s: string) => (s.length > MAX_ETIQUETA ? s.slice(0, MAX_ETIQUETA - 1) + '…' : s);
+
+const vb = `${lienzo.vista.x} ${lienzo.vista.y} ${lienzo.vista.ancho} ${lienzo.vista.alto}`;
+---
+
+<div
+  class="border-borde bg-panel relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border"
+  data-visor
+  data-mapa-id={mapaId}
+>
+  {/* ── Controles ─────────────────────────────────────────────────────── */}
+  <div class="pointer-events-none absolute top-2 right-2 z-10 flex flex-col items-end gap-2">
+    <div
+      class="border-borde bg-panel/90 pointer-events-auto flex overflow-hidden rounded-lg border shadow-sm backdrop-blur"
+      role="group"
+      aria-label="Zoom del mapa"
+    >
+      <button
+        type="button"
+        data-zoom="1"
+        class="hover:bg-panel-2 grid size-9 place-items-center text-lg leading-none"
+        aria-label="Acercar">+</button
+      >
+      <button
+        type="button"
+        data-zoom="-1"
+        class="border-borde hover:bg-panel-2 grid size-9 place-items-center border-l text-lg leading-none"
+        aria-label="Alejar">−</button
+      >
+      <button
+        type="button"
+        data-ajustar
+        class="border-borde hover:bg-panel-2 text-2xs grid h-9 place-items-center border-l px-2.5 font-semibold"
+        aria-label="Ajustar el mapa a la vista">Ajustar</button
+      >
+    </div>
+    <span
+      class="border-borde bg-panel/90 text-2xs text-tenue rounded border px-1.5 py-0.5 font-mono tabular-nums backdrop-blur"
+      data-nivel-zoom
+      aria-live="off">100 %</span
+    >
+  </div>
+
+  {/* ── Referencia de estados ─────────────────────────────────────────────
+      No es decoración: es lo que permite leer el mapa sin depender del color.
+      Cada estado tiene glifo, trazo y tono distintos. */}
+  <details
+    class="border-borde bg-panel/90 absolute bottom-2 left-2 z-10 rounded-lg border text-xs shadow-sm backdrop-blur open:pb-1"
+  >
+    <summary class="cursor-pointer list-none px-2.5 py-1.5 font-semibold select-none">
+      Referencia
+    </summary>
+    <ul class="space-y-1 px-2.5 pb-1">
+      {
+        ESTADOS.map((e) => (
+          <li class="flex items-center gap-2">
+            <svg width="34" height="16" viewBox="0 0 34 16" aria-hidden="true" class="shrink-0">
+              <g data-estado={e.valor} class="nodo-mapa">
+                <circle class="aro" cx="9" cy="8" r="6" />
+                <g class="marca-estado" transform="translate(24,8)">
+                  <circle class="fondo" r="6" />
+                  <text class="glifo" y="3">{e.glifo}</text>
+                </g>
+              </g>
+            </svg>
+            <span class="text-tenue">{e.etiqueta}</span>
+          </li>
+        ))
+      }
+    </ul>
+  </details>
+
+  {
+    lienzo.sinPosicion > 0 && (
+      <p class="border-parcial/50 bg-parcial-bg text-parcial-txt text-2xs absolute bottom-2 left-1/2 z-10 -translate-x-1/2 rounded-lg border px-2 py-1">
+        {lienzo.sinPosicion} elemento{lienzo.sinPosicion === 1 ? '' : 's'} sin coordenadas, acomodado
+        {lienzo.sinPosicion === 1 ? '' : 's'} abajo
+      </p>
+    )
+  }
+
+  {/* ── El lienzo ──────────────────────────────────────────────────────── */}
+  <svg
+    class="lienzo-mapa min-h-[24rem] flex-1"
+    viewBox={vb}
+    preserveAspectRatio="xMidYMid meet"
+    role="group"
+    aria-label={`Topología del mapa ${nombre}: ${lienzo.nodos.length} elementos y ${lienzo.enlaces.length} enlaces. Usá Tab para recorrer los nodos.`}
+    tabindex="0"
+    data-svg-mapa
+  >
+    <defs>
+      {
+        [...simbolos.entries()].map(([clave, ico]) => (
+          <symbol id={`ico-${clave}`} viewBox={ico.viewBox} set:html={ico.cuerpo} />
+        ))
+      }
+    </defs>
+
+    <g class="capa-mapa" data-capa>
+      {/* Los enlaces van primero para que queden por debajo de los nodos. */}
+      <g data-enlaces>
+        {
+          lienzo.enlaces.map((l) => (
+            <line
+              class="enlace-mapa"
+              data-estado={l.estado}
+              data-de={l.de}
+              data-a={l.a}
+              x1={l.x1}
+              y1={l.y1}
+              x2={l.x2}
+              y2={l.y2}
+              stroke-width={l.ancho}
+            >
+              <title>{l.nombre ?? 'Enlace'} — {metaEstado(l.estado).etiqueta}</title>
+            </line>
+          ))
+        }
+      </g>
+
+      {/* Rótulos `static`: texto libre del original (eth2, eth4…). Van entre
+          los enlaces y los nodos para que un nodo nunca quede tapado. */}
+      <g data-rotulos>
+        {
+          lienzo.rotulos.map((r) => (
+            <text class="rotulo-mapa" x={r.x} y={r.y}>
+              {r.texto}
+            </text>
+          ))
+        }
+      </g>
+
+      <g data-nodos>
+        {
+          lienzo.nodos.map((n) => {
+            const m = metaEstado(n.estado);
+            const ips = n.direcciones.length ? ` — ${n.direcciones.join(', ')}` : '';
+            const que =
+              n.kind === 'submap' ? 'Submapa' : n.kind === 'network' ? 'Red' : 'Equipo';
+            const Nodo = n.href ? 'a' : 'g';
+            return (
+              <Nodo
+                class="nodo-mapa"
+                data-estado={n.estado}
+                data-id={n.id}
+                href={n.href ?? undefined}
+                tabindex={n.href ? 0 : undefined}
+                role={n.href ? 'link' : 'img'}
+                aria-label={`${que} ${n.nombre} — ${m.etiqueta}${ips}`}
+                data-rotulo={`${que} ${n.nombre}`}
+                data-ips={ips}
+                transform={`translate(${n.cx} ${n.cy})`}
+              >
+                <title>
+                  {n.nombre} — {m.etiqueta}
+                  {ips}
+                </title>
+
+                <circle class="halo" r={R + 6} />
+                <rect class="aro" x={-R} y={-R} width={TAMANIO_NODO} height={TAMANIO_NODO} rx="9" />
+
+                <use
+                  href={`#ico-${porNodo.get(n.id)}`}
+                  x={-LADO_ICONO / 2}
+                  y={-LADO_ICONO / 2}
+                  width={LADO_ICONO}
+                  height={LADO_ICONO}
+                  class="text-tinta"
+                />
+
+                {/* La marca de estado: forma + glifo. Es la redundancia que
+                    hace legible el mapa sin distinguir colores. */}
+                <g class="marca-estado" transform={`translate(${R - 1} ${-R + 1})`}>
+                  <circle class="fondo" r="7" />
+                  <text class="glifo" y="3.2" data-glifo>
+                    {m.glifo}
+                  </text>
+                </g>
+
+                <text class="etiqueta" y={R + 14} text-anchor="middle">
+                  {recortar(n.nombre)}
+                </text>
+              </Nodo>
+            );
+          })
+        }
+      </g>
+    </g>
+  </svg>
+
+  <p class="border-borde text-tenue text-2xs flex flex-wrap gap-x-4 gap-y-0.5 border-t px-3 py-1.5">
+    <span>Arrastrá para mover · rueda o pellizco para acercar</span>
+    <span class="hidden sm:inline">Con el foco en el mapa: flechas mueven, + − acercan, 0 ajusta</span>
+    <span class="ml-auto tabular-nums">
+      {lienzo.nodos.length} elementos · {lienzo.enlaces.length} enlaces
+    </span>
+  </p>
+</div>
+
+<script>
+  import '@/scripts/visor-mapa';
+</script>

@@ -1,0 +1,24 @@
+---
+import Base from '@/layouts/Base.astro';
+---
+
+<Base titulo="No encontrado">
+  <div class="tarjeta mx-auto mt-8 max-w-md p-8 text-center">
+    <p class="text-tenue font-mono text-4xl font-bold">404</p>
+    <h1 class="mt-2 text-lg font-bold">Esa página no existe</h1>
+    <p class="text-tenue mt-1 text-sm">
+      Puede que el equipo o el mapa se hayan borrado de The Dude, o que el enlace esté mal.
+    </p>
+    <div class="mt-4 flex justify-center gap-2">
+      <a href="/" class="bg-acento rounded-lg px-3 py-1.5 text-sm font-semibold text-white no-underline">
+        Ir al panel
+      </a>
+      <a
+        href="/buscar"
+        class="border-borde rounded-lg border px-3 py-1.5 text-sm font-semibold no-underline"
+      >
+        Buscar
+      </a>
+    </div>
+  </div>
+</Base>

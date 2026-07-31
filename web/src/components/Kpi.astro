@@ -1,0 +1,55 @@
+---
+import { numero, porcentaje } from '@/lib/formato';
+
+interface Props {
+  titulo: string;
+  valor: number;
+  /** Para calcular el porcentaje bajo la cifra. */
+  total?: number;
+  tono?: 'up' | 'parcial' | 'caido' | 'desconocido' | 'neutro';
+  glifo?: string;
+  href?: string;
+  /** Id para que el refresco en vivo pueda reemplazar sólo la cifra. */
+  clave?: string;
+}
+
+const { titulo, valor, total, tono = 'neutro', glifo, href, clave } = Astro.props;
+
+const tonos = {
+  up: 'text-up-txt border-up/35 bg-up-bg/45',
+  parcial: 'text-parcial-txt border-parcial/40 bg-parcial-bg/45',
+  caido: 'text-caido-txt border-caido/40 bg-caido-bg/50',
+  desconocido: 'text-desconocido-txt border-desconocido/35 bg-desconocido-bg/45',
+  neutro: 'text-tinta border-borde bg-panel',
+} as const;
+
+const Etiqueta = href ? 'a' : 'div';
+---
+
+<Etiqueta
+  href={href}
+  class:list={[
+    'relative flex flex-col justify-between gap-1 rounded-xl border p-3 sm:p-4 no-underline',
+    tonos[tono],
+    href && 'transition-shadow hover:shadow-md focus-visible:shadow-md',
+  ]}
+>
+  <div class="flex items-center gap-1.5">
+    {glifo && <span class="font-mono text-sm leading-none font-bold" aria-hidden="true">{glifo}</span>}
+    <span class="text-2xs font-semibold tracking-wide uppercase opacity-80">{titulo}</span>
+  </div>
+
+  <div class="flex items-baseline gap-2">
+    <span
+      class="cifra text-2xl leading-none font-bold tabular-nums sm:text-3xl"
+      data-vivo={clave}>{numero(valor)}</span
+    >
+    {
+      total != null && total > 0 && (
+        <span class="cifra text-2xs opacity-70" data-vivo={clave ? `${clave}-pct` : undefined}>
+          {porcentaje(valor, total)}
+        </span>
+      )
+    }
+  </div>
+</Etiqueta>

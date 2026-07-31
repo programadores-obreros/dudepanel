@@ -1,0 +1,354 @@
+@import 'tailwindcss';
+
+/* El tema oscuro se activa por clase en <html>, no por media query: el operador
+   tiene que poder forzarlo. La preferencia del sistema es sólo el valor inicial
+   y la resuelve un script antes del primer pintado. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ── Paleta ─────────────────────────────────────────────────────────────────
+   Todo en oklch para que los pares claro/oscuro tengan luminancia comparable:
+   un mismo verde en hex se ve fluorescente sobre fondo negro y apagado sobre
+   blanco. Definir por luminancia perceptual evita tener que ajustar a ojo.   */
+@theme {
+  --color-lienzo: oklch(0.984 0.002 250);
+  --color-panel: oklch(1 0 0);
+  --color-panel-2: oklch(0.965 0.004 250);
+  --color-borde: oklch(0.905 0.006 250);
+  --color-borde-fuerte: oklch(0.82 0.01 250);
+  --color-tinta: oklch(0.26 0.02 255);
+  --color-tenue: oklch(0.505 0.016 255);
+  --color-acento: oklch(0.52 0.17 252);
+  --color-acento-txt: oklch(0.45 0.17 252);
+  --color-acento-bg: oklch(0.95 0.03 252);
+
+  /* Estados. `-txt` es la versión legible sobre panel (contraste AA);
+     el color pleno es para puntos, trazos y el lienzo del mapa. */
+  --color-up: oklch(0.63 0.15 152);
+  --color-up-txt: oklch(0.46 0.13 152);
+  --color-up-bg: oklch(0.95 0.04 152);
+
+  --color-parcial: oklch(0.74 0.16 72);
+  --color-parcial-txt: oklch(0.5 0.13 62);
+  --color-parcial-bg: oklch(0.96 0.05 80);
+
+  --color-caido: oklch(0.6 0.21 24);
+  --color-caido-txt: oklch(0.51 0.2 25);
+  --color-caido-bg: oklch(0.955 0.03 25);
+
+  --color-desconocido: oklch(0.66 0.02 255);
+  --color-desconocido-txt: oklch(0.5 0.02 255);
+  --color-desconocido-bg: oklch(0.955 0.004 255);
+
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+    'Noto Sans', sans-serif;
+  --font-mono:
+    ui-monospace, 'SFMono-Regular', 'JetBrains Mono', 'Cascadia Mono', Menlo, Consolas,
+    'Liberation Mono', monospace;
+
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
+}
+
+.dark {
+  --color-lienzo: oklch(0.185 0.012 258);
+  --color-panel: oklch(0.232 0.014 258);
+  --color-panel-2: oklch(0.278 0.016 258);
+  --color-borde: oklch(0.325 0.016 258);
+  --color-borde-fuerte: oklch(0.44 0.02 258);
+  --color-tinta: oklch(0.955 0.006 258);
+  --color-tenue: oklch(0.715 0.014 258);
+  --color-acento: oklch(0.72 0.15 252);
+  --color-acento-txt: oklch(0.78 0.13 252);
+  --color-acento-bg: oklch(0.32 0.06 252);
+
+  --color-up: oklch(0.72 0.16 152);
+  --color-up-txt: oklch(0.82 0.15 152);
+  --color-up-bg: oklch(0.3 0.06 152);
+
+  --color-parcial: oklch(0.8 0.15 78);
+  --color-parcial-txt: oklch(0.86 0.14 82);
+  --color-parcial-bg: oklch(0.33 0.06 70);
+
+  --color-caido: oklch(0.66 0.21 24);
+  --color-caido-txt: oklch(0.78 0.16 24);
+  --color-caido-bg: oklch(0.32 0.08 24);
+
+  --color-desconocido: oklch(0.6 0.02 258);
+  --color-desconocido-txt: oklch(0.74 0.015 258);
+  --color-desconocido-bg: oklch(0.3 0.008 258);
+
+  color-scheme: dark;
+}
+
+@layer base {
+  html {
+    background-color: var(--color-lienzo);
+    color: var(--color-tinta);
+    -webkit-text-size-adjust: 100%;
+    /* Sin scroll-behavior:smooth global: marea en listas largas y pelea con
+       el desplazamiento del visor de mapas. */
+  }
+
+  body {
+    font-family: var(--font-sans);
+    /* Densidad alta pero legible: 14px de base con interlineado holgado rinde
+       más filas por pantalla que 16px sin volverse un listado de bolsa. */
+    font-size: 0.875rem;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Foco visible SIEMPRE, y el mismo en todos lados: si cada control inventa
+     el suyo, navegar con teclado se vuelve adivinanza. */
+  :focus-visible {
+    outline: 2px solid var(--color-acento);
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
+
+  /* Números en columnas: sin esto las cifras bailan al refrescarse por polling
+     y la tabla parece temblar. */
+  .cifra,
+  table td,
+  table th {
+    font-variant-numeric: tabular-nums;
+  }
+
+  ::selection {
+    background: var(--color-acento-bg);
+    color: var(--color-acento-txt);
+  }
+
+  /* Barras de desplazamiento discretas; en el tema oscuro las nativas de
+     Chrome quedan blancas y cortan la pantalla. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-borde-fuerte) transparent;
+  }
+}
+
+@layer components {
+  /* ── Píldora de estado ──────────────────────────────────────────────────
+     Color + glifo + texto. Nunca sólo color: hay operadores daltónicos y un
+     tablero que sólo distingue verde de rojo los deja afuera. */
+  .pildora {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.0625rem 0.4rem 0.0625rem 0.3rem;
+    border-radius: 9999px;
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    line-height: 1.25rem;
+    white-space: nowrap;
+    border: 1px solid transparent;
+  }
+  .pildora > .glifo {
+    font-family: var(--font-mono);
+    font-weight: 700;
+    font-size: 0.75rem;
+    line-height: 1;
+  }
+
+  .pildora-up {
+    color: var(--color-up-txt);
+    background: var(--color-up-bg);
+    border-color: color-mix(in oklch, var(--color-up) 35%, transparent);
+  }
+  .pildora-parcial {
+    color: var(--color-parcial-txt);
+    background: var(--color-parcial-bg);
+    border-color: color-mix(in oklch, var(--color-parcial) 40%, transparent);
+  }
+  .pildora-caido {
+    color: var(--color-caido-txt);
+    background: var(--color-caido-bg);
+    border-color: color-mix(in oklch, var(--color-caido) 40%, transparent);
+  }
+  .pildora-desconocido {
+    color: var(--color-desconocido-txt);
+    background: var(--color-desconocido-bg);
+    border-color: color-mix(in oklch, var(--color-desconocido) 40%, transparent);
+  }
+
+  .tarjeta {
+    background: var(--color-panel);
+    border: 1px solid var(--color-borde);
+    border-radius: 0.75rem;
+  }
+
+  /* Enlace sobrio: subrayado sólo al pasar, para que las tablas no parezcan
+     un campo de minas azul. */
+  .enlace {
+    color: inherit;
+    text-decoration: none;
+  }
+  .enlace:hover {
+    color: var(--color-acento-txt);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+}
+
+/* ── Visor de mapas ──────────────────────────────────────────────────────── */
+
+.lienzo-mapa {
+  touch-action: none; /* el paneo lo maneja el visor, no el navegador */
+  cursor: grab;
+  background-image: radial-gradient(
+    circle at 1px 1px,
+    color-mix(in oklch, var(--color-borde-fuerte) 55%, transparent) 1px,
+    transparent 0
+  );
+  background-size: 24px 24px;
+}
+.lienzo-mapa[data-arrastrando='si'] {
+  cursor: grabbing;
+}
+
+/* El grupo que se transforma. `will-change` lo sube a su propia capa: con 401
+   elementos, sin esto el navegador repinta el árbol SVG entero en cada rueda. */
+.capa-mapa {
+  will-change: transform;
+}
+
+.nodo-mapa {
+  cursor: pointer;
+}
+.nodo-mapa .aro {
+  fill: var(--color-panel);
+  stroke-width: 2;
+}
+.nodo-mapa:hover .aro,
+.nodo-mapa:focus-visible .aro {
+  stroke-width: 3.5;
+}
+.nodo-mapa:focus {
+  outline: none;
+}
+.nodo-mapa:focus-visible .halo {
+  opacity: 1;
+}
+.nodo-mapa .halo {
+  opacity: 0;
+  fill: none;
+  stroke: var(--color-acento);
+  stroke-width: 3;
+}
+.nodo-mapa .etiqueta {
+  font-size: 11px;
+  font-weight: 600;
+  fill: var(--color-tinta);
+  paint-order: stroke;
+  stroke: var(--color-lienzo);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+/* Estado por color Y por trazo: el borde punteado, el rayado y el continuo se
+   distinguen en escala de grises. */
+.nodo-mapa[data-estado='1'] .aro {
+  stroke: var(--color-up);
+}
+.nodo-mapa[data-estado='2'] .aro {
+  stroke: var(--color-parcial);
+  stroke-dasharray: 5 3;
+}
+.nodo-mapa[data-estado='3'] .aro {
+  stroke: var(--color-caido);
+  stroke-dasharray: 2 2.5;
+}
+.nodo-mapa[data-estado='0'] .aro {
+  stroke: var(--color-desconocido);
+  stroke-dasharray: 1 3;
+}
+
+.marca-estado .fondo {
+  stroke: var(--color-panel);
+  stroke-width: 1.5;
+}
+.marca-estado .glifo {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  text-anchor: middle;
+  fill: var(--color-panel);
+}
+[data-estado='1'] .marca-estado .fondo {
+  fill: var(--color-up);
+}
+[data-estado='2'] .marca-estado .fondo {
+  fill: var(--color-parcial);
+}
+[data-estado='3'] .marca-estado .fondo {
+  fill: var(--color-caido);
+}
+[data-estado='0'] .marca-estado .fondo {
+  fill: var(--color-desconocido);
+}
+/* Sobre ámbar el texto blanco no llega a AA. */
+[data-estado='2'] .marca-estado .glifo {
+  fill: oklch(0.2 0.05 70);
+}
+
+/* Rótulos `static`. En gris y más chicos que las etiquetas de los nodos: son
+   anotaciones del original (nombres de puerto), no elementos monitoreados, y
+   confundirlos con nodos sería leer el mapa mal. */
+.rotulo-mapa {
+  font-size: 10px;
+  font-weight: 500;
+  fill: var(--color-tenue);
+  paint-order: stroke;
+  stroke: var(--color-lienzo);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.enlace-mapa {
+  stroke: var(--color-borde-fuerte);
+  stroke-width: 2;
+  stroke-linecap: round;
+  fill: none;
+}
+.enlace-mapa[data-estado='3'] {
+  stroke: var(--color-caido);
+  stroke-dasharray: 6 4;
+}
+.enlace-mapa[data-estado='2'] {
+  stroke: var(--color-parcial);
+  stroke-dasharray: 10 4;
+}
+.enlace-mapa[data-estado='1'] {
+  stroke: color-mix(in oklch, var(--color-up) 70%, var(--color-borde-fuerte));
+}
+
+/* Una caída que acaba de entrar late tres veces y para. Animación infinita en
+   un tablero que se mira toda la noche es tortura. */
+@keyframes latido {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in oklch, var(--color-caido) 55%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+}
+.late {
+  animation: latido 1.1s ease-out 3;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

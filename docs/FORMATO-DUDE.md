@@ -26,8 +26,8 @@ alfabéticamente** por nombre de campo.
 
 | campo | codificación | ejemplo |
 |---|---|---|
-| Enteros generales (`itemX`, `probeInterval`, IDs) | **u32 little-endian** | `51 02 00 00` = 593 |
-| Puertos (`port`, `defaultPort`, `webServerPort`) | **u16/u32 big-endian** | `00 A1` = 161 |
+| **Todo entero de 4 bytes** | **u32 little-endian, sin excepciones** | `51 02 00 00` = 593 |
+| Puertos | u32 little-endian, como el resto | `A1 00 00 00` = 161 |
 | Direcciones IP | **4 bytes big-endian** | `0A E3 0B 13` = 192.0.2.799 |
 | Listas de IP | N × 4 bytes | 8 bytes = 2 direcciones |
 | Booleanos | 1 byte | `00` no · `01` sí |
@@ -36,6 +36,37 @@ alfabéticamente** por nombre de campo.
 
 > 🔴 **`0xFFFFFFFF` significa NULL.** Guardarlo como número produce basura en
 > cualquier informe.
+
+> ### 🔴 Corregido el 31/07/2026: NO hay campos big-endian
+>
+> Este documento decía que los puertos venían en big-endian, «`00 A1` = 161».
+> **Es falso.** Los bytes reales son `A1 00 00 00`: alguien vio el `A1` primero
+> y lo leyó al revés. **Todo entero de 4 bytes de este formato es
+> little-endian.**
+>
+> Sólo son big-endian dos cosas, y se decodifican aparte: el `u16` de largo en
+> el encabezado de cada registro, y las direcciones IPv4.
+>
+> Medido comparando las dos lecturas:
+>
+> | campo | bytes | little-endian | big-endian |
+> |---|---|---:|---:|
+> | `http`.defaultPort | `50 00 00 00` | **80** | 1.342.177.280 |
+> | `ssh`.defaultPort | `16 00 00 00` | **22** | 369.098.752 |
+> | perfil SNMP.port | `a1 00 00 00` | **161** | 2.701.131.776 |
+> | config.webServerPort | `91 1f 00 00` | **8.081** | 2.434.727.936 |
+> | `ethernet`.snmpType | `06 00 00 00` | **6** (ifType IANA) | 100.663.296 |
+>
+> 80, 22, 161, 8081 y el ifType 6 no son coincidencias.
+
+### Colores
+
+Vienen como `R, G, B, 0` — o sea `0xRRGGBB`. **Leídos como entero
+little-endian, el rojo sale azul.**
+
+### `dnsNames` es una lista, no una cadena
+
+Cada nombre viene precedido por su largo en u32 LE.
 
 ---
 
@@ -109,14 +140,25 @@ Verificado sobre los 40 mapas: **38 tienen elementos, 0 elementos huérfanos.**
 | `linkID`, `linkFrom`, `linkTo` | sólo en elementos de enlace |
 | `linkWidth`, `linkUseWidth` | grosor de la línea |
 
-### `itemType` — medido, no supuesto
+### 🔴 La clasificación usa DOS campos, no uno
 
-| valor | significa | `itemID` apunta a | cant. |
-|---:|---|---|---:|
-| `0` | **dispositivo** | objeto `0x0f` | 2.054 |
-| `1` | **red** | objeto `0x10` | 2 |
-| `2` | **submapa** | objeto `0x0a` | 161 |
-| `3` | **enlace** | *nada* — usa `linkFrom`/`linkTo` | 100 |
+Este documento decía que `itemType` alcanzaba. **No alcanza**, y el error hacía
+contar 1.170 enlaces como si fueran dispositivos.
+
+`type` es el discriminador de primer nivel; `itemType` sólo manda cuando
+`type = 0`:
+
+| `type` | `itemType` | cant. | qué es | `itemID` apunta a |
+|---:|---:|---:|---|---|
+| 0 | 0 | **884** | dispositivo | objeto `0x0f` |
+| 0 | 1 | 2 | red | objeto `0x10` |
+| 0 | 2 | 161 | submapa | objeto `0x0a` |
+| 0 | 3 | 100 | **rótulo de texto** (`eth2`, `eth4`) | *nada* |
+| 1 | — | **1.170** | **enlace** | *nada* — usa `linkID`/`linkFrom`/`linkTo` |
+
+Lo que decía antes —«2.054 dispositivos, 100 enlaces»— eran 884 equipos **más**
+1.170 enlaces sumados por ignorar `type`, y los «100 enlaces» son rótulos:
+**ninguno de los 100 tiene `linkID`.** Los 1.170 enlaces reales, todos lo tienen.
 
 ---
 
@@ -131,7 +173,17 @@ Un servicio (`0x11`) es lo que pinta el mapa de verde o rojo.
 | `probeID` | con qué sonda se mide |
 | `enabled` · `acked` | habilitado · reconocido por un operador |
 | `probesDown` | fallos consecutivos |
-| `timeLastUp` · `timeLastDown` · `timeSinceChanged` | marcas de tiempo |
+| `timeSinceChanged` | **el único instante real** (epoch, u32 LE) |
+| `timeLastUp` · `timeLastDown` | 🔴 **DURACIONES, no fechas** — ver abajo |
+
+> ### 🔴 Los nombres de The Dude mienten
+>
+> `timeLastDown` **no es «cuándo se cayó»: es cuánto duró la última caída.**
+> Verificado: coincide exacto con `outages.duration` en **251 de los 311**
+> servicios con historial.
+>
+> Mostrarlos como fecha pone «1970» en pantalla. Para «hace cuánto que está
+> así», el campo es `timeSinceChanged`.
 
 > El mapeo de `status` se dedujo de los cuatro colores que define la
 > configuración del servidor (`mapUpColor`, `mapDownPartialColor`,
@@ -161,8 +213,21 @@ Distribución al 31/07/2026: `1`→363 · `3`→267 · `0`→214 · `2`→15
 ### 🔴 Campos que NUNCA se copian a PostgreSQL
 
 ```
-user   pwd   password   community   snmpCommunity   v3AuthPassword   v3PrivPassword
+user  pwd  password  community  snmpCommunity  v3AuthPassword  v3PrivPassword
+customField1  customField2  customField3
 ```
+
+> ### 🔴 Por qué `customField` está en esa lista
+>
+> **No es paranoia preventiva.** En la base real de el ISP, **seis
+> dispositivos tienen la contraseña del equipo escrita a mano en
+> `customField1`**, en claro, con formato `usuario:clave`.
+>
+> Es un campo de texto libre: la convención de nombres no protege nada ahí. Un
+> filtro que confía en que los secretos se llamen «password» habría copiado esas
+> seis a PostgreSQL sin que ningún test se quejara.
+>
+> **Lo único que protege un campo de texto libre es no leerlo.**
 
 The Dude guarda las credenciales de **cada router de el ISP en forma
 recuperable** — no puede guardar hashes porque tiene que presentarlas al

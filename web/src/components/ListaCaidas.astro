@@ -1,0 +1,65 @@
+---
+import type { Caida } from '@/lib/consultas';
+import { duracion, fechaHora, fechaLarga } from '@/lib/formato';
+
+interface Props {
+  caidas: Caida[];
+  /** En el detalle de un equipo el nombre es redundante. */
+  conEquipo?: boolean;
+  vacio?: string;
+}
+
+const { caidas, conEquipo = true, vacio = 'Ninguna caída registrada.' } = Astro.props;
+---
+
+{
+  caidas.length === 0 ? (
+    <p class="text-tenue px-3 py-6 text-center text-xs">{vacio}</p>
+  ) : (
+    <ul class="divide-borde divide-y">
+      {caidas.map((c) => (
+        <li class="flex items-center gap-3 px-3 py-2">
+          <span
+            class:list={[
+              'text-2xs shrink-0 rounded px-1.5 py-0.5 font-mono font-bold',
+              c.abierta ? 'bg-caido text-white' : 'bg-panel-2 text-tenue',
+            ]}
+            aria-hidden="true"
+          >
+            {c.abierta ? '✕' : '✓'}
+          </span>
+
+          <span class="min-w-0 flex-1">
+            <span class="flex flex-wrap items-baseline gap-x-2">
+              {conEquipo &&
+                (c.device_id ? (
+                  <a href={`/dispositivos/${c.device_id}`} class="enlace truncate text-sm font-medium">
+                    {c.equipo ?? `Equipo #${c.device_id}`}
+                  </a>
+                ) : (
+                  <span class="truncate text-sm font-medium">{c.equipo ?? 'Equipo desconocido'}</span>
+                ))}
+              {c.sonda && <span class="text-tenue text-2xs">{c.sonda}</span>}
+            </span>
+            <span class="text-tenue text-2xs block">
+              {c.abierta ? 'Caído desde' : 'Cayó'}{' '}
+              <time datetime={c.inicio ?? undefined} title={fechaLarga(c.inicio)}>
+                {fechaHora(c.inicio)}
+              </time>
+            </span>
+          </span>
+
+          <span
+            class:list={[
+              'cifra shrink-0 text-xs font-semibold tabular-nums',
+              c.abierta ? 'text-caido-txt' : 'text-tenue',
+            ]}
+          >
+            {duracion(c.duracion_s)}
+            <span class="sr-only">{c.abierta ? ' y sigue caído' : ' de duración'}</span>
+          </span>
+        </li>
+      ))}
+    </ul>
+  )
+}
