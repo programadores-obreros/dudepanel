@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # ════════════════════════════════════════════════════════════════════════════
-#  Panel web de la red de el ISP.
+#  Panel web de la red del ISP.
 #
 #  Tres etapas. La final no lleva ni pnpm, ni el código fuente, ni las
 #  dependencias de desarrollo: sólo Node, `dist/` y lo que hace falta para

@@ -390,7 +390,7 @@ describe('claveRepuesto', () => {
     expect(iconos.claveRepuesto('globe.svg')).toBe('globo');
   });
 
-  it('reconoce por la convención de nombres de el ISP', () => {
+  it('reconoce por la convención de nombres del ISP', () => {
     expect(iconos.claveRepuesto('Vega_P_Aurora_AC2')).toBe('ap');
     expect(iconos.claveRepuesto('CPE_Bahia_0031')).toBe('cliente');
     expect(iconos.claveRepuesto('RT_Core_A')).toBe('router');
@@ -398,7 +398,7 @@ describe('claveRepuesto', () => {
     expect(iconos.claveRepuesto('SRV_Radius')).toBe('server');
   });
 
-  // Los nombres de archivo que están DE VERDAD en la base de el ISP.
+  // Los nombres de archivo que están DE VERDAD en la base del ISP.
   // Si el directorio no se monta, el repuesto tiene que acertar igual.
   it('reconoce los modelos concretos del catálogo real', () => {
     const esperado: Record<string, string> = {
@@ -444,7 +444,7 @@ describe('iconoRepuesto', () => {
 });
 
 describe('extension y TIPOS_IMAGEN', () => {
-  it('reconoce las extensiones reales del directorio de el ISP', () => {
+  it('reconoce las extensiones reales del directorio del ISP', () => {
     expect(iconos.extension('images/nanomder.PNG')).toBe('png');
     expect(iconos.extension('panel 5m.jpg')).toBe('jpg');
     expect(iconos.extension('sin-extension')).toBeNull();

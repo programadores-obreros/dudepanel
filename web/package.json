@@ -3,7 +3,7 @@
   "type": "module",
   "version": "1.0.0",
   "private": true,
-  "description": "Panel web de monitoreo de red de el ISP",
+  "description": "Panel web de monitoreo de red del ISP",
   "scripts": {
     "dev": "astro dev",
     "start": "astro dev",

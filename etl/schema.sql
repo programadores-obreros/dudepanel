@@ -7,7 +7,7 @@
 --  buscar y agregar, que en el origen es imposible.
 --
 --  🔴 NINGUNA TABLA GUARDA CREDENCIALES.
---     The Dude conserva el usuario y la contraseña de cada router de el ISP
+--     The Dude conserva el usuario y la contraseña de cada router del ISP
 --     en forma recuperable, porque tiene que presentarlos al autenticarse. El
 --     ETL no los enmascara: NO LOS LEE. Una base que no los contiene no los
 --     puede filtrar, ni por un bug, ni por un volcado, ni por un respaldo mal

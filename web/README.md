@@ -1,4 +1,4 @@
-# Panel web de la red de el ISP
+# Panel web de la red del ISP
 
 Reemplazo consultable desde el navegador de **The Dude 4.0beta3**, el cliente
 Windows de 2011 que hoy corre en una sola máquina: para ver la red hay que ir
@@ -193,7 +193,7 @@ un entero quedó viejo.
 ## Lo que el panel NO tiene, a propósito
 
 **Ni usuarios ni contraseñas de los equipos.** The Dude guarda las credenciales
-de cada router de el ISP en forma recuperable. El ETL no las enmascara: **no
+de cada router del ISP en forma recuperable. El ETL no las enmascara: **no
 las lee**. Una base que no las contiene no las puede filtrar, ni por un bug, ni
 por un volcado, ni por un respaldo mal guardado.
 

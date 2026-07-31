@@ -3,7 +3,7 @@
 El contrato completo está en `docs/FORMATO-DUDE.md`. Acá va sólo lo que hace
 falta para leer un blob; las decisiones y su porqué están documentadas allá.
 
-Todo lo de este módulo se obtuvo por inspección de la base real de el ISP
+Todo lo de este módulo se obtuvo por inspección de la base real del ISP
 (14.925 objetos). MikroTik nunca documentó este formato, y no lo va a hacer:
 The Dude 4.0beta3 es de enero de 2011, es la última versión para Windows y está
 discontinuado.
@@ -97,7 +97,7 @@ ESTADO = {0: "unknown", 1: "up", 2: "partial", 3: "down"}
 #: No se enmascaran: no se leen. Una base que no las contiene no las filtra.
 #:
 #: 🔴 `customField` se agregó el 31/07/2026 y NO es paranoia preventiva: en la
-#:    base de el ISP seis dispositivos tienen la contraseña del equipo escrita
+#:    base del ISP seis dispositivos tienen la contraseña del equipo escrita
 #:    a mano en `customField1`, en claro y con formato `usuario:clave`. El campo
 #:    es texto libre, así que la convención de nombres no protege nada: lo único
 #:    que protege es no leerlo.

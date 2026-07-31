@@ -74,7 +74,7 @@ BUCKETS = {
 }
 
 #: typeID de una notificación → etiqueta. Sólo los valores efectivamente vistos
-#: en la base de el ISP. Los que no estén acá salen en NULL: una etiqueta
+#: en la base del ISP. Los que no estén acá salen en NULL: una etiqueta
 #: inventada es peor que un hueco, porque el hueco se nota.
 NOTIFICACION = {1: "email", 3: "popup", 4: "flash", 5: "beep", 10: "log"}
 

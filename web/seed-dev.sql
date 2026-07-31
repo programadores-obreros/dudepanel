@@ -1,7 +1,7 @@
 -- ════════════════════════════════════════════════════════════════════════════
 --  Datos de prueba para desarrollar el panel y correr los tests.
 --
---  NO son datos de el ISP: son inventados. Antes acá decía eso mismo y era
+--  NO son datos del ISP: son inventados. Antes acá decía eso mismo y era
 --  MENTIRA — el archivo traía la IP interna, la MAC y el hostname reales del
 --  servidor que corre The Dude, más los rangos de gestión y el dominio del ISP.
 --  La frase vuelve a estar porque ahora se puede sostener, y se sostiene sola:

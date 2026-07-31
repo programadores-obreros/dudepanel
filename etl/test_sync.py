@@ -1,4 +1,4 @@
-"""Pruebas del ETL contra `muestra.db`, una copia real de la base de el ISP.
+"""Pruebas del ETL contra `muestra.db`, una copia real de la base del ISP.
 
 No hay fixtures inventados. Cada número que se afirma acá salió de medir la
 base de producción, y por eso las pruebas sirven de dos maneras: verifican el
@@ -80,7 +80,7 @@ def test_abrir_es_solo_lectura():
 # 🔴 La prueba que importa: ninguna credencial sale del decodificador
 # ─────────────────────────────────────────────────────────────────────────────
 
-#: Los que EXISTEN en la base de el ISP. Se exige que estén: si un día
+#: Los que EXISTEN en la base del ISP. Se exige que estén: si un día
 #: desaparecen, la prueba de abajo dejaría de probar nada sin avisar.
 CAMPOS_SECRETOS = (
     "pwd", "user", "community", "v3AuthPassword", "v3CryptPassword",

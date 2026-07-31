@@ -8,7 +8,7 @@ import { extension, iconoRepuesto, rutaDeArchivo, TIPOS_IMAGEN } from '@/lib/ico
  * Sirve los iconos de The Dude desde `data/files/`.
  *
  * Sólo hace falta para los rasterizados: los SVG se incrustan en la página
- * (ver `iconos.ts`). Pero 47 de los 56 iconos que usan los mapas de el ISP
+ * (ver `iconos.ts`). Pero 47 de los 56 iconos que usan los mapas del ISP
  * son PNG o JPG —`nanomder.png`, `olt-tplink.png`, `rb2011.png`— y un PNG no se
  * puede incrustar sin inflar el HTML: en base64 serían más de 100 kB por página
  * contra 21 peticiones chiquitas que el navegador cachea y reusa entre mapas.

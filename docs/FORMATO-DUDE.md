@@ -1,7 +1,7 @@
 # El formato de datos de The Dude 4.0beta3
 
 **Este documento es el contrato.** El ETL lee de acá; el esquema de PostgreSQL
-sale de acá. Todo lo que dice está **medido sobre la base real de el ISP**
+sale de acá. Todo lo que dice está **medido sobre la base real del ISP**
 (14.925 objetos), no deducido de documentación — de la que no existe.
 
 ---
@@ -219,7 +219,7 @@ customField1  customField2  customField3
 
 > ### 🔴 Por qué `customField` está en esa lista
 >
-> **No es paranoia preventiva.** En la base real de el ISP, **seis
+> **No es paranoia preventiva.** En la base real del ISP, **seis
 > dispositivos tienen la contraseña del equipo escrita a mano en
 > `customField1`**, en claro, con formato `usuario:clave`.
 >
@@ -229,7 +229,7 @@ customField1  customField2  customField3
 >
 > **Lo único que protege un campo de texto libre es no leerlo.**
 
-The Dude guarda las credenciales de **cada router de el ISP en forma
+The Dude guarda las credenciales de **cada router del ISP en forma
 recuperable** — no puede guardar hashes porque tiene que presentarlas al
 autenticarse. **El ETL las omite, no las enmascara: no las lee.**
 

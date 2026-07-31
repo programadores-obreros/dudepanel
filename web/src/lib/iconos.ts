@@ -225,7 +225,7 @@ export async function rutaDeArchivo(rel: string): Promise<string | null> {
 // Lo que no se reconoce no se "limpia" — no se emite.
 //
 // El inventario de abajo NO es de memoria: sale de contar qué usan los 26 SVG
-// reales de el ISP. Importa porque una lista blanca entusiasta deja el icono
+// reales del ISP. Importa porque una lista blanca entusiasta deja el icono
 // en blanco, y ahí `style=` aparece 479 veces y `xlink:href` 10.
 
 /** Nombre en minúsculas → nombre canónico. SVG distingue mayúsculas. */
@@ -556,7 +556,7 @@ const REPUESTO: Record<string, string> = {
 export function claveRepuesto(pista: string | null | undefined): keyof typeof REPUESTO {
   const t = (pista ?? '').toLowerCase();
   // El orden importa: lo más específico primero. Los nombres de archivo reales
-  // de el ISP son de catálogo (`nanomder.png`, `rb2011.png`, `crs305.png`),
+  // del ISP son de catálogo (`nanomder.png`, `rb2011.png`, `crs305.png`),
   // así que los modelos concretos mandan sobre las palabras genéricas.
   if (/nanobridge|bridge|brdg/.test(t)) return 'bridge';
   if (/airfiber|dish|panel|basestation|anten|torre|tower|mast|repetidor/.test(t)) return 'antena';
