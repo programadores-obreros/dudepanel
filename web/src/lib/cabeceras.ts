@@ -103,5 +103,25 @@ export const CABECERAS: ReadonlyArray<readonly [string, string]> = [
   ['cross-origin-opener-policy', 'same-origin'],
   ['cross-origin-resource-policy', 'same-origin'],
   // El panel no usa ninguna de estas. Apagarlas es gratis.
-  ['permissions-policy', 'camera=(), microphone=(), geolocation=(), interest-cohort=()'],
+  //
+  // 🔴 NO volver a agregar `interest-cohort=()`.
+  //
+  //    Era el opt-out de FLoC, la propuesta de Google de 2021 para segmentar
+  //    publicidad por «cohortes de interés». En 2021 se agregó en todas partes.
+  //    **Google abandonó FLoC en enero de 2022** y Chrome borró el nombre de
+  //    su lista, así que hoy imprime en consola:
+  //
+  //        Error with Permissions-Policy header: Unrecognized feature:
+  //        'interest-cohort'
+  //
+  //    No rompía nada —el navegador descarta el token que no conoce y aplica
+  //    el resto— pero ensuciaba la consola de todos los que abrían el panel.
+  //    Y una consola con ruido es una consola que se deja de mirar: el día que
+  //    aparezca un error de verdad, va a estar abajo de este.
+  //
+  //    Tampoco se pone `browsing-topics=()`, que es el reemplazo moderno:
+  //    Firefox y Safari no lo conocen y devolveríamos exactamente el mismo
+  //    aviso, sólo que en otros navegadores. Este panel está detrás de una
+  //    contraseña y no muestra publicidad; no hay nada que optar por afuera.
+  ['permissions-policy', 'camera=(), microphone=(), geolocation=()'],
 ];
