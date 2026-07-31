@@ -48,6 +48,10 @@ services:
     # queda chico y produce errores raros bajo carga.
     shm_size: 256mb
 
+    # Postgres necesita escribir, así que no puede ir `read_only` — pero no
+    # necesita adquirir privilegios nuevos, y no cuesta nada negárselo.
+    security_opt: ["no-new-privileges:true"]
+
     logging: &logs
       driver: json-file
       options: { max-size: "10m", max-file: "5" }
@@ -91,14 +95,32 @@ services:
 
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-dude}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-dude}
-      # Los iconos SVG no están en la base de The Dude —el blob viene en 0
-      # bytes— sino en el directorio. Se sirven de acá, en sólo lectura.
+      # Los iconos no están en la base de The Dude —el blob viene en 0 bytes—
+      # sino en el directorio. Se sirven de acá, en sólo lectura.
+      #
+      # 🔴 Van los DOS nombres a propósito. El ETL lee `DUDE_FILES` y el panel
+      #    leía `DUDE_FILES_DIR`: acá se definía sólo el primero, así que en el
+      #    contenedor el panel apuntaba a un directorio inexistente y **los 56
+      #    iconos caían al de repuesto en silencio** — 47 de ellos son PNG o JPG
+      #    de los mapas reales. Un icono faltante es cosmético; 47 faltando sin
+      #    decir nada es un panel que parece roto y no explica por qué.
       DUDE_FILES: /origen/files
+      DUDE_FILES_DIR: /origen/files
       HOST: 0.0.0.0
       PORT: 4321
 
     volumes:
-      - ${DUDE_DATA:-/srv/thedude/data}:/origen:ro
+      # 🔴 SÓLO `files/`, no el directorio entero.
+      #
+      #    El encabezado de este archivo afirma que «ni el web ni nadie más ve
+      #    la base de The Dude». Montando `/origen` completo eso era FALSO:
+      #    `dude.db` quedaba legible dentro del espacio de nombres del panel.
+      #
+      #    Iba `:ro`, así que nunca hubo riesgo de escritura. Pero una
+      #    afirmación de seguridad que no se cumple es peor que no hacerla: la
+      #    próxima decisión se toma creyéndola. El panel necesita los iconos y
+      #    nada más, así que recibe los iconos y nada más.
+      - ${DUDE_DATA:-/srv/thedude/data}/files:/origen/files:ro
 
     ports:
       # ⚠️ 127.0.0.1 A PROPÓSITO. En la VM de producción esta interfaz NO debe

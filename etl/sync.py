@@ -384,26 +384,48 @@ def _agregar_estado(servicios: list[tuple]) -> tuple[int | None, int, int, int]:
     nadie quiere no informa, molesta — y con el tiempo hace que se ignore el
     rojo, que es la peor falla posible en un tablero.
 
-        sin servicios habilitados  → NULL   (no se sabe, y se dice)
-        todos arriba               → 1
-        algunos abajo, otros no    → 2      (caída parcial)
-        todos abajo                → 3
-        sólo desconocidos          → 0
+        sin servicios habilitados          → NULL   (no se sabe, y se dice)
+        todos arriba                       → 1
+        alguno caído y alguno no           → 2      (degradado)
+        alguno degradado, ninguno caído    → 2      (degradado)
+        todos caídos                       → 3
+        sólo desconocidos                  → 0
+
+    🔴 Corregido el 31/07/2026. Acá `partial` (2) y `down` (3) se sumaban en la
+       misma variable, así que un equipo cuyo ÚNICO servicio estaba degradado
+       terminaba en 3 — pintado de rojo como si estuviera caído del todo.
+       Medido sobre la base real: le pasaba a **15 dispositivos**.
+
+       No es cosmético. The Dude define un color propio para el estado parcial
+       (`mapDownPartialColor`) precisamente porque, para quien está de guardia,
+       «anda con un servicio degradado» y «no responde» exigen reacciones
+       distintas. Colapsarlos pierde información y, peor, **alarma de más**:
+       un tablero que grita rojo por una degradación enseña a ignorar el rojo,
+       que es la peor falla que puede tener un tablero.
     """
     activos = [estado for estado, habilitado in servicios if habilitado]
     if not activos:
         return None, 0, 0, 0
     arriba = sum(1 for e in activos if e == 1)
-    abajo = sum(1 for e in activos if e in (2, 3))
-    if abajo and arriba:
-        estado = 2
-    elif abajo:
-        estado = 3
+    degradados = sum(1 for e in activos if e == 2)
+    caidos = sum(1 for e in activos if e == 3)
+
+    if caidos and (arriba or degradados):
+        estado = 2          # mezcla: algo anda, algo no
+    elif caidos:
+        estado = 3          # todos caídos, y sólo entonces
+    elif degradados:
+        estado = 2          # nada caído del todo, pero hay degradación
     elif arriba:
         estado = 1
     else:
         estado = 0
-    return estado, len(activos), arriba, abajo
+
+    # `services_down` cuenta sólo los CAÍDOS de verdad. Un servicio degradado no
+    # está caído, y sumarlo acá haría que la ficha diga «1 de 1 caído» sobre un
+    # equipo que el propio panel pinta de naranja: dos afirmaciones que se
+    # contradicen en la misma pantalla.
+    return estado, len(activos), arriba, caidos
 
 
 # ─────────────────────────────────────────────────────────────────────────────

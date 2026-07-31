@@ -2,9 +2,14 @@
 
 Cómo poner el panel a andar junto al contenedor de The Dude, sin tocarlo.
 
-> Escrito para la VM **120 `thedude`** (`<SERVIDOR>`, Ubuntu 24.04) del
-> Proxmox del ISP, donde ya corre The Dude bajo Wine en Docker. Sirve igual para
-> cualquier anfitrión que tenga `dude.db` en un sistema de archivos local.
+> Escrito para una VM Ubuntu 24.04 donde ya corre The Dude bajo Wine en Docker.
+> Sirve igual para cualquier anfitrión que tenga `dude.db` en un sistema de
+> archivos local.
+>
+> **Los valores concretos —dirección, puerto de SSH, usuario, rangos de la red
+> de gestión— van en el runbook interno de cada instalación, no acá.** Este
+> documento es público: un repositorio con host, puerto y usuario es un mapa
+> de dónde pegar. Se usan marcadores.
 
 ---
 
@@ -48,8 +53,8 @@ El panel agrega tres contenedores al anfitrión. Medido sobre el despliegue real
 | Web (Node SSR) | ~90 MB |
 | **Total** | **~270 MB** |
 
-La VM 120 tiene **4 vCPU y 8 GB**, y The Dude usa 250 MB con la CPU al 20 %.
-Hay lugar de sobra.
+En una VM de **4 vCPU y 8 GB**, con The Dude usando 250 MB y la CPU al 20 %,
+hay lugar de sobra.
 
 > ⚠️ **El disco sí hay que mirarlo.** Las tablas de historia (`chart_values`,
 > `outages`) crecen sin techo a propósito — ese es medio sentido del proyecto,
@@ -73,15 +78,22 @@ sudo $EDITOR .env
 En `.env`:
 
 ```ini
-POSTGRES_PASSWORD=<openssl rand -base64 24>
+POSTGRES_PASSWORD=<openssl rand -hex 24>
 DUDE_DATA=/srv/thedude/data
 SYNC_INTERVAL=30
 WEB_PORT=4321
 ```
 
-> **Generá la contraseña, no la inventes.** `openssl rand -base64 24`. Postgres
-> no se publica fuera de la red interna de Compose, pero una contraseña débil en
-> un `.env` es de las cosas que sobreviven años.
+> **Generá la contraseña, no la inventes** — pero con `-hex`, no con `-base64`.
+>
+> 🔴 `openssl rand -base64 24` produce `/` y `+`, y la contraseña se interpola
+> cruda en `DATABASE_URL`. Una barra **termina la sección de autoridad de la
+> URI** y el arranque falla con `failed to resolve host 'dude'`, un mensaje que
+> apunta a DNS y no tiene nada que ver. Con 32 caracteres base64 la
+> probabilidad de que salga al menos un carácter problemático es **del 64 %**:
+> dos de cada tres despliegues.
+>
+> `openssl rand -hex 24` da sólo `[0-9a-f]`, y 96 bits de entropía sobran.
 
 ```bash
 sudo docker compose up -d
@@ -114,18 +126,25 @@ Referencia de una instalación real: **885 dispositivos · 859 servicios ·
 40 mapas · 2.317 elementos**.
 
 **3 · 🔴 ¿Se filtró alguna credencial?** No es opcional. Es la garantía central
-del proyecto y se comprueba, no se confía:
+del proyecto y se comprueba, no se confía.
+
+> 🔴 Acá había un chequeo que miraba **nombres de columna** contra un patrón.
+> **No servía**: las columnas las fija `schema.sql`, que es estático, así que
+> devolvía vacío siempre — hoy y en cualquier futuro. Confirmaba lo que ya
+> sabíamos y daba la sensación de haber verificado. Un chequeo que no puede
+> fallar no es un chequeo.
+>
+> El correcto busca **valores**, y para eso está el test del ETL: lee del origen
+> las credenciales de verdad y las busca dentro de cada tabla ya escrita.
 
 ```bash
-sudo docker compose exec db psql -U dude -tAc "
-  SELECT table_name||'.'||column_name
-  FROM information_schema.columns
-  WHERE table_schema='public'
-    AND column_name ~* '(pass|pwd|secret|community|user)';"
+sudo docker compose run --rm \
+  -e TEST_DATABASE_URL="postgresql://dude:$POSTGRES_PASSWORD@db:5432/dude" \
+  etl python -m pytest test_sync.py -q -k credencial
 ```
 
-**Tiene que devolver vacío.** Si devuelve algo, hay una columna que no debería
-existir: revisar el ETL antes de seguir.
+Ese test **primero comprueba que el origen SÍ tiene secretos** —si no, pasaría
+por vacío sin probar nada— y recién después verifica que ninguno llegó.
 
 **4 · ¿El panel responde?**
 
@@ -146,14 +165,13 @@ ssh -L 4321:127.0.0.1:4321 -p <PUERTO_SSH> <USUARIO>@<SERVIDOR>
 
 ### Para que lo use el equipo desde la red de gestión
 
-Hoy `ufw` está en *deny* y sólo deja pasar el `<PUERTO_SSH>` — **no distingue si venís
-de internet o de adentro**, así que el equipo tampoco llega.
+Si el cortafuegos está en *deny* y sólo deja pasar SSH, **no distingue si venís
+de internet o de adentro**: el equipo tampoco llega.
 
 Cuando se quiera abrir, va **por origen**, nunca «a cualquiera»:
 
 ```bash
-sudo ufw allow from 192.0.2.0/24 to any port 4321 proto tcp
-sudo ufw allow from 198.51.100.0/24 to any port 4321 proto tcp
+sudo ufw allow from <RANGO_DE_GESTION> to any port 4321 proto tcp
 ```
 
 Y hay que cambiar la publicación del puerto en `docker-compose.yml`, que hoy
@@ -203,7 +221,7 @@ sudo docker compose exec -T db pg_dump -U dude dude | gzip > panel-$(date +%F).s
 |---|---|---|
 | `sync_runs.ok = false` con `database is locked` | The Dude estaba confirmando | Normal si es esporádico. Constante = revisar `SYNC_INTERVAL` |
 | El panel muestra datos viejos | El ETL no corre | `docker compose logs etl` |
-| `user_version` distinto de 1 | 🔴 la base de The Dude está mal | **Parar y restaurar** desde `/srv/thedude/backups/` |
+| `user_version` distinto de 1 | 🔴 la base de The Dude está mal | **Parar y restaurar** desde el respaldo de la base |
 | Faltan iconos | `files/` no montado | Revisar `DUDE_DATA` en `.env` |
 | Mapas sin elementos | El join falló | 38 de 40 mapas tienen elementos; 2 están vacíos de verdad |
 

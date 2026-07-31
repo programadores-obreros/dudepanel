@@ -48,6 +48,11 @@ files/
 .env.*
 !.env.example
 
+# Salidas de los scripts de verificación: son volcados de la base REAL, con
+# direcciones y nombres de equipos de producción. Los scripts sí se versionan.
+qa/salida/
+qa/*.txt
+
 # Node
 node_modules/
 dist/

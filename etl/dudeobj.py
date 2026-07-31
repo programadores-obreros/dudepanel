@@ -170,9 +170,31 @@ def registros(blob: bytes) -> list[tuple[str, bytes]]:
 
 
 def texto(v: bytes) -> str | None:
-    """Cadena latin-1 sin el relleno de ceros. None si queda vacía."""
-    t = v.rstrip(b"\x00").decode("latin-1", "replace")
-    return t or None
+    """Cadena sin el relleno de ceros. None si queda vacía.
+
+    🔴 Corregido el 31/07/2026. Acá se decodificaba siempre en latin-1, y está
+       mal: **The Dude escribe el texto que tipea el usuario en UTF-8.**
+
+       La evidencia es un solo caso en la base real, porque casi no hay acentos
+       cargados —una nota que dice `'Está arriba en la torre.'`, bytes `c3 a1`—
+       pero es concluyente: leída en latin-1 sale `'EstÃ¡ arriba en la torre.'`.
+       El día que alguien escriba «Estación» en el nombre de un equipo, el panel
+       mostraría «EstaciÃ³n».
+
+       Se intenta UTF-8 y se cae a latin-1 sólo si no es válido. Ese respaldo no
+       es paranoia: los campos que **no** son texto —identificadores, colores,
+       coordenadas— tienen bytes altos que no forman UTF-8, y esta función los
+       recibe igual cuando el llamador todavía no sabe de qué tipo son. En
+       latin-1 cualquier byte es válido, así que nunca lanza y nunca pierde
+       datos.
+    """
+    b = v.rstrip(b"\x00")
+    if not b:
+        return None
+    try:
+        return b.decode("utf-8")
+    except UnicodeDecodeError:
+        return b.decode("latin-1")
 
 
 def entero(nombre: str, v: bytes) -> int | None:
@@ -324,31 +346,55 @@ class Objeto:
             return "?"
         return TIPO.get(self.sys_type, f"instance:{self.sys_type}")
 
-    def crudo(self, nombre: str) -> bytes | None:
+    def _leer(self, nombre: str) -> bytes | None:
+        """Devuelve los bytes de un campo, o None si el campo es secreto.
+
+        🔴 Agregado el 31/07/2026, y corrige una mentira de la documentación.
+
+           El README, `schema.sql` y los propios comentarios afirmaban que
+           `SECRETO` protegía el ETL «antes de que los valores existan en
+           memoria». **Era falso**: el filtro vivía sólo en `valor()`, que se usa
+           desde `get()`, y una auditoría contó **54 llamadas a los accesores en
+           `sync.py` y CERO a `get()`**. `o.txt("pwd")` habría devuelto la
+           contraseña sin pasar por ningún filtro.
+
+           Lo que de hecho protegía era la lista de campos escrita a mano en
+           `extraer()`. Eso funciona —y de hecho funcionó— pero no era lo que
+           decía la documentación, y esa diferencia importa: el próximo que
+           agregue un campo iba a creer que había una red debajo.
+
+           Ahora la hay. Todos los accesores pasan por acá, así que la afirmación
+           pasó a ser cierta en vez de aspiracional.
+        """
+        if SECRETO.search(nombre):
+            return None
         return self.campos.get(nombre)
 
+    def crudo(self, nombre: str) -> bytes | None:
+        return self._leer(nombre)
+
     def get(self, nombre: str, por_defecto=None):
-        v = self.campos.get(nombre)
+        v = self._leer(nombre)
         return por_defecto if v is None else valor(nombre, v)
 
     def num(self, nombre: str) -> int | None:
-        v = self.campos.get(nombre)
+        v = self._leer(nombre)
         return None if v is None else entero(nombre, v)
 
     def txt(self, nombre: str) -> str | None:
-        v = self.campos.get(nombre)
+        v = self._leer(nombre)
         return None if v is None else texto(v)
 
     def bool_(self, nombre: str) -> bool | None:
-        v = self.campos.get(nombre)
+        v = self._leer(nombre)
         return None if v is None else booleano(v)
 
     def lista_ids(self, nombre: str) -> list[int]:
-        v = self.campos.get(nombre)
+        v = self._leer(nombre)
         return [] if v is None else ids(v)
 
     def ips(self, nombre: str) -> list[str]:
-        v = self.campos.get(nombre)
+        v = self._leer(nombre)
         return [] if v is None else direcciones(v)
 
     def macs(self, nombre: str = "macs") -> list[str]:
@@ -406,18 +452,40 @@ def leer_objetos(
     Reintenta con espera creciente. Si agota los intentos lanza `BaseOcupada`
     en vez de devolver una lista corta: **una sincronización parcial silenciosa
     sería peor que ninguna** — dejaría el panel mostrando una red que no existe.
+
+    🔴 Corregido el 31/07/2026. Antes esto EMITÍA mientras leía, con el bucle de
+       reintentos por fuera del `yield`. Si el bloqueo llegaba a mitad de la
+       lectura —que es EL caso típico, porque The Dude toma el lock exclusivo al
+       confirmar cada 10 s— el reintento volvía a emitir desde cero lo ya
+       emitido.
+
+       Medido inyectando un `database is locked` en la fila 500:
+
+           objetos leídos 15.425 · únicos 14.925 · DUPLICADOS 500
+
+       Aguas abajo eso terminaba siempre en `UniqueViolation: files_pkey`. El
+       snapshot anterior sobrevivía —falla cerrado, eso estaba bien— pero **el
+       reintento no podía tener éxito nunca** en el único escenario para el que
+       existe, y en `sync_runs.error` quedaba «clave duplicada» en vez de «la
+       base estaba bloqueada». Diagnosticar eso a las 3 de la mañana es horrible.
+
+       Ahora se acumula dentro del `try` y se devuelve entero. No cuesta memoria
+       extra: quien llama ya hacía `list(...)`.
     """
     ultimo: Exception | None = None
     for n in range(intentos):
         try:
             con = abrir(ruta)
             try:
-                for oid, blob in con.execute("SELECT id, obj FROM objs"):
-                    if blob:
-                        yield objeto(oid, bytes(blob))
-                return
+                leidos = [
+                    objeto(oid, bytes(blob))
+                    for oid, blob in con.execute("SELECT id, obj FROM objs")
+                    if blob
+                ]
             finally:
                 con.close()
+            yield from leidos
+            return
         except sqlite3.OperationalError as e:
             if "locked" not in str(e).lower() and "busy" not in str(e).lower():
                 raise
