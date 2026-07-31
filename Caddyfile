@@ -57,9 +57,9 @@
 	# Para agregar o sacar gente: una línea `usuario hash` por persona, y
 	# `docker compose -f compose.prod.yml up -d caddy` para recargar.
 	basic_auth {
-		astor $2a$14$SJdKDTYomkVbO.PVaWCr9O476ZJx7SrfZVNdvA.N8VQWenJBlazAa
-		soporte $2a$14$xHtwhvu2ri.0JBMMHBnfVODQVXcFvj119QRp5QXPHm7qBKqw6nrc6
-		apalestrini $2a$14$FHpLWd.vs5SqJ6Blbd/lUuIUb96nwCWqDOXtoBWnYZJuAfDulhIYK
+		astorfernandez@gmail.com $2a$14$tUPG1pGsg62wNimWZwVZDuBM0M7.JH5Ws9bn02HdfVk3RlUsKPL3q
+		admin $2a$14$KoMdWqsxwe81kyIwD2MT4e8CM7biehAG5olIhIuOkDisgF1CRGBd.
+		soporte@telwinet.com.ar $2a$14$ss28HI1OjdGfCAtv38El2eHzcVHJWpQOds7M9eDLF6mvqAqEBgba2
 	}
 
 	# ── Cabeceras ────────────────────────────────────────────────────────────
