@@ -1,0 +1,85 @@
+---
+/**
+ * Cerrar sesión.
+ *
+ * 🔴 LA AUTENTICACIÓN BÁSICA NO TIENE CIERRE DE SESIÓN. No es una carencia de
+ *    este panel: no existe en el protocolo.
+ *
+ *    Con un login normal hay una cookie de sesión y cerrar es borrarla. Acá la
+ *    identidad la valida el proxy con `Authorization: Basic …`, y **el que
+ *    guarda esa credencial es el navegador**, que la reenvía sola en cada
+ *    pedido hasta que se cierra del todo. El servidor no tiene forma de
+ *    decirle «olvidala»: no hay una cabecera para eso.
+ *
+ *    Lo que sí funciona, y es lo que hace esta página, es PISARLA: se manda un
+ *    pedido a una ruta protegida con una credencial deliberadamente inválida.
+ *    El navegador reemplaza la que tenía guardada por esa, y desde ahí en
+ *    adelante vuelve a preguntar. Es un rodeo conocido, no una función.
+ *
+ *    Anda en Chrome y en Firefox. En Safari es menos confiable, y por eso el
+ *    texto de abajo dice qué hacer si igual entra sin preguntar — en vez de
+ *    afirmar «sesión cerrada» y que la persona se vaya creyéndolo.
+ *
+ * Y el motivo por el que esto importa más de lo que parece: el panel muestra
+ * las direcciones de 885 equipos de un ISP. Una sesión que queda abierta en la
+ * máquina de la oficina es exactamente el problema que este botón existe para
+ * evitar. Decir que cerró cuando no cerró sería peor que no tener el botón.
+ */
+import Base from '@/layouts/Base.astro';
+import { quien } from '@/lib/roles';
+
+const yo = quien(Astro.request);
+---
+
+<Base titulo="Cerrar sesión">
+  <div class="mx-auto max-w-lg py-8">
+    <div class="tarjeta p-6">
+      <h1 class="text-lg font-semibold">Cerrar sesión</h1>
+
+      {
+        yo.usuario && (
+          <p class="text-tenue mt-1 text-sm">
+            Estás como <strong class="text-texto font-mono">{yo.usuario}</strong>
+            {yo.puedeEditar ? ' · podés acomodar mapas' : ' · sólo lectura'}
+          </p>
+        )
+      }
+
+      <div
+        class="border-borde bg-panel-2 mt-5 rounded-lg border p-4"
+        data-estado-salida
+        aria-live="polite"
+      >
+        <p class="text-sm" data-mensaje>Cerrando…</p>
+      </div>
+
+      <div class="mt-5 flex flex-wrap gap-2">
+        <a
+          href="/"
+          class="border-borde bg-panel-2 hover:bg-panel rounded-lg border px-4 py-2 text-sm no-underline transition-colors duration-150"
+        >
+          Volver al panel
+        </a>
+      </div>
+
+      <details class="text-tenue mt-6 text-xs leading-relaxed">
+        <summary class="cursor-pointer">¿Por qué a veces no pide la contraseña de nuevo?</summary>
+        <p class="mt-2">
+          Este panel usa <strong class="text-texto">autenticación básica</strong>, que no tiene
+          cierre de sesión: la contraseña la guarda tu navegador y la reenvía sola. El servidor
+          no puede pedirle que la olvide — esa orden no existe en el protocolo.
+        </p>
+        <p class="mt-2">
+          Lo que hace este botón es <strong class="text-texto">pisarla</strong> con una
+          credencial inválida, que en Chrome y Firefox alcanza. Si aun así entrás sin que te
+          pregunte, <strong class="text-texto">cerrá el navegador por completo</strong>: ahí se
+          borra seguro.
+        </p>
+      </details>
+    </div>
+  </div>
+
+  <script>
+    import '@/scripts/salir';
+  </script>
+</Base>

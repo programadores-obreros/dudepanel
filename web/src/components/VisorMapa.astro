@@ -126,6 +126,17 @@ const destinos = enOtroMapa > 0 ? (fuera?.destinos ?? []) : [];
     {
       editable && (
         <div class="pointer-events-auto flex flex-col items-end gap-1">
+          {/* 🔴 La pista NO es opcional. Mover exige Ctrl (o ⌘) a propósito,
+              y un gesto con modificador que no está escrito en ningún lado es
+              un gesto que nadie va a descubrir. Va acá arriba, siempre
+              visible, y sólo para quien puede usarlo. */}
+          <p class="border-borde bg-panel/90 text-2xs text-tenue rounded border px-2 py-1 backdrop-blur">
+            <kbd class="border-borde bg-panel-2 text-texto rounded border px-1 font-sans">Ctrl</kbd>
+            {' '}o{' '}
+            <kbd class="border-borde bg-panel-2 text-texto rounded border px-1 font-sans">⌘</kbd>
+            {' '}+ arrastrar para acomodar
+            <span class="text-tenue/70 block">en el celular, mantené apretado</span>
+          </p>
           <span
             class="border-borde bg-panel/90 text-2xs rounded border px-2 py-1 backdrop-blur transition-[opacity,color] duration-200 empty:opacity-0 data-[tono=error]:border-caido/60 data-[tono=error]:text-caido-txt data-[tono=guardado]:text-arriba-txt data-[tono=guardando]:text-tenue"
             data-estado-guardado
@@ -628,8 +639,12 @@ const destinos = enOtroMapa > 0 ? (fuera?.destinos ?? []) : [];
   /* ── Arrastrar ────────────────────────────────────────────────────────────
      El cursor es la única señal de que un nodo se puede mover: no hay tirador
      ni borde extra, porque en un mapa de 400 nodos cualquier adorno por nodo
-     es ruido multiplicado por 400. */
-  :global([data-visor][data-editable] .nodo-mapa) {
+     es ruido multiplicado por 400.
+
+     🔴 `data-listo-mover` lo pone el script mientras Ctrl (o ⌘) está apretado.
+        La mano NO puede estar siempre: mover exige el modificador, y un cursor
+        que promete algo que no va a pasar es peor que ninguno. */
+  :global([data-visor][data-editable][data-listo-mover] .nodo-mapa) {
     cursor: grab;
   }
   :global([data-visor][data-moviendo-nodo] .nodo-mapa) {

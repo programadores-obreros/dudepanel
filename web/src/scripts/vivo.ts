@@ -73,6 +73,8 @@ async function encuestar() {
     if (p.umbrales) umbrales = p.umbrales;
     edadBase = p.sync?.edad_s ?? null;
     medidaEn = Date.now();
+    // A partir de acá el reloj local tiene con qué. Ver `seConsulto`.
+    seConsulto = true;
 
     pintarCifras(p);
     pintarSync(p.sync?.ok === false ? 'fallida' : undefined);
@@ -163,6 +165,9 @@ function pintarCifras(p: Pulso) {
 /** Salud calculada localmente: la del servidor más el tiempo que pasó. */
 function saludActual(forzada?: SaludSync): SaludSync {
   if (forzada) return forzada;
+  // 🔴 `edadBase == null` significa DOS cosas distintas y hay que separarlas:
+  //    «el servidor dice que nunca sincronizó» y «todavía no le pregunté».
+  //    Ver el comentario de `pintarSync`.
   if (edadBase == null) return 'sin-datos';
   const edad = edadBase + (Date.now() - medidaEn) / 1000;
   if (edad > umbrales.vieja) return 'vieja';
@@ -170,7 +175,31 @@ function saludActual(forzada?: SaludSync): SaludSync {
   return 'fresca';
 }
 
+/**
+ * ¿Ya le preguntamos alguna vez al servidor?
+ *
+ * 🔴 Sin esto el chip MIENTE en cada carga de página, durante 25 segundos.
+ *
+ *    El HTML llega con el estado correcto, calculado en el servidor. Pero el
+ *    reloj local repinta cada 5 s, y hasta que no vuelve la primera encuesta
+ *    `edadBase` es `null` — que `saludActual` traduce a `sin-datos`, o sea
+ *    **«Nunca sincronizó»**, en rojo, con el ETL andando perfecto.
+ *
+ *    Medido: la primera encuesta se agenda a los 30 s, y el reloj pinta a los
+ *    5, 10, 15, 20 y 25. Cinco repintados mintiendo antes del primero bueno.
+ *
+ *    Es el peor defecto posible en este indicador, porque el indicador existe
+ *    justamente para que se le crea. Un operador que ve «Nunca sincronizó» con
+ *    datos frescos en pantalla aprende a ignorarlo, y el día que sea cierto
+ *    también lo va a ignorar.
+ *
+ *    El arreglo es no pisar lo que dijo el servidor hasta tener algo propio
+ *    que decir. «Todavía no pregunté» no es «no hay datos».
+ */
+let seConsulto = false;
+
 function pintarSync(forzada?: SaludSync) {
+  if (!seConsulto && !forzada) return;
   const salud = saludActual(forzada);
   const t = TEXTOS_SYNC[salud];
   const edad = edadBase == null ? null : edadBase + (Date.now() - medidaEn) / 1000;
@@ -238,6 +267,12 @@ async function refrescarCaidas(p: Pulso) {
   }
 }
 
-// Primera encuesta enseguida: el HTML llegó con datos del servidor, pero si el
-// operador dejó la pestaña abierta desde ayer, esos datos ya son de ayer.
-programar();
+// Primera encuesta ENSEGUIDA, y `encuestar()` y no `programar()`: el HTML llegó
+// con datos del servidor, pero si el operador dejó la pestaña abierta desde
+// ayer, esos datos ya son de ayer.
+//
+// 🔴 Acá decía `programar()`, que agenda a los 30 s. El comentario decía
+//    «enseguida» y el código hacía media hora de diferencia. Es la otra mitad
+//    del chip que mentía: aun con `seConsulto`, el operador se quedaba medio
+//    minuto sin refresco real en cada carga.
+encuestar();

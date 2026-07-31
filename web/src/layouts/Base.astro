@@ -153,6 +153,30 @@ const NAV = [
                 stroke-linecap="round"></path>
             </svg>
           </button>
+
+          {/* Cerrar sesión. Es un enlace y no un botón porque lleva a una
+              página: `/salir` explica lo que puede y lo que no, que con
+              autenticación básica no es lo mismo que en un login normal. */}
+          <a
+            href="/salir"
+            class="border-borde bg-panel-2 text-tenue hover:text-tinta hover:border-caido/50 grid size-8 place-items-center rounded-lg border no-underline transition-colors"
+            aria-label="Cerrar sesión"
+            title="Cerrar sesión"
+          >
+            <svg
+              class="size-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.7"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M15 17v1.5A1.5 1.5 0 0 1 13.5 20h-7A1.5 1.5 0 0 1 5 18.5v-13A1.5 1.5 0 0 1 6.5 4h7A1.5 1.5 0 0 1 15 5.5V7M10 12h10m0 0-3-3m3 3-3 3"
+              ></path>
+            </svg>
+          </a>
         </div>
       </div>
 

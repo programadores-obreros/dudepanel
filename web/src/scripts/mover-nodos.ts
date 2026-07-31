@@ -182,6 +182,55 @@ function habilitarMovimiento(visor: HTMLElement) {
   }
 
   // ── Arrastre ──────────────────────────────────────────────────────────────
+  //
+  // 🔴 HAY QUE PEDIR PERMISO PARA MOVER: Ctrl (o ⌘) con el mouse, mantener
+  //    apretado con el dedo. Un arrastre suelto NO mueve nada.
+  //
+  //    El motivo es que sobre un nodo conviven tres gestos que el navegador no
+  //    distingue solo: abrir su ficha (clic), pasear el mapa (arrastrar el
+  //    lienzo) y acomodarlo (arrastrar el nodo). Con umbral de píxeles nomás,
+  //    el que quiere abrir una ficha con el pulso poco firme la mueve, y el
+  //    que quiere pasear el mapa arranca desde un nodo y se lo lleva puesto.
+  //
+  //    El modificador convierte «casi un clic» en «esto lo hice a propósito».
+  //
+  //    ⚠️ En macOS `Ctrl+clic` ES el clic derecho: dispara `contextmenu` y
+  //       abre el menú del navegador. Por eso se acepta también ⌘ —que ahí no
+  //       choca con nada— y se cancela el `contextmenu` mientras haya un
+  //       arrastre en curso. Sin esas dos líneas, en una Mac esto no anda.
+  //
+  //    Y en pantalla táctil no existe ningún modificador, así que el permiso
+  //    lo da el tiempo: mantener el dedo quieto sobre el nodo. Es el mismo
+  //    trato —«demostrá intención»— con el idioma de cada dispositivo.
+
+  /** ms que hay que mantener el dedo quieto sobre un nodo para poder moverlo. */
+  const PULSACION_LARGA_MS = 450;
+  /** Cuánto se le permite temblar al dedo durante la espera, en píxeles. */
+  const TEMBLOR_PX = 10;
+
+  let esperaTactil: { temporizador: number; x: number; y: number } | null = null;
+
+  function cancelarEsperaTactil() {
+    if (!esperaTactil) return;
+    window.clearTimeout(esperaTactil.temporizador);
+    esperaTactil = null;
+  }
+
+  function empezarArrastre(nodo: SVGGraphicsElement, id: number, ev: PointerEvent) {
+    arrastre = {
+      nodo, id,
+      inicio: posicionDe(nodo),
+      origen: enLienzo(ev),
+      movido: false,
+      puntero: ev.pointerId,
+    };
+    try {
+      nodo.setPointerCapture(ev.pointerId);
+    } catch {
+      // El puntero puede haberse soltado entre el toque y el disparo del
+      // temporizador. No es un error: simplemente no hay nada que capturar.
+    }
+  }
 
   svg.addEventListener(
     'pointerdown',
@@ -195,24 +244,75 @@ function habilitarMovimiento(visor: HTMLElement) {
       const id = Number(nodo.dataset.id);
       if (!Number.isInteger(id)) return;
 
+      if (ev.pointerType === 'touch') {
+        // Se deja pasar el evento: si el dedo se va antes de tiempo, el mapa
+        // tiene que poder pasear como siempre. El arrastre arranca recién
+        // cuando vence el temporizador.
+        cancelarEsperaTactil();
+        esperaTactil = {
+          x: ev.clientX,
+          y: ev.clientY,
+          temporizador: window.setTimeout(() => {
+            esperaTactil = null;
+            empezarArrastre(nodo, id, ev);
+            visor.dataset.moviendoNodo = 'si';
+            nodo.classList.add('nodo-arrastrado');
+            // Un golpecito háptico avisa que el nodo quedó «en la mano». Sin
+            // esto, el modo se activa sin que nada lo diga.
+            navigator.vibrate?.(12);
+          }, PULSACION_LARGA_MS),
+        };
+        return;
+      }
+
+      // Mouse y lápiz: el permiso es el modificador.
+      if (!ev.ctrlKey && !ev.metaKey) return;
+
       // 🔴 Se frena la propagación para que el paneo del visor no arranque a
       //    la vez. Sin esto, arrastrar un nodo movería también el mapa entero
       //    y el nodo se iría al doble de velocidad que el dedo.
       ev.stopPropagation();
-
-      arrastre = {
-        nodo, id,
-        inicio: posicionDe(nodo),
-        origen: enLienzo(ev),
-        movido: false,
-        puntero: ev.pointerId,
-      };
-      nodo.setPointerCapture(ev.pointerId);
+      ev.preventDefault();
+      empezarArrastre(nodo, id, ev);
     },
     true,   // captura: antes que el paneo, que escucha en burbujeo
   );
 
+  // macOS: `Ctrl+clic` dispara el menú contextual. Se cancela sólo mientras
+  // hay un arrastre en curso, para no romper el clic derecho normal del mapa.
+  svg.addEventListener('contextmenu', (ev) => {
+    if (arrastre || esperaTactil) ev.preventDefault();
+  });
+
+  // ── La mano sólo cuando de verdad se puede agarrar ────────────────────────
+  //
+  // 🔴 El cursor es la única señal de que un nodo se puede mover. Dejarlo en
+  //    `grab` permanente, ahora que hace falta Ctrl, sería prometer algo que
+  //    no pasa: se ve la manito, se arrastra, no se mueve nada. Es exactamente
+  //    el desconcierto que hay que evitar.
+  //
+  //    Así que la clase sigue a la tecla, y el CSS pinta la mano sólo mientras
+  //    está apretada.
+  const seguirTecla = (ev: KeyboardEvent | MouseEvent) => {
+    if (ev.ctrlKey || ev.metaKey) visor.dataset.listoMover = 'si';
+    else delete visor.dataset.listoMover;
+  };
+  document.addEventListener('keydown', seguirTecla);
+  document.addEventListener('keyup', seguirTecla);
+  // Al volver a la pestaña con la tecla ya suelta, `keyup` nunca llegó: el
+  // primer movimiento del mouse trae el estado real de los modificadores.
+  svg.addEventListener('pointermove', seguirTecla);
+  window.addEventListener('blur', () => delete visor.dataset.listoMover);
+
   svg.addEventListener('pointermove', (ev) => {
+    // Si el dedo se movió más que un temblor antes de que venciera la espera,
+    // era un paseo del mapa y no una intención de acomodar. Se cancela.
+    if (esperaTactil) {
+      if (Math.hypot(ev.clientX - esperaTactil.x, ev.clientY - esperaTactil.y) > TEMBLOR_PX) {
+        cancelarEsperaTactil();
+      }
+      return;
+    }
     if (!arrastre || ev.pointerId !== arrastre.puntero) return;
     const [px, py] = enLienzo(ev);
     const dx = px - arrastre.origen[0];
@@ -233,6 +333,10 @@ function habilitarMovimiento(visor: HTMLElement) {
   });
 
   function terminar(ev: PointerEvent) {
+    // Soltar antes de que venza la pulsación larga es un toque normal: abre la
+    // ficha. Hay que apagar el temporizador o el nodo se «agarraría» solo
+    // medio segundo después de que el dedo ya se fue.
+    cancelarEsperaTactil();
     if (!arrastre || ev.pointerId !== arrastre.puntero) return;
     const a = arrastre;
     arrastre = null;
