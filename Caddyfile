@@ -1,0 +1,169 @@
+# ═════════════════════════════════════════════════════════════════════════════
+#  Caddy — la única puerta del panel hacia internet.
+#
+#  Todo lo que entra pasa por acá: TLS de Let's Encrypt, usuario y contraseña,
+#  y recién después el panel. El panel NO publica puerto al anfitrión; si este
+#  archivo está mal, no hay una segunda forma de llegarle, y eso es a propósito.
+#
+#  🔴 Leer antes de tocar: `docs/PRODUCCION.md`.
+#     El panel no tiene autenticación propia. Lo que hay acá abajo es la ÚNICA
+#     barrera de aplicación delante de 885 equipos con sus direcciones, la
+#     topología completa de un ISP y qué está caído en este momento.
+# ═════════════════════════════════════════════════════════════════════════════
+{
+	# Correo de contacto de ACME. Let's Encrypt lo usa para avisar de
+	# certificados por vencer y de cambios de política; no es cosmético.
+	# Vive en `.env.prod` porque cambia según quién opere la instalación.
+	email {$ACME_EMAIL}
+
+	# La API de administración escucha sólo en el bucle local del contenedor.
+	# No se publica: es la que puede recargar la configuración en caliente y
+	# no tiene autenticación propia. También es de donde sale el healthcheck.
+	admin 127.0.0.1:2019
+}
+
+{$PANEL_DOMINIO} {
+	# ── TLS ──────────────────────────────────────────────────────────────────
+	#
+	# No hace falta declarar nada: con un nombre de dominio en la dirección del
+	# sitio, Caddy pide el certificado a Let's Encrypt al arrancar y lo renueva
+	# solo a los dos tercios de su vida (~60 días). Guarda la cuenta y las
+	# claves en el volumen `caddy-data`.
+	#
+	# 🔴 Ese volumen NO se borra alegremente. Perderlo obliga a volver a pedir
+	#    todo, y Let's Encrypt tiene un límite de 5 certificados por dominio
+	#    cada 7 días. Con 5 arranques en falso el sitio se queda sin TLS una
+	#    semana entera.
+	#
+	# La redirección de 80 a 443 tampoco se declara: Caddy levanta solo un
+	# servidor en el 80 que redirige todo con 308, salvo la ruta del desafío
+	# ACME. Escribir un bloque `http://` a mano PISA ese servidor automático y
+	# es la forma clásica de romperse la renovación sin enterarse hasta el día
+	# 60. Si hay que tocarlo, se toca sabiendo esto.
+
+	# ── Quién puede pasar ────────────────────────────────────────────────────
+	#
+	# Va ANTES de `reverse_proxy` a propósito: en Caddy el orden de las
+	# directivas dentro del bloque no importa (hay un orden canónico), pero
+	# leído de arriba abajo esto tiene que decir "primero identificate".
+	#
+	# Cubre TODO el sitio, incluidos `/_astro/*` y `/api/*`. Un panel donde el
+	# HTML pide contraseña y el JSON no, no pide contraseña.
+	#
+	# Las contraseñas en claro no están acá ni en ningún archivo del
+	# repositorio: sólo el hash bcrypt con coste 14 (~1 s por intento, también
+	# para quien lo ataque). Se rotan como dice el runbook.
+	#
+	# Para agregar o sacar gente: una línea `usuario hash` por persona, y
+	# `docker compose -f compose.prod.yml up -d caddy` para recargar.
+	basic_auth {
+		astor $2a$14$SJdKDTYomkVbO.PVaWCr9O476ZJx7SrfZVNdvA.N8VQWenJBlazAa
+		soporte $2a$14$xHtwhvu2ri.0JBMMHBnfVODQVXcFvj119QRp5QXPHm7qBKqw6nrc6
+		apalestrini $2a$14$FHpLWd.vs5SqJ6Blbd/lUuIUb96nwCWqDOXtoBWnYZJuAfDulhIYK
+	}
+
+	# ── Cabeceras ────────────────────────────────────────────────────────────
+	header {
+		# HSTS sólo lo puede poner el que termina el TLS, y ése es Caddy. Un
+		# año, con subdominios. Sin `preload`: eso se envía a una lista que
+		# viaja compilada dentro de los navegadores y de la que se sale en
+		# meses, no en minutos. Para un panel interno no vale el compromiso.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+		# 🔴 El `?` significa "poné esto SÓLO si la respuesta no lo trae ya".
+		#
+		#    No es un detalle de estilo. La aplicación ya emite su propio juego
+		#    de cabeceras de seguridad en `middleware.ts`; sin el `?` Caddy las
+		#    pisaría con estas, que son las mismas pero más pobres — la app
+		#    manda `Referrer-Policy: no-referrer`, más estricta que la que se
+		#    suele poner por defecto.
+		#
+		#    Con `?`, estas actúan de red de seguridad para lo que la app NO
+		#    cubre: los estáticos de `/_astro/*` los sirve el servidor de Astro
+		#    ANTES del middleware, así que salen pelados. Medido: un `.css` de
+		#    42 kB llegaba sin `X-Content-Type-Options`.
+		?X-Content-Type-Options "nosniff"
+		?Referrer-Policy "no-referrer"
+		?X-Frame-Options "DENY"
+
+		# ⚠️ ACÁ NO VA UN Content-Security-Policy. Ni con `?`, ni "por las
+		#    dudas", ni copiado del de la app.
+		#
+		#    La aplicación ya emite uno estricto que incluye el HASH sha256 del
+		#    script en línea que aplica el tema claro/oscuro antes del primer
+		#    pintado. Cualquier CSP puesto desde acá que no lleve ese hash
+		#    exacto bloquea el script, y el síntoma no es un error: es un
+		#    PARPADEO blanco en cada carga. Se ve como un problema de CSS y se
+		#    busca donde no está.
+		#
+		#    Y el hash cambia cada vez que cambia el script, o sea con cada
+		#    despliegue. Un CSP en el proxy es una copia que se desincroniza
+		#    sola. Comprobar qué manda la app antes de creer que falta:
+		#      curl -sI https://<dominio>/ -u <usuario> | rg -i content-security
+		#
+		#    Lo mismo vale para `Cross-Origin-*` y `Permissions-Policy`: ya
+		#    vienen de la app.
+
+		# Caddy anuncia "Server: Caddy" en cada respuesta.
+		-Server
+	}
+
+	# ── Compresión ───────────────────────────────────────────────────────────
+	#
+	# Sí conviene, y no es doble trabajo. Medido contra la imagen que se
+	# despliega:
+	#
+	#   · Las respuestas dinámicas (HTML, `/api/*`) YA vienen comprimidas por
+	#     `middleware.ts` con brotli. Caddy detecta el `Content-Encoding` y las
+	#     deja pasar intactas — no recomprime, no gasta CPU, no rompe nada.
+	#
+	#   · Los estáticos de `/_astro/*` NO pasan por ese middleware: los sirve
+	#     el manejador estático del adaptador de Astro, que corre antes. Salían
+	#     SIN COMPRIMIR. El CSS de la app son 42.092 bytes que con esta línea
+	#     viajan en ~6 kB.
+	#
+	# Por eso está: no duplica lo que la app hace, cubre lo que la app no
+	# alcanza.
+	#
+	# ⚠️ `br` NO va en esta lista. La compilación estándar de Caddy sabe LEER
+	#    brotli pero no sabe ESCRIBIRLO: el codificador se sacó y hoy vive en un
+	#    complemento externo. Ponerlo hace que Caddy ni siquiera arranque —
+	#    `module not registered: http.encoders.br`— y el conjunto entero se
+	#    queda sin puerta. Comprobado con `caddy validate`, no leído en un blog.
+	#
+	#    No se pierde nada: lo que más pesa (el HTML y el JSON) ya sale en
+	#    brotli desde la app, y Caddy lo deja pasar tal cual. Lo que Caddy
+	#    comprime son los estáticos, donde zstd empata con brotli.
+	encode zstd gzip
+
+	# ── El panel ─────────────────────────────────────────────────────────────
+	#
+	# `web` es el nombre del servicio en la red `borde` de Compose. No hay una
+	# dirección acá y no tiene que haberla: si el contenedor se recrea con otra
+	# IP, esto sigue funcionando.
+	reverse_proxy web:4321 {
+		# El panel arma páginas con mapas de cientos de elementos. 30 s de
+		# margen antes de dar por muerta una respuesta; el default de Caddy es
+		# no tener límite, y una consulta trabada dejaría la conexión colgada.
+		transport http {
+			read_timeout 30s
+		}
+	}
+
+	# ── Registro ─────────────────────────────────────────────────────────────
+	#
+	# JSON, no texto: esto se lee con `jq` cuando algo falla, no con la vista.
+	# Caddy REDACTA la cabecera `Authorization`, así que las credenciales de
+	# quien entra no terminan en el archivo — verificado, no supuesto.
+	#
+	# Rota solo: 10 MiB por archivo, 5 archivos, y nada más viejo que 90 días.
+	# El volumen no puede crecer sin techo en una VM que ya tiene poco disco.
+	log {
+		output file /var/log/caddy/acceso.log {
+			roll_size 10MiB
+			roll_keep 5
+			roll_keep_for 2160h
+		}
+		format json
+	}
+}

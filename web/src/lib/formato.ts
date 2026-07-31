@@ -88,6 +88,62 @@ export function numero(n: number | null | undefined): string {
   return new Intl.NumberFormat('es-AR').format(n);
 }
 
+/**
+ * Días enteros transcurridos. Para las cifras grandes de antigüedad.
+ *
+ * Se usa `Math.floor` sobre días completos y no `Math.round`: «1.595 días» es
+ * un dato que alguien va a copiar a un ticket, y redondear para arriba lo
+ * convierte en un día que todavía no pasó.
+ */
+export function dias(segundos: number | null | undefined): number | null {
+  if (segundos == null || !Number.isFinite(segundos)) return null;
+  return Math.floor(segundos / 86_400);
+}
+
+/**
+ * Tráfico en bits por segundo, con el prefijo que lo hace legible.
+ *
+ * 🔴 Existe porque `chart_sources.unit` dice `bit/s` y los valores reales son
+ *    de este tamaño: `5915073344`. Ese número no se lee — hay que contar
+ *    dígitos para saber si son megas o gigas, y a las tres de la mañana nadie
+ *    cuenta dígitos. `5,92 Gbps` se lee de un vistazo.
+ *
+ * Prefijos DECIMALES (÷1000), no binarios: el caudal de un enlace se mide en
+ * bits por segundo decimales — un enlace «de 1 giga» son mil millones de bit/s
+ * redondos. Usar 1024 acá daría 0,93 Gbps para un gigabit lleno, que es
+ * sencillamente otro número.
+ *
+ * (Y va escrito en palabras y no en cifras a propósito: `test/seed.test.ts`
+ * barre el repositorio buscando cualquier cosa con forma de dirección IPv4, y
+ * mil millones escrito con puntos de miles tiene exactamente esa forma. El test
+ * no se afloja por una comodidad de comentario.)
+ */
+export function bitsPorSegundo(bits: number | null | undefined): string {
+  if (bits == null || !Number.isFinite(bits) || bits < 0) return '—';
+  if (bits < 1000) return `${Math.round(bits)} bps`;
+
+  const escalas: [number, string][] = [
+    [1e12, 'Tbps'],
+    [1e9, 'Gbps'],
+    [1e6, 'Mbps'],
+    [1e3, 'kbps'],
+  ];
+  for (const [factor, sufijo] of escalas) {
+    if (bits >= factor) {
+      const v = bits / factor;
+      // Menos de 10 lleva dos decimales, de 10 a 100 uno, de 100 en adelante
+      // ninguno: tres cifras significativas siempre, que es lo que se compara
+      // de un vistazo en una columna.
+      const dec = v < 10 ? 2 : v < 100 ? 1 : 0;
+      return `${new Intl.NumberFormat('es-AR', {
+        minimumFractionDigits: dec,
+        maximumFractionDigits: dec,
+      }).format(v)} ${sufijo}`;
+    }
+  }
+  return `${Math.round(bits)} bps`;
+}
+
 /** Porcentaje entero; `—` si el total es cero, nunca `NaN%`. */
 export function porcentaje(parte: number, total: number): string {
   if (!total) return '—';

@@ -1,0 +1,244 @@
+# ═════════════════════════════════════════════════════════════════════════════
+#  Panel de The Dude — PRODUCCIÓN
+#
+#    dude.db (SQLite)  ──ro──►  etl  ──►  postgres  ──►  web  ──►  caddy  ──► 🌐
+#
+#  Diferencias con `docker-compose.yml`, que es el de desarrollo:
+#
+#    · Las imágenes se BAJAN de GHCR, no se construyen. En la VM no hay
+#      compilador, ni pnpm, ni ganas de esperar un `astro build`.
+#    · La etiqueta es un COMMIT, no `latest`. Ver el comentario de PANEL_VERSION.
+#    · `web` NO publica puerto al anfitrión. Ni siquiera en 127.0.0.1.
+#    · Aparece `caddy`, que es lo único que toca la placa pública.
+#
+#  Se levanta con:  docker compose -f compose.prod.yml --env-file .env.prod up -d
+#  El runbook completo está en `docs/PRODUCCION.md`. Leerlo antes.
+# ═════════════════════════════════════════════════════════════════════════════
+
+name: dudepanel
+
+services:
+
+  # ── Base de datos ───────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+
+    # 🔴 SIN `ports:`. Y además está en una red `internal: true`, así que ni
+    #    siquiera tiene salida a internet. Sólo la ven `etl` y `web`.
+    #    Para mirarla a mano: `docker compose -f compose.prod.yml exec db psql -U dude`.
+
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-dude}
+      POSTGRES_USER: ${POSTGRES_USER:-dude}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?falta POSTGRES_PASSWORD en .env.prod}
+      # Checksums de página: detecta corrupción silenciosa de disco en vez de
+      # servir datos rotos como si fueran buenos.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      # El esquema se aplica solo la primera vez que el volumen está vacío.
+      #
+      # ⚠️ Esto es lo ÚNICO que este archivo necesita del árbol del repositorio.
+      #    Si `etl/schema.sql` no está al lado, la base arranca vacía y el ETL
+      #    falla en la primera corrida con "relation does not exist".
+      - ./etl/schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dude} -d ${POSTGRES_DB:-dude}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+    # Postgres necesita memoria compartida; el default de Docker (64 MB) le
+    # queda chico y produce errores raros bajo carga.
+    shm_size: 256mb
+
+    # Postgres necesita escribir, así que no puede ir `read_only` — pero no
+    # necesita adquirir privilegios nuevos, y no cuesta nada negárselo.
+    security_opt: ["no-new-privileges:true"]
+
+    networks: [interna]
+
+    logging: &logs
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  # ── Sincronización desde The Dude ───────────────────────────────────────────
+  etl:
+    # 🔴 Etiqueta de commit, NO `latest`.
+    #
+    #    `latest` es un puntero móvil: dos `docker compose pull` con un mes de
+    #    diferencia traen cosas distintas y nada en el archivo lo registra.
+    #    El día que haya que volver atrás, la pregunta "¿cuál andaba?" no tiene
+    #    respuesta. Con el commit, el rollback es cambiar UN valor en
+    #    `.env.prod` y `up -d`. Y el valor dice exactamente qué código es.
+    image: ghcr.io/programadores-obreros/dudepanel-etl:${PANEL_VERSION:?falta PANEL_VERSION en .env.prod}
+    restart: unless-stopped
+    depends_on:
+      db: { condition: service_healthy }
+
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-dude}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-dude}
+      DUDE_DB: /origen/dude.db
+      DUDE_FILES: /origen/files
+      SYNC_INTERVAL: ${SYNC_INTERVAL:-30}
+
+    volumes:
+      # 🔴 `:ro` NO ES DECORATIVO. Del otro lado está el monitoreo de un ISP.
+      #    El montaje de sólo lectura es la última barrera si el código falla.
+      #
+      #    ⚠️ Y NUNCA sobre NFS, CIFS ni virtiofs: SQLite depende de bloqueos
+      #       POSIX confiables. Un BLOCK DEVICE de red (iSCSI, Ceph RBD, qcow2
+      #       sobre NFS) sí sirve; un FILESYSTEM de red, no.
+      - ${DUDE_DATA:?falta DUDE_DATA en .env.prod}:/origen:ro
+
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+
+    networks: [interna]
+
+    logging: *logs
+
+  # ── Panel web ───────────────────────────────────────────────────────────────
+  web:
+    image: ghcr.io/programadores-obreros/dudepanel-web:${PANEL_VERSION:?falta PANEL_VERSION en .env.prod}
+    restart: unless-stopped
+    depends_on:
+      db: { condition: service_healthy }
+
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-dude}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-dude}
+      # 🔴 Van los DOS nombres a propósito. El ETL lee `DUDE_FILES` y el panel
+      #    lee `DUDE_FILES_DIR`. Cuando faltaba el segundo, los 56 iconos caían
+      #    al de repuesto EN SILENCIO — 47 de ellos son PNG o JPG de los mapas
+      #    reales. Un icono faltante es cosmético; 47 faltando sin decir nada
+      #    es un panel que parece roto y no explica por qué.
+      DUDE_FILES: /origen/files
+      DUDE_FILES_DIR: /origen/files
+      HOST: 0.0.0.0
+      PORT: 4321
+
+    volumes:
+      # 🔴 SÓLO `files/`, no el directorio entero. Montando `/origen` completo,
+      #    `dude.db` quedaba legible dentro del espacio de nombres del panel —
+      #    y el encabezado de este archivo afirma que no lo ve. Una afirmación
+      #    de seguridad que no se cumple es peor que no hacerla: la próxima
+      #    decisión se toma creyéndola.
+      - ${DUDE_DATA:?falta DUDE_DATA en .env.prod}/files:/origen/files:ro
+
+    # 🔴 NO HAY `ports:` — y ésa es la diferencia central con el compose de
+    #    desarrollo, donde el panel se publicaba en `127.0.0.1:4321`.
+    #
+    #    Ahora la única forma de llegarle es a través de Caddy, que es donde
+    #    viven el TLS y la contraseña. Publicarlo aunque sea en el bucle local
+    #    del anfitrión abriría un camino que esquiva las dos cosas: cualquiera
+    #    con una sesión SSH y un túnel entra sin credenciales.
+    #
+    #    Para depurar sin exponerlo:
+    #      docker compose -f compose.prod.yml exec web wget -qO- http://127.0.0.1:4321/
+
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+
+    # `interna` para hablar con Postgres, `borde` para que lo alcance Caddy.
+    # Postgres NO está en `borde`: si mañana Caddy tuviera un fallo de ejecución
+    # remota, no tiene ni siquiera ruta de red hasta la base.
+    networks: [interna, borde]
+
+    logging: *logs
+
+  # ── Puerta de entrada ───────────────────────────────────────────────────────
+  caddy:
+    # Menor fijado a mano. `caddy:2-alpine` seguiría a la 2.12, y una puerta de
+    # internet no cambia de versión mayor sola un martes a la madrugada.
+    image: caddy:2.11-alpine
+    restart: unless-stopped
+
+    # `service_started` y no `service_healthy`: si el panel está caído queremos
+    # que Caddy igual levante, porque es el que atiende el desafío ACME. Sin él
+    # arriba, un panel roto también impide RENOVAR EL CERTIFICADO — un problema
+    # se convierte en dos. Mientras tanto contesta 502, que es la verdad.
+    depends_on: [web]
+
+    environment:
+      PANEL_DOMINIO: ${PANEL_DOMINIO:?falta PANEL_DOMINIO en .env.prod}
+      ACME_EMAIL: ${ACME_EMAIL:?falta ACME_EMAIL en .env.prod}
+
+    ports:
+      # 0.0.0.0 A PROPÓSITO, y es el único servicio del conjunto que lo hace.
+      #
+      # 🔴 Antes de abrir estos puertos en el cortafuegos, leer la sección
+      #    "Un puerto abierto es una puerta" de `docs/PRODUCCION.md`. No es
+      #    literatura: en este mismo despliegue quedó un login de 2011 con
+      #    TLSv1 atendiendo desde internet por exactamente este descuido.
+      #
+      # El 80 no es opcional aunque todo se sirva por 443: es por donde entra
+      # el desafío HTTP-01 de Let's Encrypt. Cerrarlo "porque redirige nomás"
+      # rompe la renovación, y se nota a los 60 días.
+      - "80:80"
+      - "443:443"
+      # QUIC/HTTP3. Comentado a propósito: suma una superficie UDP que hay que
+      # abrir también en el cortafuegos, y el panel no gana nada medible con
+      # ella. Descomentar sólo si alguien lo pide con un número en la mano.
+      # - "443:443/udp"
+
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # 🔴 `caddy-data` guarda la cuenta de ACME y los certificados. Borrarlo
+      #    obliga a volver a pedir todo, y Let's Encrypt permite 5 certificados
+      #    por dominio cada 7 días: con cinco arranques en falso el sitio se
+      #    queda sin TLS una semana. NO va en el `down -v` de rutina.
+      - caddy-data:/data
+      - caddy-config:/config
+      - caddy-logs:/var/log/caddy
+
+    # Caddy escribe en /data, /config y /var/log/caddy, que son volúmenes: el
+    # resto del sistema de archivos puede ir de sólo lectura sin molestarlo.
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+
+    cap_drop: [ALL]
+    # La única excepción de todo el conjunto. La imagen oficial corre como root,
+    # y aun así atarse al 80 y al 443 necesita esta capacidad puntual: son
+    # puertos privilegiados. Se concede UNA, no se deja `cap_drop` sin poner.
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+
+    # Pega contra la API de administración, que escucha sólo en el bucle local
+    # del contenedor. No se puede usar el sitio real: está detrás de la
+    # contraseña y contestaría 401, que es un fallo desde el punto de vista de
+    # `wget` aunque signifique que todo anda bien.
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    networks: [borde]
+
+    logging: *logs
+
+networks:
+  # Sin salida a internet. `db` y `etl` no tienen nada que hacer afuera, y si
+  # algún día un paquete de Python trae una sorpresa, no tiene por dónde
+  # llamar a casa.
+  interna:
+    internal: true
+  borde:
+
+volumes:
+  db-data:
+  caddy-data:
+  caddy-config:
+  caddy-logs:

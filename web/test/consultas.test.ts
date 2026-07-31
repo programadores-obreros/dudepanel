@@ -243,7 +243,7 @@ conBase('enlacesFueraDelMapa', () => {
     // Si deja de cerrar, el visor lo declara como "otro motivo" en vez de
     // esconderlo, pero acá queremos saberlo.
     const elementos = await q.lienzoMapa(1001);
-    const l = construirLienzo(elementos, await q.estadoSubmapas(1001));
+    const l = construirLienzo(elementos, await q.resumenSubmapas(1001));
     const f = await q.enlacesFueraDelMapa(1001);
     expect(l.enlaces.length + f.otroMapa + f.rotos).toBe(l.enlacesTotales);
   });
@@ -270,6 +270,130 @@ conBase('lienzoMapa + construirLienzo · las fichas anclan enlaces', () => {
     const ficha = l.rotulos.find((r) => r.id === 5304)!;
     expect(ficha.lineas).toEqual(['ether5', 'VLAN2211', 'Untagged']);
     expect(ficha.lineas.join('')).not.toContain('\r');
+  });
+});
+
+/**
+ * 🔴 El bug que ningún test agarraba: los rótulos son plantillas.
+ *
+ * Toda la suite verificaba estructura —cuántos nodos, dónde caen las líneas—
+ * y ninguno miraba QUÉ DICE el rótulo. En pantalla se leía `[Device.Name]
+ * [dev…` en 2.216 de los 2.317 elementos y la corrida salía verde.
+ *
+ * Estos van contra la base porque el hueco estaba justo en la costura: la
+ * plantilla vive en `map_elements.label`, el valor en `devices` y en el
+ * recuento vivo de los submapas. Probar sólo el resolvedor no lo hubiera
+ * encontrado.
+ */
+conBase('el rótulo del mapa se resuelve de punta a punta', () => {
+  it('un equipo muestra su nombre y su IP, no la plantilla', async () => {
+    const l = construirLienzo(await q.lienzoMapa(1001), await q.resumenSubmapas(1001));
+    const nodo = l.nodos.find((n) => n.id === 5001)!;
+    // Dibujado va recortado a lo que entra bajo un icono de 36 unidades…
+    expect(nodo.lineas).toEqual(['WAN_Proveedor_Princip…', '192.0.2.1']);
+    // …pero el `<title>` y el lector de pantalla reciben el nombre entero.
+    expect(nodo.nombre).toBe('WAN_Proveedor_Principal');
+  });
+
+  it('la columna de direcciones abre un renglón por cada una', async () => {
+    const l = construirLienzo(await q.lienzoMapa(1001), await q.resumenSubmapas(1001));
+    // 105 tiene dos direcciones; 102 (el elemento 5003) una sola.
+    const nodo = l.nodos.find((n) => n.id === 5003)!;
+    expect(nodo.lineas).toEqual(['RT_Core_A', '192.0.2.11']);
+  });
+
+  it('un equipo sano no arrastra un renglón con un cero decorativo', async () => {
+    const l = construirLienzo(await q.lienzoMapa(1001), await q.resumenSubmapas(1001));
+    // 101 no tiene servicios caídos, y su plantilla es la más usada del mapa:
+    // `[Device.Name]\n[device_performance()][Device.ServicesDown]`.
+    const nodo = l.nodos.find((n) => n.id === 5002)!;
+    expect(nodo.lineas).toEqual(['BR_Core_01']);
+  });
+
+  it('🔴 el contador de caídos nunca se pega a la dirección', async () => {
+    const l = construirLienzo(await q.lienzoMapa(1001), await q.resumenSubmapas(1001));
+    // 139 tiene un servicio caído Y la plantilla que pega contador con IP.
+    // Concatenar daba «1192.0.2.42», que no es ni un contador ni una dirección.
+    const nodo = l.nodos.find((n) => n.id === 5009)!;
+    expect(nodo.lineas).toEqual(['SRV_DNS_02', '1 caído', '192.0.2.42']);
+  });
+
+  it('🔴 ninguna línea del mapa pega un número contra una dirección', async () => {
+    // La invariante, no el caso: si un renglón tiene forma de IP, tiene que ser
+    // una IP entera — nada de dígitos de más pegados adelante.
+    for (const mapa of [1001, 1002, 1003]) {
+      const l = construirLienzo(await q.lienzoMapa(mapa), await q.resumenSubmapas(mapa));
+      for (const linea of l.nodos.flatMap((n) => n.lineas)) {
+        expect(linea).not.toMatch(/\d{4,}\.\d{1,3}\.\d{1,3}\.\d{1,3}/);
+      }
+    }
+  });
+
+  it('el rótulo de un submapa arma «total / parciales / caídos»', async () => {
+    const l = construirLienzo(await q.lienzoMapa(1001), await q.resumenSubmapas(1001));
+    const nodo = l.nodos.find((n) => n.id === 5010)!;
+    expect(nodo.lineas[0]).toBe('Zona Norte — Aurora');
+    expect(nodo.lineas[1]).toMatch(/^\d+ \/ \d+ \/ \d+$/);
+  });
+
+  it('🔴 ni un solo corchete llega a la pantalla, en ninguno de los mapas', async () => {
+    for (const mapa of [1001, 1002, 1003]) {
+      const l = construirLienzo(await q.lienzoMapa(mapa), await q.resumenSubmapas(mapa));
+      const texto = [
+        ...l.nodos.flatMap((n) => [...n.lineas, n.nombre]),
+        ...l.rotulos.flatMap((r) => r.lineas),
+        ...l.enlaces.map((e) => e.nombre ?? ''),
+      ].join('\n');
+      expect(texto).not.toMatch(/\[[A-Za-z]/);
+    }
+  });
+
+  it('lo que no se pudo resolver se DECLARA, no se esconde', async () => {
+    // 🔴 SIN pasarle el tráfico: es el caso de un enlace que no tiene serie.
+    const l = construirLienzo(await q.lienzoMapa(1001), await q.resumenSubmapas(1001));
+    // El enlace 5050 pide tráfico y tres funciones de script.
+    expect(l.huecos.map((h) => h.plantilla).sort()).toEqual([
+      '[Interface.InBitRate]',
+      '[Interface.OutBitRate]',
+      '[device_performance()]',
+      '[snmp_wireless_link_info()]',
+      '[snmp_wireless_link_rx_rate()]',
+      '[snmp_wireless_link_tx_rate()]',
+    ]);
+
+    // 🔴 Dos motivos, no uno, y la diferencia es la que se había perdido.
+    //
+    //    Las funciones de script el panel NO las sabe resolver: viven en la
+    //    base de The Dude y no hay de dónde sacarlas (`sin-replicar`). El
+    //    tráfico SÍ lo sabe leer; lo que falta es la serie de ESTE enlace
+    //    (`sin-dato`). Meter las dos cosas en la misma bolsa fue exactamente lo
+    //    que dejó `[Interface.InBitRate]` apagado en 38 de los 40 mapas durante
+    //    una versión entera: se leía «el panel no replica el tráfico» cuando lo
+    //    cierto era «a este enlace le falta el dato».
+    const porMotivo = Object.fromEntries(l.huecos.map((h) => [h.plantilla, h.motivo]));
+    expect(porMotivo['[Interface.InBitRate]']).toBe('sin-dato');
+    expect(porMotivo['[device_performance()]']).toBe('sin-replicar');
+  });
+
+  it('y ese enlace no queda con un título de andamio vacío', async () => {
+    const l = construirLienzo(await q.lienzoMapa(1001), await q.resumenSubmapas(1001));
+    const enlace = l.enlaces.find((e) => e.id === 5050)!;
+    // `links.name` del 4001 es lo que se muestra; el rótulo entero se descartó.
+    expect(enlace.nombre).toBeTruthy();
+    expect(enlace.nombre).not.toContain('Rx:');
+  });
+});
+
+conBase('resumenSubmapas · recuentos en vivo', () => {
+  it('separa los parciales de los caídos, como los separa The Dude', async () => {
+    const r = (await q.resumenSubmapas(1001)).get(1003)!;
+    const elementos = await q.lienzoMapa(1003);
+    const equipos = elementos.filter((e) => e.device_id != null);
+    expect(r.total).toBe(equipos.length);
+    expect(r.arriba + r.parciales + r.caidos).toBeLessThanOrEqual(r.total);
+    // Sumarlos daría el `devices_down` que escribe el ETL, que es otra cosa.
+    expect(r.caidos).toBe(equipos.filter((e) => e.status === 3).length);
+    expect(r.parciales).toBe(equipos.filter((e) => e.status === 2).length);
   });
 });
 
@@ -375,6 +499,9 @@ conBase('obtenerDispositivo', () => {
         'router_os', 'probe_enabled', 'probe_interval', 'probe_timeout',
         'probe_down_count', 'dude_server', 'services_total', 'services_up',
         'services_down',
+        // Agregado con el eje de antigüedad: derivado de `services`, porque
+        // `devices` no tiene `status_changed_at`. Ver `SQL_ESTADO_DESDE`.
+        'estado_desde',
       ].sort(),
     );
   });
@@ -426,6 +553,222 @@ conBase('mapasDeDispositivo', () => {
   it('dice en qué mapas aparece', async () => {
     const ms = await q.mapasDeDispositivo(121);
     expect(ms.map((m) => m.nombre)).toContain('Zona Sur — Bahia');
+  });
+});
+
+// ── Antigüedad ──────────────────────────────────────────────────────────────
+
+conBase('estado_desde · desde cuándo está así un equipo', () => {
+  it('sale de los servicios, porque `devices` no tiene la fecha', async () => {
+    // 113 quedó plantado como residuo en el seed: caído desde 2022.
+    const d = (await q.obtenerDispositivo(113))!;
+    expect(d.estado_desde).toBeTruthy();
+    expect(new Date(d.estado_desde!).getUTCFullYear()).toBe(2022);
+  });
+
+  it('🔴 manda el ÚLTIMO servicio en caer, no el primero', async () => {
+    // Un equipo con `ping` caído hace años y `winbox` caído hoy está caído
+    // entero desde hoy. Si mandara el más viejo, cualquier equipo con una sonda
+    // vieja quedaría clasificado como residuo para siempre.
+    const cambios = (await q.serviciosDe(113))
+      .filter((s) => s.status === 3 && s.cambio_en)
+      .map((s) => new Date(s.cambio_en!).getTime());
+    const d = (await q.obtenerDispositivo(113))!;
+    expect(new Date(d.estado_desde!).getTime()).toBe(Math.max(...cambios));
+  });
+
+  it('🔴 sin servicios no hay fecha, y no se inventa una', async () => {
+    // 137 quedó sin ninguna sonda en el seed, como los 32 equipos reales así.
+    const d = (await q.obtenerDispositivo(137))!;
+    expect(await q.serviciosDe(137)).toEqual([]);
+    expect(d.estado_desde).toBeNull();
+  });
+
+  it('el reparto del tablero suma lo mismo que el conteo de caídos', async () => {
+    const r = await q.resumenRed();
+    const c = r.caidos_por_antiguedad;
+    expect(c.reciente + c.arrastre + c.residuo + c.sinFecha).toBe(r.equipos.caidos);
+    // Y el seed planta uno de cada uno, para que el tablero tenga qué mostrar.
+    expect(c.residuo).toBeGreaterThan(0);
+    expect(c.arrastre).toBeGreaterThan(0);
+    expect(c.reciente).toBeGreaterThan(0);
+  });
+
+  it('los «sin datos» se reparten aparte: ahí vive el más viejo', async () => {
+    const c = (await q.resumenRed()).desconocidos_por_antiguedad;
+    expect(c.residuo).toBeGreaterThan(0);
+  });
+});
+
+conBase('listarDispositivos · filtro y orden por antigüedad', () => {
+  it('el filtro parte el conjunto sin perder ni repetir a nadie', async () => {
+    const todos = await q.listarDispositivos({ estado: 3, porPagina: 200 });
+    let suma = 0;
+    for (const a of ['reciente', 'arrastre', 'residuo'] as const) {
+      const p = await q.listarDispositivos({ estado: 3, antiguedad: a, porPagina: 200 });
+      suma += p.total;
+    }
+    // Los que no tienen fecha no entran en ningún escalón: se declaran, no se
+    // reparten. Por eso `<=` y no `===`.
+    expect(suma).toBeLessThanOrEqual(todos.total);
+    expect(suma).toBeGreaterThan(0);
+  });
+
+  it('filtrar por residuo devuelve sólo los de más de un año', async () => {
+    const p = await q.listarDispositivos({ antiguedad: 'residuo', porPagina: 200 });
+    expect(p.filas.length).toBeGreaterThan(0);
+    const limite = Date.now() - 365 * 86_400_000;
+    for (const f of p.filas) {
+      expect(new Date(f.estado_desde!).getTime()).toBeLessThan(limite);
+    }
+  });
+
+  it('un valor de antigüedad inventado no rompe ni inyecta', async () => {
+    const p = await q.listarDispositivos({
+      antiguedad: "residuo'; DROP TABLE devices; --" as never,
+      porPagina: 10,
+    });
+    // No coincide con ningún escalón, así que no devuelve nada — y la tabla
+    // sigue en pie, que es lo que de verdad se está probando.
+    expect(p.total).toBe(0);
+    expect((await q.resumenRed()).equipos.total).toBeGreaterThan(0);
+  });
+
+  it('🔴 «ascendente» en la pantalla es lo MÁS RECIENTE primero', async () => {
+    // La columna muestra una duración y guarda un instante: ordenar la duración
+    // de menor a mayor es ordenar el instante de mayor a menor. Sin la
+    // inversión, pedir «los últimos en caer» devolvía los de 2022.
+    const p = await q.listarDispositivos({ estado: 3, orden: 'antiguedad', porPagina: 200 });
+    const fechas = p.filas.filter((f) => f.estado_desde).map((f) => new Date(f.estado_desde!).getTime());
+    expect(fechas).toEqual([...fechas].sort((a, b) => b - a));
+  });
+
+  it('🔴 los que no tienen fecha van al final, no al principio', async () => {
+    const p = await q.listarDispositivos({ orden: 'antiguedad', porPagina: 200 });
+    const primerNulo = p.filas.findIndex((f) => f.estado_desde == null);
+    if (primerNulo >= 0) {
+      expect(p.filas.slice(primerNulo).every((f) => f.estado_desde == null)).toBe(true);
+    }
+  });
+});
+
+// ── Tráfico ─────────────────────────────────────────────────────────────────
+
+conBase('traficoDeMapa', () => {
+  it('trae la última medición de cada sentido', async () => {
+    const t = await q.traficoDeMapa(1001);
+    const enlace = t.get(4001)!;
+    expect(enlace).toBeDefined();
+    expect(enlace.entrada_bits).toBeGreaterThan(1e9);
+    expect(enlace.salida_bits).toBeGreaterThan(1e8);
+    expect(enlace.entrada_ts).toBeTruthy();
+  });
+
+  it('🔴 una serie con TODOS los valores en nulo no cuenta como que hay dato', async () => {
+    // Es la trampa que hizo medir mal la cobertura: contando filas parece que
+    // el enlace 4002 tiene 42 mediciones; contando valores no tiene ninguna.
+    // En la base real son 544.920 filas así.
+    const t = await q.traficoDeMapa(1001);
+    expect(t.has(4002)).toBe(false);
+  });
+
+  it('un mapa sin enlaces con serie devuelve el mapa vacío, no error', async () => {
+    await expect(q.traficoDeMapa(1004)).resolves.toBeInstanceOf(Map);
+  });
+
+  it('🔴 el rótulo del enlace se enciende con el caudal, formateado', async () => {
+    const l = construirLienzo(await q.lienzoMapa(1001), await q.resumenSubmapas(1001), new Map(), {
+      trafico: await q.traficoDeMapa(1001),
+    });
+    const enlace = l.enlaces.find((e) => e.id === 5050)!;
+    // El nombre propio del enlace sigue mandando en la identidad…
+    expect(enlace.nombre).toBe('Fibra WAN Proveedor');
+    // …y el caudal va aparte, con los dos sentidos y en unidades legibles.
+    expect(enlace.detalle).toContain('Rx:');
+    expect(enlace.detalle).toContain('Tx:');
+    expect(enlace.detalle).toMatch(/Gbps|Mbps/);
+    // Nunca el número crudo: 5915073344 no se lee.
+    expect(enlace.detalle).not.toContain('5915073344');
+  });
+
+  it('con el caudal encendido, ese hueco deja de declararse', async () => {
+    const l = construirLienzo(await q.lienzoMapa(1001), await q.resumenSubmapas(1001), new Map(), {
+      trafico: await q.traficoDeMapa(1001),
+    });
+    const inbit = l.huecos.find((h) => h.plantilla === '[Interface.InBitRate]');
+    expect(inbit).toBeUndefined();
+  });
+
+  it('🔴 una medición vencida NO se muestra como si fuera de ahora', async () => {
+    // El enlace 4003 tiene números de hace una semana. Un caudal viejo
+    // presentado como el actual manda a alguien a revisar un enlace que está
+    // bien, o peor: lo deja tranquilo con uno que está mal.
+    const t = await q.traficoDeMapa(1001);
+    const vencido = t.get(4003);
+    expect(vencido?.entrada_bits).toBeGreaterThan(0);
+
+    const l = construirLienzo(
+      [
+        {
+          ...(await q.lienzoMapa(1001))[0]!,
+          element_id: 9001,
+          kind: 'link',
+          link_id: 4003,
+          link_from: null,
+          link_to: null,
+          label: 'Rx: [Interface.InBitRate]',
+          name: null,
+        },
+      ],
+      new Map(),
+      new Map(),
+      { trafico: t },
+    );
+    const hueco = l.huecos.find((h) => h.plantilla === '[Interface.InBitRate]');
+    expect(hueco?.motivo).toBe('sin-dato');
+  });
+});
+
+conBase('la tarjeta emergente de un nodo', () => {
+  it('trae todo lo que muestra, en una llamada', async () => {
+    const f = (await q.fichaNodo(101))!;
+    expect(f.equipo.nombre).toBe('BR_Core_01');
+    expect(f.servicios.length).toBeGreaterThan(0);
+    expect(Array.isArray(f.mapas)).toBe(true);
+    expect(Array.isArray(f.caidas)).toBe(true);
+    expect(typeof f.topologiaCargada).toBe('boolean');
+  });
+
+  it('trae el tráfico por interfaz, con el nombre limpio', async () => {
+    const f = (await q.fichaNodo(101))!;
+    const i = f.interfaces.find((x) => x.interfaz === 'sfp-plus1');
+    // The Dude nombra la fuente «sfp-plus1 @ BR_Core_01 rx»; en la tarjeta va
+    // sólo la interfaz, que es lo que el operador está buscando.
+    expect(i).toBeDefined();
+    expect(i!.entrada_bits).toBeGreaterThan(0);
+    expect(i!.salida_bits).toBeGreaterThan(0);
+  });
+
+  it('un equipo que no existe devuelve null, no una tarjeta vacía', async () => {
+    expect(await q.fichaNodo(999_999)).toBeNull();
+  });
+});
+
+conBase('hayTopologia', () => {
+  it('🔴 distingue «no depende de nadie» de «el dato no está»', async () => {
+    // En la base real `device_parents` está VACÍA: The Dude nunca cargó la
+    // topología. La ficha decía «Es raíz de la topología», que es una
+    // afirmación sobre la red — y era falsa.
+    expect(await q.hayTopologia()).toBe(true);
+    await db.consultar('CREATE TEMP TABLE _dp AS SELECT * FROM device_parents');
+    try {
+      await db.consultar('DELETE FROM device_parents');
+      expect(await q.hayTopologia()).toBe(false);
+    } finally {
+      await db.consultar('INSERT INTO device_parents SELECT * FROM _dp');
+      await db.consultar('DROP TABLE _dp');
+    }
+    expect(await q.hayTopologia()).toBe(true);
   });
 });
 
@@ -515,6 +858,14 @@ conBase('el panel no filtra lo que no consulta', () => {
       q.serviciosDe(105),
       q.cadenaDePadres(122),
       q.hijosDe(120),
+      // Todo lo que se agregó con la tarjeta emergente y el tráfico entra al
+      // barrido. `fichaNodo` cubre de un saque las seis consultas que hace,
+      // que es justamente por qué es una función y no seis llamadas sueltas
+      // desde la ruta: así nadie se olvida de agregar la próxima.
+      q.fichaNodo(101),
+      q.traficoDeMapa(1001),
+      q.traficoDeDispositivo(101),
+      q.hayTopologia(),
       q.buscar('e', 100),
       q.buscar('CENTINELA', 100),
       q.buscar('9f3a1c7e', 100),

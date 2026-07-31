@@ -2,15 +2,17 @@
 import Base from '@/layouts/Base.astro';
 import Pildora from '@/components/Pildora.astro';
 import ListaCaidas from '@/components/ListaCaidas.astro';
+import Antiguedad from '@/components/Antiguedad.astro';
 import {
   cadenaDePadres,
   caidasDe,
+  hayTopologia,
   hijosDe,
   mapasDeDispositivo,
   obtenerDispositivo,
   serviciosDe,
 } from '@/lib/consultas';
-import { desde, duracion, fechaLarga, numero } from '@/lib/formato';
+import { duracion, numero } from '@/lib/formato';
 import { reportarError } from '@/lib/errores';
 
 const id = Number(Astro.params.id);
@@ -22,17 +24,26 @@ let padres: Awaited<ReturnType<typeof cadenaDePadres>> = [];
 let hijos: Awaited<ReturnType<typeof hijosDe>> = [];
 let mapas: Awaited<ReturnType<typeof mapasDeDispositivo>> = [];
 let caidas: Awaited<ReturnType<typeof caidasDe>> = [];
+/**
+ * 🔴 «Nadie» y «no cargado» son afirmaciones distintas, y la ficha las decía
+ *    igual: con `device_parents` vacía escribía «No cuelga de ningún equipo. Es
+ *    raíz de la topología», que es una afirmación FALSA sobre la red. En esta
+ *    instalación The Dude nunca guardó `parentIDs` en ninguno de sus 885
+ *    equipos, así que lo cierto es que el dato no existe.
+ */
+let topologiaCargada = false;
 let error: string | null = null;
 
 try {
   d = await obtenerDispositivo(id);
   if (d) {
-    [servicios, padres, hijos, mapas, caidas] = await Promise.all([
+    [servicios, padres, hijos, mapas, caidas, topologiaCargada] = await Promise.all([
       serviciosDe(id),
       cadenaDePadres(id),
       hijosDe(id),
       mapasDeDispositivo(id),
       caidasDe(id, 20),
+      hayTopologia(),
     ]);
   }
 } catch (e) {
@@ -66,6 +77,10 @@ const SNMP = ['v1', 'v2c', 'v3'];
           <div class="mt-0.5 flex flex-wrap items-center gap-2.5">
             <h1 class="text-xl font-bold tracking-tight sm:text-2xl">{d!.nombre}</h1>
             <Pildora estado={d!.status} />
+            {/* Al lado del estado, no enterrado en la ficha: es la mitad de la
+                información. «Caído» y «caído hace cuatro años» piden cosas
+                distintas y hasta acá se leían igual. */}
+            <Antiguedad estado={d!.status} desde={d!.estado_desde} variante="larga" />
             {d!.router_os && (
               <span class="border-borde text-tenue text-2xs rounded border px-1.5 py-0.5 font-semibold">
                 RouterOS
@@ -156,11 +171,8 @@ const SNMP = ['v1', 'v2c', 'v3'];
                               )}
                             </span>
                           </td>
-                          <td
-                            class="px-2.5 py-1.5 text-right text-xs tabular-nums"
-                            title={fechaLarga(s.cambio_en)}
-                          >
-                            {desde(s.cambio_en)}
+                          <td class="px-2.5 py-1.5 text-right">
+                            <Antiguedad estado={s.status} desde={s.cambio_en} variante="larga" />
                           </td>
                           <td class="text-tenue hidden px-2.5 py-1.5 text-right text-xs tabular-nums sm:table-cell">
                             {s.duro_caido_s ? duracion(s.duro_caido_s) : '—'}
@@ -177,7 +189,11 @@ const SNMP = ['v1', 'v2c', 'v3'];
             <section class="tarjeta overflow-hidden" aria-labelledby="t-hist">
               <header class="border-borde flex items-center justify-between gap-2 border-b px-3 py-2">
                 <h2 id="t-hist" class="text-sm font-semibold">Historial de caídas</h2>
-                <span class="text-tenue text-2xs">últimas {numero(caidas.length)}</span>
+                {/* «últimas 0» era ruido: si no hay ninguna, el propio cuerpo
+                    de la lista ya lo dice con una frase. */}
+                {caidas.length > 0 && (
+                  <span class="text-tenue text-2xs">últimas {numero(caidas.length)}</span>
+                )}
               </header>
               <ListaCaidas
                 caidas={caidas}
@@ -230,11 +246,19 @@ const SNMP = ['v1', 'v2c', 'v3'];
 
                 <dt class="text-tenue">Sondeo</dt>
                 <dd>
+                  {/* «cada lo del servidor» — así se leía cuando el intervalo
+                      viene nulo, que son la mayoría. La rama sin intervalo no
+                      puede empezar con «cada»: es otra frase, no un hueco. */}
                   {d!.probe_enabled === false ? (
                     <span class="text-parcial-txt font-semibold">deshabilitado</span>
+                  ) : d!.probe_interval ? (
+                    <>
+                      cada {d!.probe_interval} s
+                      {d!.probe_down_count ? `, ${d!.probe_down_count} fallos para caer` : ''}
+                    </>
                   ) : (
                     <>
-                      cada {d!.probe_interval ? `${d!.probe_interval} s` : 'lo del servidor'}
+                      <span class="text-tenue">hereda el intervalo del servidor</span>
                       {d!.probe_down_count ? `, ${d!.probe_down_count} fallos para caer` : ''}
                     </>
                   )}
@@ -257,7 +281,18 @@ const SNMP = ['v1', 'v2c', 'v3'];
               <h2 id="t-dep" class="border-borde border-b px-3 py-2 text-sm font-semibold">
                 Depende de
               </h2>
-              {padres.length === 0 ? (
+              {!topologiaCargada ? (
+                /* 🔴 Ver el comentario de `topologiaCargada`. Esto NO dice
+                   «no depende de nadie»: dice que el dato no existe, que es
+                   otra cosa y es la verdad. */
+                <p class="text-tenue px-3 py-4 text-xs">
+                  <strong class="text-tinta block font-semibold">
+                    La topología no está cargada.
+                  </strong>
+                  The Dude no tiene padres cargados en ningún equipo de esta instalación, así que
+                  el panel no puede decir de qué depende este. No es que no dependa de nada.
+                </p>
+              ) : padres.length === 0 ? (
                 <p class="text-tenue px-3 py-4 text-xs">
                   No cuelga de ningún equipo. Es raíz de la topología.
                 </p>

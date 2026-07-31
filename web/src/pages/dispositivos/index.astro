@@ -1,9 +1,11 @@
 ---
 import Base from '@/layouts/Base.astro';
 import Pildora from '@/components/Pildora.astro';
+import Antiguedad from '@/components/Antiguedad.astro';
 import { listarDispositivos, tiposDeDispositivo, type ColumnaOrden } from '@/lib/consultas';
 import { reportarError } from '@/lib/errores';
 import { aEstado, ESTADOS } from '@/lib/estado';
+import { aAntiguedad, ANTIGUEDADES, metaAntiguedad } from '@/lib/antiguedad';
 import { numero } from '@/lib/formato';
 
 /**
@@ -22,11 +24,15 @@ const crudoEstado = p.get('estado');
 const estado = crudoEstado !== null && /^[0-3]$/.test(crudoEstado) ? aEstado(crudoEstado) : null;
 const tipoId = Number(p.get('tipo')) || null;
 const texto = p.get('q');
+/** `edad` y no `antiguedad` en la URL: se comparte por WhatsApp y se escribe. */
+const antiguedad = aAntiguedad(p.get('edad'));
 const ordenPedido = p.get('orden') as ColumnaOrden | null;
 const COLUMNAS: { clave: ColumnaOrden; titulo: string; clase?: string }[] = [
   { clave: 'estado', titulo: 'Estado', clase: 'w-28' },
   { clave: 'nombre', titulo: 'Equipo' },
-  { clave: 'ip', titulo: 'Direcciones', clase: 'hidden md:table-cell' },
+  // 🔴 La columna que justifica todo. Sin ella, 267 filas rojas idénticas.
+  { clave: 'antiguedad', titulo: 'Así desde hace', clase: 'w-36' },
+  { clave: 'ip', titulo: 'Direcciones', clase: 'hidden lg:table-cell' },
   { clave: 'tipo', titulo: 'Tipo', clase: 'hidden sm:table-cell w-32' },
   { clave: 'servicios', titulo: 'Sondas', clase: 'w-24 text-right' },
 ];
@@ -42,7 +48,7 @@ let error: string | null = null;
 
 try {
   [datos, tipos] = await Promise.all([
-    listarDispositivos({ estado, tipoId, texto, orden, desc, pagina, porPagina: 50 }),
+    listarDispositivos({ estado, tipoId, texto, antiguedad, orden, desc, pagina, porPagina: 50 }),
     tiposDeDispositivo(),
   ]);
 } catch (e) {
@@ -63,7 +69,7 @@ function url(cambios: Record<string, string | number | null>): string {
   return s ? `/dispositivos?${s}` : '/dispositivos';
 }
 
-const hayFiltros = estado !== null || tipoId !== null || !!texto;
+const hayFiltros = estado !== null || tipoId !== null || !!texto || antiguedad !== null;
 ---
 
 <Base
@@ -122,6 +128,34 @@ const hayFiltros = estado !== null || tipoId !== null || !!texto;
             </select>
           </div>
 
+          {/* ── Filtro por antigüedad ─────────────────────────────────────
+              🔴 El que convierte «267 caídos» en una lista de trabajo.
+
+              Va al lado del de estado y no escondido en un menú, porque los dos
+              se usan juntos: «caídos» + «reciente» es la pregunta de una
+              guardia, y «caídos» + «residuo» es la lista para dar de baja. */}
+          <div>
+            <label for="f-edad" class="text-tenue text-2xs mb-0.5 block font-semibold">
+              Así desde hace
+            </label>
+            <select
+              id="f-edad"
+              name="edad"
+              class="border-borde bg-panel-2 focus:border-acento rounded-lg border px-2.5 py-1.5 text-sm outline-none"
+            >
+              <option value="">Cualquiera</option>
+              {/* Sin glifo: adentro de un `<option>` sólo entra texto, y la
+                  palabra nunca depende de que la fuente la tenga. */}
+              {
+                ANTIGUEDADES.map((a) => (
+                  <option value={a.clave} selected={antiguedad === a.clave} title={a.explica}>
+                    {a.etiqueta}
+                  </option>
+                ))
+              }
+            </select>
+          </div>
+
           <div>
             <label for="f-tipo" class="text-tenue text-2xs mb-0.5 block font-semibold">
               Tipo
@@ -159,6 +193,28 @@ const hayFiltros = estado !== null || tipoId !== null || !!texto;
             </a>
           )}
         </form>
+
+        {/* Cuando el filtro es por antigüedad, la lista necesita decir qué es
+            lo que se está mirando. «203 equipos caídos» y «203 equipos que
+            llevan más de un año caídos» piden cosas distintas. */}
+        {
+          antiguedad && datos && (
+            <p class="border-borde bg-panel-2/60 text-tenue rounded-lg border px-3 py-2 text-xs">
+              <span class="rampa" data-antiguedad={antiguedad} aria-hidden="true" />{' '}
+              <strong class="text-tinta font-semibold">
+                {numero(datos.total)} {datos.total === 1 ? 'equipo' : 'equipos'}
+              </strong>{' '}
+              {metaAntiguedad(antiguedad).explica}
+              {antiguedad === 'residuo' && (
+                <span>
+                  {' '}
+                  Sacarlos del monitoreo no arregla la red, pero devuelve el significado al color
+                  rojo — que es lo que hace falta para ver la próxima caída de verdad.
+                </span>
+              )}
+            </p>
+          )
+        }
 
         {/* ── Tabla ──────────────────────────────────────────────────────── */}
         <div class="tarjeta overflow-hidden">
@@ -210,12 +266,15 @@ const hayFiltros = estado !== null || tipoId !== null || !!texto;
                       {/* En celular las IP no entran en su columna, así que
                           van debajo del nombre en vez de desaparecer. */}
                       {d.direcciones.length > 0 && (
-                        <span class="text-tenue text-2xs block font-mono md:hidden">
+                        <span class="text-tenue text-2xs block font-mono lg:hidden">
                           {d.direcciones.join(' · ')}
                         </span>
                       )}
                     </td>
-                    <td class="text-tenue hidden px-2.5 py-1.5 font-mono text-xs md:table-cell">
+                    <td class="px-2.5 py-1.5">
+                      <Antiguedad estado={d.status} desde={d.estado_desde} variante="larga" />
+                    </td>
+                    <td class="text-tenue hidden px-2.5 py-1.5 font-mono text-xs lg:table-cell">
                       {d.direcciones.join(' · ') || '—'}
                     </td>
                     <td class="text-tenue hidden px-2.5 py-1.5 text-xs sm:table-cell">

@@ -267,19 +267,41 @@ INSERT INTO maps (id, name, elements_id, background_color,
   (1004, 'Mapa vacío (heredado)',2004, 16777215, 32768, 16711680, 16753920, 8421504, 255);
 
 -- Núcleo. Los dos nodos de submapa llevan a los otros mapas.
+--
+-- 🔴 Los `label` de los primeros elementos son PLANTILLAS, y no es un adorno
+--    del seed: en la base real **2.216 de los 2.317 elementos** traen una. The
+--    Dude guarda el rótulo sin resolver y lo resuelve al dibujar. Un seed con
+--    `label` en NULL o con texto plano hacía que la suite entera pasara en
+--    verde mientras la pantalla mostraba `[Device.Name] [dev…`.
+--    Están copiadas tal cual de `map_elements`, con su frecuencia al lado.
 INSERT INTO map_elements (id, map_id, kind, x, y, shape, image_id, label, device_id, submap_id) VALUES
-  (5001, 1001, 'device', 400,  40, 0, 506, NULL, 100, NULL),
-  (5002, 1001, 'device', 400, 150, 0, 501, NULL, 101, NULL),
-  (5003, 1001, 'device', 240, 270, 0, 501, NULL, 102, NULL),
+  -- 60 elementos reales con esta forma.
+  (5001, 1001, 'device', 400,  40, 0, 506, E'[Device.Name]\r\n[Device.FirstAddress]', 100, NULL),
+  -- 610: la más común de todas. `device_performance()` es una función de
+  -- script de The Dude y no se puede resolver desde acá.
+  (5002, 1001, 'device', 400, 150, 0, 501,
+   E'[Device.Name]\r\n[device_performance()][Device.ServicesDown]', 101, NULL),
+  -- 17: la columna de direcciones abre un renglón por cada una.
+  (5003, 1001, 'device', 240, 270, 0, 501, E'[Device.Name]\r\n[Device.AddressesColumn]', 102, NULL),
   (5004, 1001, 'device', 560, 270, 0, 501, NULL, 103, NULL),
   (5005, 1001, 'device', 130, 390, 0, 503, NULL, 104, NULL),
   (5006, 1001, 'device', 300, 390, 0, 505, NULL, 105, NULL),
   (5007, 1001, 'device', 470, 390, 0, 505, NULL, 137, NULL),
   (5008, 1001, 'device', 620, 390, 0, 505, NULL, 138, NULL),
-  (5009, 1001, 'device', 760, 390, 0, 505, NULL, 139, NULL),
+  -- 🔴 EL CASO FEO, y por eso el 139 tiene un servicio caído: 149 elementos
+  --    reales llevan esta plantilla, con el contador PEGADO a la dirección.
+  --    Concatenar daba «1192.0.2.42» — un número con forma de IP que no existe
+  --    en ningún lado. Es la regresión que este elemento impide.
+  (5009, 1001, 'device', 760, 390, 0, 505,
+   E'[Device.Name]\r\n[device_performance()][Device.ServicesDown][Device.AddressesColumn]',
+   139, NULL),
   (5012, 1001, 'device', 900, 150, 0, 505, NULL, 106, NULL),
   (5013, 1001, 'device', 130, 500, 0, 507, 'UPS', 140, NULL),
-  (5010, 1001, 'submap', 300, 520, 0, NULL, 'Zona Norte', NULL, 1002),
+  -- 145 elementos reales con esta forma: «total / parciales / caídos».
+  (5010, 1001, 'submap', 300, 520, 0, NULL,
+   E'[NetMap.Name]\r\n[NetMap.DevicesCount] / [NetMap.DevicesPartiallyDownCount] / [NetMap.DevicesDownCount]',
+   NULL, 1002),
+  -- Y uno con rótulo escrito a mano, que también existe y no hay que tocar.
   (5011, 1001, 'submap', 620, 520, 0, NULL, 'Zona Sur',   NULL, 1003);
 
 -- Zona Norte.
@@ -326,8 +348,17 @@ INSERT INTO map_elements (id, map_id, kind, x, y, shape, label) VALUES
 
 -- Enlaces dibujados. `link_from`/`link_to` son ids de OTROS elementos del mismo
 -- mapa, no de dispositivos: eso es lo que resuelve el ETL.
+--
+-- 🔴 El 5050 va aparte porque lleva `label`: es el rótulo real de 1.168 de los
+--    1.170 enlaces de la base. Pide tráfico en vivo y tasas SNMP que el panel
+--    no replica, así que sus dos líneas se quedan sin un solo dato. Es el caso
+--    de prueba de la regla «no se dibuja el andamio»: mostrar «Rx: » y «Tx: »
+--    vacíos sería tan inútil como mostrar `[Interface.InBitRate]`.
+INSERT INTO map_elements (id, map_id, kind, x, y, shape, link_id, link_from, link_to, link_width, label) VALUES
+  (5050, 1001, 'link', NULL, NULL, NULL, 4001, 5001, 5002, 4,
+   E'[snmp_wireless_link_info()]Rx: [Interface.InBitRate][snmp_wireless_link_rx_rate()]\r\nTx: [Interface.OutBitRate][snmp_wireless_link_tx_rate()]');
+
 INSERT INTO map_elements (id, map_id, kind, x, y, shape, link_id, link_from, link_to, link_width) VALUES
-  (5050, 1001, 'link', NULL, NULL, NULL, 4001, 5001, 5002, 4),
   (5051, 1001, 'link', NULL, NULL, NULL, NULL, 5002, 5003, 3),
   (5052, 1001, 'link', NULL, NULL, NULL, NULL, 5002, 5004, 3),
   (5053, 1001, 'link', NULL, NULL, NULL, 4002, 5003, 5004, 3),
@@ -396,6 +427,37 @@ FROM devices d
 CROSS JOIN generate_series(1, 5) AS n
 WHERE d.id % 3 = 0;
 
+-- ── Hace cuánto que está así cada cosa ──────────────────────────────────────
+--
+-- 🔴 Sin esto el seed no puede probar el eje de antigüedad, que es lo más
+--    valioso que el panel aporta sobre The Dude. Medido sobre la base real el
+--    31/07/2026: de los 267 equipos caídos, **121 llevan más de un año así** —
+--    el 45 %. No son caídas, son bajas que nadie sacó del monitoreo. Y en «sin
+--    datos» hay uno que no reporta desde 2012, catorce años.
+--
+--    Se reproduce esa forma, no esos números: un caído residuo, un caído de
+--    arrastre, dos recientes, y los «sin datos» clavados en 2012.
+
+-- Residuo: caído desde el mismo día que los cinco más viejos de la base real.
+UPDATE services s
+   SET time_since_changed = extract(epoch FROM timestamptz '2022-03-19 12:43:30+00')::bigint
+  FROM devices d WHERE d.id = s.device_id AND d.id = 113;
+
+-- Arrastre: tres meses. Ni novedad ni paisaje.
+UPDATE services s
+   SET time_since_changed = extract(epoch FROM now() - interval '90 days')::bigint
+  FROM devices d WHERE d.id = s.device_id AND d.id = 121;
+
+-- «Sin datos» desde 2012, como el más viejo del origen.
+UPDATE services s
+   SET time_since_changed = extract(epoch FROM timestamptz '2012-03-19 16:03:00+00')::bigint
+  FROM devices d WHERE d.id = s.device_id AND COALESCE(d.status, 0) = 0;
+
+-- 🔴 Y un equipo que NO tiene ninguna sonda: 32 de los 885 de la base real
+--    están así. Su antigüedad es NULL y el panel tiene que decir «sin fecha de
+--    cambio» en vez de inventar una o de mandarlo al primer puesto del orden.
+DELETE FROM services WHERE device_id = 137;
+
 -- ── Mediciones ──────────────────────────────────────────────────────────────
 -- Sólo lo suficiente para que las tablas no estén vacías; el panel todavía no
 -- grafica, pero el esquema lo contempla y el ETL las llena.
@@ -410,6 +472,54 @@ SELECT cs.id, '10min', now() - (n * interval '10 minutes'),
        round((12 + 8 * sin(n / 3.0) + (cs.id % 7))::numeric, 2)
 FROM chart_sources cs
 CROSS JOIN generate_series(0, 47) AS n;
+
+-- ── Tráfico de los enlaces ──────────────────────────────────────────────────
+--
+-- 🔴 Los tres casos que hay que poder distinguir, porque confundirlos tuvo
+--    `[Interface.InBitRate]` apagado en 38 de los 40 mapas durante una versión
+--    entera:
+--
+--      1. hay serie y tiene números    → se muestra el caudal
+--      2. hay serie y viene TODA vacía → NO se muestra nada, se declara
+--      3. hay números pero son viejos  → se muestra con la edad, o se calla
+--
+--    El caso 2 es el que engañó: contando FILAS parece que hay datos, y
+--    contando VALORES no hay ninguno. En la base real son 544.920 filas con el
+--    instante puesto y `value` en nulo. La consulta pide `value IS NOT NULL`
+--    justamente por esto, y acá está el caso que lo prueba.
+--
+-- El nombre lleva el sufijo « rx» / « tx» que arma The Dude: de ahí sale el
+-- sentido, y de ahí también el nombre de la interfaz en la tarjeta del nodo.
+
+INSERT INTO chart_sources (id, name, device_id, service_id, link_id, unit, enabled) VALUES
+  -- 1 · Con dato fresco. El enlace 4001 es el que dibuja el elemento 5050.
+  (3901, 'sfp-plus1 @ BR_Core_01 rx', 101, NULL, 4001, 'bit/s', true),
+  (3902, 'sfp-plus1 @ BR_Core_01 tx', 101, NULL, 4001, 'bit/s', true),
+  -- 2 · Serie entera en nulo: el balde existe y está vacío.
+  (3903, 'ether9 @ RT_Core_A rx', 102, NULL, 4002, 'bit/s', true),
+  (3904, 'ether9 @ RT_Core_A tx', 102, NULL, 4002, 'bit/s', true),
+  -- 3 · Números de hace una semana: vencidos, no se muestran.
+  (3905, 'wlan1 @ RT_Core_A rx', 102, NULL, 4003, 'bit/s', true),
+  (3906, 'wlan1 @ RT_Core_A tx', 102, NULL, 4003, 'bit/s', true);
+
+-- 1 · fresco (y en el balde `raw`, que es el más fino).
+INSERT INTO chart_values (source_id, bucket, ts, value)
+SELECT cs.id, 'raw', now() - (n * interval '5 minutes'),
+       CASE WHEN cs.id = 3901 THEN 5915073344 ELSE 508123456 END - n * 1000
+FROM chart_sources cs CROSS JOIN generate_series(0, 5) AS n
+WHERE cs.id IN (3901, 3902);
+
+-- 2 · el instante sí, el número no. Es el caso que hay que saber descartar.
+INSERT INTO chart_values (source_id, bucket, ts, value)
+SELECT cs.id, '10min', now() - (n * interval '10 minutes'), NULL
+FROM chart_sources cs CROSS JOIN generate_series(0, 20) AS n
+WHERE cs.id IN (3903, 3904);
+
+-- 3 · vencido: hace una semana, muy por encima del límite de 48 h.
+INSERT INTO chart_values (source_id, bucket, ts, value)
+SELECT cs.id, 'raw', now() - interval '7 days' - (n * interval '10 minutes'), 12345678
+FROM chart_sources cs CROSS JOIN generate_series(0, 3) AS n
+WHERE cs.id IN (3905, 3906);
 
 -- ── Sincronización ──────────────────────────────────────────────────────────
 -- La última es reciente y correcta, así que el panel arranca "al día". Para
@@ -435,6 +545,28 @@ SELECT now() - (n * interval '30 seconds') - interval '4 seconds',
        CASE WHEN n % 3 = 1 THEN 0 ELSE 4 END,
        CASE WHEN n % 3 = 1 THEN 0 ELSE 336 END
 FROM generate_series(0, 9) AS n;
+
+-- ── Escala de los iconos ────────────────────────────────────────────────────
+-- 🔴 `image_scale` es un PORCENTAJE por elemento y el visor lo tiraba: dibujaba
+--    los 499 iconos de la base real en un cuadro fijo de 22×22. En un mismo
+--    mapa conviven escalas de 5 a 384, así que aplanarlas borra el trabajo de
+--    quien acomodó cada foto. Acá se reproduce esa mezcla —incluido el NULO,
+--    que existe y no tiene que romper nada.
+
+UPDATE map_elements SET image_scale = 100 WHERE image_scale IS NULL;
+UPDATE map_elements SET image_scale = v.esc FROM (VALUES
+  (5001, 300),   -- muy grande: tiene que toparse con el techo
+  (5002, 160),
+  (5003, 100),
+  (5004,  60),
+  (5005,  30),
+  (5006,  10),   -- muy chica: tiene que toparse con el piso
+  (5013, NULL::integer),  -- 🔴 nula: pasa por el mismo camino que un 100
+  (5101,  80),
+  (5102,  40),
+  (5104,   0)    -- 🔴 cero no es una escala; se trata como sin definir
+) AS v(id, esc) WHERE map_elements.id = v.id;
+
 
 -- ── Agregados ───────────────────────────────────────────────────────────────
 -- Los materializa el ETL. El panel los recalcula en vivo para no depender de

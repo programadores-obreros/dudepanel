@@ -11,15 +11,29 @@ import {
   resumenRed,
   ultimaSincronizacion,
 } from '@/lib/consultas';
+import Antiguedad from '@/components/Antiguedad.astro';
 import { numero, porcentaje } from '@/lib/formato';
+import { accionables, ANTIGUEDADES, DIAS_RECIENTE } from '@/lib/antiguedad';
 import { reportarError } from '@/lib/errores';
 
 /**
  * Lo primero que mira alguien a las 3 de la mañana.
  *
- * Orden deliberado: primero si los datos sirven, después qué está roto, y sólo
- * al final cuánto hay en total. Los números grandes son un contexto agradable,
- * no la pregunta que se viene a contestar.
+ * Orden deliberado: primero si los datos sirven, después **qué mirar**, después
+ * qué está roto, y sólo al final cuánto hay en total.
+ *
+ * 🔴 «Qué mirar» es nuevo y es el corazón de esta versión del tablero.
+ *
+ *    Antes lo primero que se veía era «267 CAÍDOS» en rojo, enorme. Medido
+ *    sobre la base real, 121 de esos 267 llevan más de un año caídos: no son
+ *    caídas, son equipos dados de baja que nadie sacó del monitoreo. Un número
+ *    que arranca en 267 y del que casi la mitad no significa nada **entrena al
+ *    operador a no mirarlo**, y el día que se caiga un troncal va a estar
+ *    mezclado ahí adentro.
+ *
+ *    Los 267 siguen estando, y con el mismo tamaño de letra que antes: el panel
+ *    no puede contradecir a The Dude. Lo que se agrega arriba es la partición
+ *    que permite leerlos. Ver `antiguedad.ts`.
  */
 
 let error: string | null = null;
@@ -35,7 +49,12 @@ try {
     resumenRed(),
     caidasRecientes(10),
     listarMapas(),
-    listarDispositivos({ estado: 3, orden: 'nombre', porPagina: 10 }),
+    // 🔴 Por antigüedad y no por nombre. La lista se llamaba «Equipos caídos
+    //    ahora» y venía ordenada alfabéticamente: las diez primeras filas eran
+    //    diez direcciones IP que empiezan con 10.227, todas caídas desde hace
+    //    años. O sea que el bloque que dice «ahora» mostraba lo más viejo que
+    //    hay. Ordenado por lo último que cambió, dice lo que promete.
+    listarDispositivos({ estado: 3, orden: 'antiguedad', porPagina: 10 }),
   ]);
 } catch (e) {
   error = reportarError('index', e);
@@ -43,12 +62,28 @@ try {
 
 const mapasRotos = mapas.filter((m) => m.caidos > 0 || m.parcial > 0).slice(0, 8);
 const eq = resumen?.equipos;
+const edad = resumen?.caidos_por_antiguedad;
+const edadSD = resumen?.desconocidos_por_antiguedad;
+
+/** Los que de verdad piden algo: todo lo caído que no es residuo. */
+const paraMirar = edad ? accionables(edad) : 0;
+const residuo = edad?.residuo ?? 0;
+
+const TILES = [
+  { a: ANTIGUEDADES[0]!, n: edad?.reciente ?? 0, clave: 'eq-caidos-reciente' },
+  { a: ANTIGUEDADES[1]!, n: edad?.arrastre ?? 0, clave: 'eq-caidos-arrastre' },
+  { a: ANTIGUEDADES[2]!, n: edad?.residuo ?? 0, clave: 'eq-caidos-residuo' },
+] as const;
 ---
 
 <Base
   titulo="Panel"
   encabezado="Estado de la red"
-  descripcion="el ISP — monitoreo en vivo"
+  descripcion={
+    resumen
+      ? `${numero(paraMirar)} equipos caídos que piden atención · ${numero(residuo)} son residuo de más de un año`
+      : 'el ISP — monitoreo en vivo'
+  }
 >
   <div slot="acciones" class="flex gap-2">
     <a
@@ -70,7 +105,100 @@ const eq = resumen?.equipos;
         {/* 1 · ¿Los datos sirven? Antes que cualquier número. */}
         <EstadoSync sync={sync} variante="aviso" />
 
-        {/* 2 · Titular. Cuántos equipos hay que mirar ahora mismo. */}
+        {/* 2 · QUÉ MIRAR. La partición que The Dude no da. ─────────────────
+            Sale sólo si hay algo caído: en una red sana esta sección no tiene
+            nada que decir y desaparece en vez de ocupar la primera pantalla
+            con tres ceros. */}
+        {
+          eq && eq.caidos > 0 && edad && (
+            <section class="tarjeta overflow-hidden" aria-labelledby="t-triage">
+              <header class="border-borde flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 border-b px-3 py-2">
+                <h2 id="t-triage" class="text-sm font-semibold">
+                  Qué mirar ahora
+                </h2>
+                <p class="text-tenue text-2xs">
+                  de los <span class="cifra">{numero(eq.caidos)}</span> equipos caídos, por hace
+                  cuánto que lo están
+                </p>
+              </header>
+
+              <div class="divide-borde grid grid-cols-3 divide-x">
+                {TILES.map((t) => (
+                  <a
+                    href={`/dispositivos?estado=3&edad=${t.a.clave}`}
+                    class="hover:bg-panel-2 flex flex-col gap-0.5 px-3 py-2.5 no-underline"
+                    title={t.a.explica}
+                  >
+                    <span class="text-tenue text-2xs flex items-center gap-1.5 font-semibold tracking-wide uppercase">
+                      <span class="rampa" data-antiguedad={t.a.clave} aria-hidden="true" />
+                      {t.a.etiqueta}
+                    </span>
+                    <span
+                      class:list={[
+                        'cifra text-2xl leading-none font-bold tabular-nums sm:text-3xl',
+                        t.a.clave === 'reciente' && 'text-caido-txt',
+                        t.a.clave === 'residuo' && 'text-tenue',
+                      ]}
+                      data-vivo={t.clave}
+                    >
+                      {numero(t.n)}
+                    </span>
+                    <span class="text-tenue text-2xs">
+                      {t.a.clave === 'reciente'
+                        ? `cambiaron hace menos de ${DIAS_RECIENTE} días`
+                        : t.a.clave === 'arrastre'
+                          ? `entre ${DIAS_RECIENTE} días y un año`
+                          : 'más de un año igual'}
+                    </span>
+                  </a>
+                ))}
+              </div>
+
+              {/* 🔴 El párrafo que explica por qué esto está acá. No es relleno:
+                  sin él, tres números por antigüedad son una curiosidad. Con
+                  él, son el argumento para dar de baja 121 equipos. */}
+              {residuo > 0 && (
+                <p class="border-borde bg-panel-2/60 text-tenue flex flex-wrap items-baseline gap-x-2 gap-y-1 border-t px-3 py-2 text-xs">
+                  <span>
+                    <strong class="text-tinta font-semibold">
+                      {numero(residuo)} de {numero(eq.caidos)}
+                    </strong>{' '}
+                    llevan más de un año caídos. Casi seguro son bajas que nadie sacó del
+                    monitoreo — y mientras sigan ahí, el tablero enseña a ignorar el rojo.
+                  </span>
+                  <a
+                    href="/dispositivos?estado=3&edad=residuo&orden=antiguedad&dir=desc"
+                    class="text-acento-txt ml-auto font-semibold whitespace-nowrap no-underline hover:underline"
+                  >
+                    Revisarlos →
+                  </a>
+                </p>
+              )}
+
+              {/* Lo mismo con «sin datos», que es donde vive el más viejo de
+                  todos: hay uno que no reporta desde 2012. */}
+              {edadSD && edadSD.residuo > 0 && (
+                <p class="border-borde/70 text-tenue border-t px-3 py-1.5 text-2xs">
+                  Y otros <strong class="font-semibold">{numero(edadSD.residuo)}</strong> están en
+                  «sin datos» hace más de un año.{' '}
+                  <a
+                    href="/dispositivos?estado=0&edad=residuo&orden=antiguedad&dir=desc"
+                    class="text-acento-txt font-semibold no-underline hover:underline"
+                  >
+                    Verlos
+                  </a>
+                </p>
+              )}
+            </section>
+          )
+        }
+
+        {/* 3 · Los cuatro estados, tal cual los cuenta The Dude. ────────────
+            🔴 Estos NO se tocan ni se recalculan con la antigüedad. Si el panel
+               dijera «146 caídos» porque descontó los residuos, estaría
+               contradiciendo a la herramienta que sigue siendo la fuente de
+               verdad, y dos números distintos para lo mismo en dos pantallas
+               es peor que un número incómodo. */}
         <section aria-labelledby="t-equipos">
           <h2 id="t-equipos" class="text-tenue mb-2 text-2xs font-semibold tracking-wide uppercase">
             Equipos · {numero(eq?.total ?? 0)} en total
@@ -115,7 +243,7 @@ const eq = resumen?.equipos;
           </div>
         </section>
 
-        {/* 3 · Lo que está pasando. Dos columnas en escritorio, apiladas en
+        {/* 4 · Lo que está pasando. Dos columnas en escritorio, apiladas en
             celular con las caídas arriba: es lo urgente. */}
         <div class="grid gap-4 lg:grid-cols-2">
           <section class="tarjeta flex flex-col overflow-hidden" aria-labelledby="t-caidas">
@@ -181,11 +309,11 @@ const eq = resumen?.equipos;
           </section>
         </div>
 
-        {/* 4 · Equipos caídos ahora, con nombre y apellido. */}
+        {/* 5 · Los que se cayeron más recientemente, con nombre y apellido. */}
         {peores && peores.filas.length > 0 && (
           <section class="tarjeta overflow-hidden" aria-labelledby="t-peores">
             <header class="border-borde flex items-center justify-between gap-2 border-b px-3 py-2">
-              <h2 id="t-peores" class="text-sm font-semibold">Equipos caídos ahora</h2>
+              <h2 id="t-peores" class="text-sm font-semibold">Los últimos en caer</h2>
               {peores.total > peores.filas.length && (
                 <a
                   href="/dispositivos?estado=3"
@@ -211,7 +339,8 @@ const eq = resumen?.equipos;
                         </span>
                       )}
                     </span>
-                    <span class="text-tenue text-2xs cifra shrink-0">
+                    <Antiguedad estado={d.status} desde={d.estado_desde} class="shrink-0" />
+                    <span class="text-tenue text-2xs cifra hidden shrink-0 sm:inline">
                       {d.services_down}/{d.services_total} sondas
                     </span>
                   </a>
@@ -221,7 +350,7 @@ const eq = resumen?.equipos;
           </section>
         )}
 
-        {/* 5 · Contexto. Deliberadamente al final y en gris. */}
+        {/* 6 · Contexto. Deliberadamente al final y en gris. */}
         <section aria-labelledby="t-inventario" class="tarjeta p-3">
           <h2 id="t-inventario" class="text-tenue text-2xs mb-2 font-semibold tracking-wide uppercase">
             Inventario

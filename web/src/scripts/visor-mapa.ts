@@ -43,6 +43,9 @@ function iniciar(visor: HTMLElement) {
       capa!.setAttribute('transform', `translate(${tx} ${ty}) scale(${k})`);
       const nivel = visor.querySelector<HTMLElement>('[data-nivel-zoom]');
       if (nivel) nivel.textContent = `${Math.round(k * 100)} %`;
+      // La tarjeta emergente está anclada a la posición en pantalla de un nodo
+      // que se acaba de mover. Se avisa una vez por cuadro, no por evento.
+      document.dispatchEvent(new CustomEvent('mapa:movido'));
     });
   }
 
@@ -185,6 +188,21 @@ function iniciar(visor: HTMLElement) {
   }
   visor.querySelector('[data-ajustar]')?.addEventListener('click', ajustar);
 
+  // ── Atenuar residuos ──────────────────────────────────────────────────────
+  //
+  // Una clase en el contenedor y listo: el CSS hace el resto para los N nodos
+  // de una sola vez. Nada de recorrerlos.
+  const atenuar = visor.querySelector<HTMLButtonElement>('[data-atenuar]');
+  if (atenuar) {
+    visor.dataset.atenuarResiduos = 'si';
+    atenuar.addEventListener('click', () => {
+      const encendido = atenuar.getAttribute('aria-pressed') === 'true';
+      atenuar.setAttribute('aria-pressed', encendido ? 'false' : 'true');
+      if (encendido) delete visor.dataset.atenuarResiduos;
+      else visor.dataset.atenuarResiduos = 'si';
+    });
+  }
+
   svg.addEventListener('keydown', (ev) => {
     // Sólo cuando el foco está en el lienzo, no en un nodo: con el foco en un
     // nodo las flechas tienen que seguir sirviendo para leer con el lector.
@@ -209,9 +227,16 @@ function iniciar(visor: HTMLElement) {
 
   // Al llegar el foco a un nodo por Tab, traerlo a la vista si quedó fuera.
   // Sin esto, tabular por un mapa grande con zoom es navegar a ciegas.
-  for (const nodo of svg.querySelectorAll<SVGGraphicsElement>('.nodo-mapa[tabindex]')) {
-    nodo.addEventListener('focus', () => acercarA(nodo));
-  }
+  //
+  // 🔴 Delegado, no una escucha por nodo. Antes eran 401 `addEventListener` en
+  //    el arranque del mapa más grande; ahora es uno. `focus` no burbujea, pero
+  //    `focusin` sí, que es exactamente para esto.
+  svg.addEventListener('focusin', (ev) => {
+    const objetivo = ev.target;
+    if (!(objetivo instanceof Element)) return;
+    const nodo = objetivo.closest('.nodo-mapa[tabindex]');
+    if (nodo) acercarA(nodo as unknown as SVGGraphicsElement);
+  });
 
   function acercarA(nodo: SVGGraphicsElement) {
     const caja = nodo.getBoundingClientRect();
@@ -277,14 +302,24 @@ function refrescoPeriodico(svg: SVGSVGElement, mapaId: string) {
       const glifo = nodo.querySelector('[data-glifo]');
       if (glifo) glifo.textContent = m.glifo;
 
+      // 🔴 El estado ACABA de cambiar, así que su antigüedad es cero. Sin esta
+      //    línea, un residuo de 2022 que revive —o un equipo sano que se cae—
+      //    conservaría el `data-antiguedad` con el que llegó la página, y el
+      //    mapa seguiría atenuando la única novedad de la noche. Es el peor
+      //    error posible en este eje y por eso se corrige acá y no al recargar.
+      if (estado === 1) delete nodo.dataset.antiguedad;
+      else nodo.dataset.antiguedad = 'reciente';
+      nodo.dataset.edad = '0';
+
       // La etiqueta accesible tiene que seguir al color; si no, el lector de
       // pantalla anuncia un estado que ya no es. Se rearma de las partes en vez
       // de parchear la cadena, que con nombres que traen guiones se rompe.
       const base = nodo.dataset.rotulo;
-      if (base) nodo.setAttribute('aria-label', `${base} — ${m.etiqueta}${nodo.dataset.ips ?? ''}`);
+      const texto = `${base} — ${m.etiqueta}${nodo.dataset.ips ?? ''} — cambió recién`;
+      if (base) nodo.setAttribute('aria-label', texto);
 
       const titulo = nodo.querySelector('title');
-      if (titulo && base) titulo.textContent = `${base} — ${m.etiqueta}${nodo.dataset.ips ?? ''}`;
+      if (titulo && base) titulo.textContent = texto;
     }
 
     // Un enlace vale lo que valen sus puntas: se recalcula con el peor de las

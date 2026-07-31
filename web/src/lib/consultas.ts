@@ -1,6 +1,14 @@
 import { consultar, consultarUna } from './db';
 import { entero } from './entorno';
 import { aEstado, type Estado } from './estado';
+import {
+  CONTEO_VACIO,
+  DIAS_RECIENTE,
+  DIAS_RESIDUO,
+  type Antiguedad,
+  type ConteoAntiguedad,
+} from './antiguedad';
+import type { ConteoSubmapa } from './plantillas';
 
 /**
  * Toda la SQL del panel vive acá.
@@ -71,6 +79,71 @@ export function saludSync(s: Sincronizacion | null): SaludSync {
   return 'fresca';
 }
 
+// ── Desde cuándo está así un equipo ─────────────────────────────────────────
+
+/**
+ * 🔴 `devices` NO tiene `status_changed_at`. Sólo lo tienen los servicios.
+ *
+ *    Así que la antigüedad de un equipo hay que derivarla, y la regla no es
+ *    obvia. La que se usa acá, y por qué:
+ *
+ *      COALESCE(max(cambio) FILTER (status = 3), max(cambio))
+ *
+ *    · Si el equipo tiene algún servicio CAÍDO, manda **el último en caer**.
+ *      Es el que completó la caída: un equipo con `ping` caído desde 2022 y
+ *      `winbox` caído desde hoy está caído entero desde hoy, no desde 2022.
+ *      Y en el caso inverso —los dos caídos desde 2022— los dos coinciden.
+ *
+ *    · Si no hay ninguno caído, manda el último cambio de cualquier servicio:
+ *      es «lo último que pasó en este equipo».
+ *
+ *    · Sin servicios, `NULL`. No se inventa una fecha. 32 de los 885 equipos
+ *      de la base real están así, y el panel lo dice con esas palabras.
+ *
+ *    Es una definición, no una verdad revelada: está acá arriba en vez de
+ *    enterrada en cinco consultas justamente para que se pueda discutir en un
+ *    solo lugar.
+ */
+const SQL_ESTADO_DESDE = `
+  COALESCE(
+    max(s.status_changed_at) FILTER (WHERE s.status = 3),
+    max(s.status_changed_at)
+  )`;
+
+/** El `LEFT JOIN LATERAL` que le cuelga `estado_desde` a `devices d`. */
+const JOIN_ESTADO_DESDE = `
+  LEFT JOIN LATERAL (
+    SELECT ${SQL_ESTADO_DESDE} AS estado_desde
+    FROM services s WHERE s.device_id = d.id
+  ) sc ON true`;
+
+/**
+ * Cómo se clasifica una fecha en SQL, con los mismos cortes que `antiguedad.ts`.
+ *
+ * Los umbrales viajan como parámetros y no van escritos en la consulta: son
+ * configurables por entorno y tener el número en dos lugares es tener dos
+ * verdades. `$r` = días de «reciente», `$v` = días de «residuo».
+ */
+function sqlAntiguedad(col: string, r: string, v: string): string {
+  return `CASE
+     WHEN ${col} IS NULL THEN 'sin-fecha'
+     WHEN ${col} > now() - make_interval(days => ${r}) THEN 'reciente'
+     WHEN ${col} > now() - make_interval(days => ${v}) THEN 'arrastre'
+     ELSE 'residuo'
+   END`;
+}
+
+function aConteo(filas: { antiguedad: string; n: number }[]): ConteoAntiguedad {
+  const c = { ...CONTEO_VACIO };
+  for (const f of filas) {
+    if (f.antiguedad === 'reciente') c.reciente = f.n;
+    else if (f.antiguedad === 'arrastre') c.arrastre = f.n;
+    else if (f.antiguedad === 'residuo') c.residuo = f.n;
+    else c.sinFecha = f.n;
+  }
+  return c;
+}
+
 // ── Resumen de la red ───────────────────────────────────────────────────────
 
 export interface Conteo {
@@ -88,6 +161,16 @@ export interface ResumenRed {
   enlaces: number;
   caidas_abiertas: number;
   caidas_24h: number;
+  /**
+   * Los equipos CAÍDOS, repartidos por hace cuánto que lo están.
+   *
+   * 🔴 Es el número que cambia la lectura del tablero. «267 caídos» y «146
+   *    caídos + 121 residuos de más de un año» describen la misma red y llevan
+   *    a decisiones distintas. Ver `antiguedad.ts`.
+   */
+  caidos_por_antiguedad: ConteoAntiguedad;
+  /** Los que están en «sin datos», que es donde vive el residuo más viejo. */
+  desconocidos_por_antiguedad: ConteoAntiguedad;
 }
 
 export async function resumenRed(): Promise<ResumenRed> {
@@ -114,8 +197,24 @@ export async function resumenRed(): Promise<ResumenRed> {
         WHERE started_at > now() - interval '24 hours')         AS ult24
   `);
 
+  // El reparto por antigüedad va en su propia consulta y no pegado a la de
+  // arriba: necesita el LATERAL contra `services` y meterlo entre catorce
+  // subconsultas escalares haría ilegible la única consulta que se lee seguido.
+  const porEdad = await consultar<{ status: number; antiguedad: string; n: number }>(
+    `SELECT COALESCE(d.status, 0)::int AS status,
+            ${sqlAntiguedad('sc.estado_desde', '$1::int', '$2::int')} AS antiguedad,
+            count(*)::int AS n
+     FROM devices d
+     ${JOIN_ESTADO_DESDE}
+     WHERE COALESCE(d.status, 0) IN (0, 3)
+     GROUP BY 1, 2`,
+    [DIAS_RECIENTE, DIAS_RESIDUO],
+  );
+
   const f = fila ?? {};
   return {
+    caidos_por_antiguedad: aConteo(porEdad.filter((p) => p.status === 3)),
+    desconocidos_por_antiguedad: aConteo(porEdad.filter((p) => p.status === 0)),
     equipos: {
       total: f.eq_total ?? 0,
       arriba: f.eq_arriba ?? 0,
@@ -249,11 +348,23 @@ export interface ElementoMapa {
   link_from: number | null;
   link_to: number | null;
   link_width: number | null;
+  /** Id del enlace del origen. Es la clave para buscarle el tráfico. */
+  link_id: number | null;
   name: string | null;
   status: number | null;
   device_id: number | null;
   submap_id: number | null;
   direcciones: string[] | null;
+  /** Para `[Device.ServicesDown]`. Nulo si el elemento no es un equipo. */
+  services_down: number | null;
+  /**
+   * Escala del icono, en porcentaje sobre el tamaño natural del archivo.
+   *
+   * Puede venir nula: el que dimensiona lo trata como 100. Ver `ladoDeIcono`.
+   */
+  image_scale: number | null;
+  /** Desde cuándo el equipo está en su estado. Ver `SQL_ESTADO_DESDE`. */
+  estado_desde: string | null;
 }
 
 /**
@@ -262,35 +373,134 @@ export interface ElementoMapa {
  * Las direcciones se piden como `text[]` y no como el `inet[]` crudo: el driver
  * las entrega ya listas para mostrar y sin depender de cómo parsee `inet[]`
  * la versión de node-pg que esté instalada.
+ *
+ * `services_down` sale de un JOIN acá y no de la vista a propósito: la vista es
+ * contrato del ETL y esto lo necesita sólo el visor, para resolver la plantilla
+ * `[Device.ServicesDown]` de 761 rótulos. Cuesta un hash join sobre las 401
+ * filas del mapa más grande — nada.
  */
 export async function lienzoMapa(mapId: number): Promise<ElementoMapa[]> {
   return consultar<ElementoMapa>(
-    `SELECT element_id, kind, x, y, shape, label, icon,
-            link_from, link_to, link_width,
-            name, status, device_id, submap_id,
-            ARRAY(SELECT host(a) FROM unnest(addresses) a) AS direcciones
-     FROM v_map_canvas
-     WHERE map_id = $1
-     ORDER BY (kind = 'link') DESC, element_id`,
+    `SELECT c.element_id, c.kind, c.x, c.y, c.shape, c.label, c.icon,
+            c.link_from, c.link_to, c.link_width, me.link_id,
+            c.name, c.status, c.device_id, c.submap_id,
+            ARRAY(SELECT host(a) FROM unnest(c.addresses) a) AS direcciones,
+            d.services_down,
+            me.image_scale,
+            sc.estado_desde
+     FROM v_map_canvas c
+     JOIN map_elements me ON me.id = c.element_id
+     LEFT JOIN devices d ON d.id = c.device_id
+     ${JOIN_ESTADO_DESDE}
+     WHERE c.map_id = $1
+     ORDER BY (c.kind = 'link') DESC, c.element_id`,
     [mapId],
   );
 }
 
+// ── Tráfico de los enlaces ──────────────────────────────────────────────────
+
+export interface TraficoEnlace {
+  link_id: number;
+  /** Bits por segundo del último dato de entrada, y cuándo se midió. */
+  entrada_bits: number | null;
+  entrada_ts: string | null;
+  salida_bits: number | null;
+  salida_ts: string | null;
+}
+
 /**
- * Estado consolidado de los submapas que aparecen dentro de un mapa.
+ * La última medición de tráfico de cada enlace de un mapa.
  *
- * `v_map_canvas` lo deriva de `maps.devices_*`, que es material del ETL; acá se
- * recalcula en vivo por la misma razón que en `listarMapas`.
+ * 🔴 Esto existe porque `[Interface.InBitRate]` estuvo apagado por una medición
+ *    vencida. La historia completa está en `plantillas.ts`; acá va lo técnico.
+ *
+ * ── Por qué un LATERAL por balde y no un `DISTINCT ON` ──────────────────────
+ *
+ * `chart_values` tiene 1.584.013 filas y su única clave es
+ * `(source_id, bucket, ts)`. Un `DISTINCT ON (source_id) … ORDER BY ts DESC`
+ * no puede usar ese índice —`bucket` está en el medio— y termina barriendo las
+ * ~500.000 filas de las fuentes con enlace en CADA dibujo de mapa. Pidiendo el
+ * último de cada balde por separado, cada búsqueda es un `LIMIT 1` sobre el
+ * índice. Medido sobre `VLANS`: **0,58 ms**.
+ *
+ * ── Y por qué se prefiere el balde más fino a igual antigüedad ──────────────
+ *
+ * `raw` es la medición; `1day` es un promedio de veinticuatro horas. Los dos
+ * están en bit/s y los dos son ciertos, pero mostrar el promedio diario como
+ * «el tráfico del enlace» achata los picos, que es justo lo que se mira. Se
+ * ordena por fecha y se desempata por finura.
  */
-export async function estadoSubmapas(mapId: number): Promise<Map<number, Estado>> {
-  const filas = await consultar<{ submap_id: number; status: number }>(
+export async function traficoDeMapa(mapId: number): Promise<Map<number, TraficoEnlace>> {
+  const filas = await consultar<TraficoEnlace>(
+    `WITH fuentes AS (
+       SELECT cs.id, cs.link_id,
+              CASE WHEN cs.name LIKE '% rx' THEN 'rx'
+                   WHEN cs.name LIKE '% tx' THEN 'tx' END AS sentido
+       FROM chart_sources cs
+       WHERE cs.unit = 'bit/s'
+         AND cs.link_id IN (SELECT DISTINCT link_id FROM map_elements
+                            WHERE map_id = $1 AND link_id IS NOT NULL)
+     ),
+     ult AS (
+       SELECT f.link_id, f.sentido, u.ts, u.value
+       FROM fuentes f
+       CROSS JOIN LATERAL (
+         SELECT x.ts, x.value
+         FROM (VALUES ('raw', 1), ('10min', 2), ('2hour', 3), ('1day', 4)) AS b(bucket, pref)
+         CROSS JOIN LATERAL (
+           SELECT c.ts, c.value FROM chart_values c
+           WHERE c.source_id = f.id AND c.bucket = b.bucket AND c.value IS NOT NULL
+           ORDER BY c.ts DESC LIMIT 1
+         ) x
+         ORDER BY x.ts DESC, b.pref LIMIT 1
+       ) u
+       WHERE f.sentido IS NOT NULL
+     )
+     SELECT link_id,
+            max(value) FILTER (WHERE sentido = 'rx') AS entrada_bits,
+            max(ts)    FILTER (WHERE sentido = 'rx') AS entrada_ts,
+            max(value) FILTER (WHERE sentido = 'tx') AS salida_bits,
+            max(ts)    FILTER (WHERE sentido = 'tx') AS salida_ts
+     FROM ult
+     GROUP BY link_id`,
+    [mapId],
+  );
+  return new Map(filas.map((f) => [f.link_id, f]));
+}
+
+/** Estado y recuentos de un submapa dibujado dentro de otro mapa. */
+export interface ResumenSubmapa extends ConteoSubmapa {
+  estado: Estado;
+}
+
+/**
+ * Estado y recuentos de los submapas que aparecen dentro de un mapa.
+ *
+ * Todo en vivo, nada de `maps.devices_*`. No es una preferencia estética: en la
+ * base real esas columnas están **mal**. Medido el 31/07/2026 sobre `MGomez`,
+ * el ETL escribió `devices_down = 23` cuando hay 11 caídos y 12 parciales — los
+ * suma. El rótulo `[NetMap.DevicesCount] / [...PartiallyDownCount] /
+ * [...DownCount]` de 145 elementos diría «48 / 0 / 23», que es otra cosa que la
+ * que muestra The Dude. Recontar cuesta milisegundos.
+ *
+ * `total` sí coincide clavado con `maps.devices_total` en los 40 mapas, lo que
+ * confirma de paso que The Dude no cuenta en cascada: los equipos de un
+ * sub-submapa no entran.
+ */
+export async function resumenSubmapas(mapId: number): Promise<Map<number, ResumenSubmapa>> {
+  const filas = await consultar<{
+    submap_id: number;
+    total: number;
+    arriba: number;
+    parciales: number;
+    caidos: number;
+  }>(
     `SELECT e.submap_id,
-            CASE
-              WHEN count(*) FILTER (WHERE d.status = 3) > 0 THEN 3
-              WHEN count(*) FILTER (WHERE d.status = 2) > 0 THEN 2
-              WHEN count(*) FILTER (WHERE d.status = 1) > 0 THEN 1
-              ELSE 0
-            END AS status
+            count(*) FILTER (WHERE se.device_id IS NOT NULL)::int AS total,
+            count(*) FILTER (WHERE d.status = 1)::int             AS arriba,
+            count(*) FILTER (WHERE d.status = 2)::int             AS parciales,
+            count(*) FILTER (WHERE d.status = 3)::int             AS caidos
      FROM map_elements e
      JOIN map_elements se ON se.map_id = e.submap_id
      LEFT JOIN devices  d ON d.id = se.device_id
@@ -298,7 +508,26 @@ export async function estadoSubmapas(mapId: number): Promise<Map<number, Estado>
      GROUP BY e.submap_id`,
     [mapId],
   );
-  return new Map(filas.map((f) => [f.submap_id, aEstado(f.status)]));
+
+  return new Map(
+    filas.map((f) => [
+      f.submap_id,
+      {
+        total: f.total,
+        arriba: f.arriba,
+        parciales: f.parciales,
+        caidos: f.caidos,
+        // El peor manda, igual que en cualquier agregado de este panel.
+        estado: aEstado(f.caidos > 0 ? 3 : f.parciales > 0 ? 2 : f.arriba > 0 ? 1 : 0),
+      },
+    ]),
+  );
+}
+
+/** Sólo el estado consolidado de cada submapa; lo que necesita el refresco. */
+export async function estadoSubmapas(mapId: number): Promise<Map<number, Estado>> {
+  const resumen = await resumenSubmapas(mapId);
+  return new Map([...resumen].map(([id, r]) => [id, r.estado]));
 }
 
 /** Carga liviana para el refresco: sólo id de elemento y estado. */
@@ -431,9 +660,11 @@ export interface FilaDispositivo {
   services_up: number;
   services_down: number;
   router_os: boolean | null;
+  /** Desde cuándo está en este estado. Ver `SQL_ESTADO_DESDE`. */
+  estado_desde: string | null;
 }
 
-export type ColumnaOrden = 'nombre' | 'estado' | 'tipo' | 'servicios' | 'ip';
+export type ColumnaOrden = 'nombre' | 'estado' | 'tipo' | 'servicios' | 'ip' | 'antiguedad';
 
 /**
  * Lista blanca de ordenamientos.
@@ -448,12 +679,33 @@ const ORDEN: Record<ColumnaOrden, string> = {
   tipo: 'lower(coalesce(dt.name, \'\'))',
   servicios: 'd.services_down',
   ip: 'coalesce(d.addresses[1], \'0.0.0.0\'::inet)',
+  antiguedad: 'sc.estado_desde',
 };
+
+/**
+ * Columnas donde «ascendente» en la pantalla es DESC en la base.
+ *
+ * La columna muestra una DURACIÓN («hace 3 h») y guarda un INSTANTE. Ordenar la
+ * duración de menor a mayor es ordenar el instante de mayor a menor. Sin esta
+ * inversión, pedir «los más recientes primero» devolvía los de 2022.
+ */
+const ORDEN_INVERTIDO = new Set<ColumnaOrden>(['antiguedad']);
+
+/**
+ * Dónde se ponen los nulos.
+ *
+ * `sc.estado_desde` es nulo en los 32 equipos sin ningún servicio. Sin
+ * `NULLS LAST` PostgreSQL los pone primero en DESC, o sea que «ordenar por lo
+ * más reciente» arrancaba con treinta y dos filas que dicen «—».
+ */
+const NULOS_AL_FINAL = new Set<ColumnaOrden>(['antiguedad']);
 
 export interface FiltrosDispositivos {
   estado?: Estado | null;
   tipoId?: number | null;
   texto?: string | null;
+  /** Filtro por hace cuánto que el equipo está como está. Ver `antiguedad.ts`. */
+  antiguedad?: Antiguedad | null;
   orden?: ColumnaOrden;
   desc?: boolean;
   pagina?: number;
@@ -478,7 +730,9 @@ export async function listarDispositivos(f: FiltrosDispositivos = {}): Promise<P
   // la lista no es una lista blanca.
   const pedido = f.orden ?? 'estado';
   const orden: ColumnaOrden = Object.hasOwn(ORDEN, pedido) ? pedido : 'estado';
-  const dir = f.desc ? 'DESC' : 'ASC';
+  const ascendente = ORDEN_INVERTIDO.has(orden) ? !!f.desc : !f.desc;
+  const dir = ascendente ? 'ASC' : 'DESC';
+  const nulos = NULOS_AL_FINAL.has(orden) ? ' NULLS LAST' : '';
   const porPagina = Math.min(Math.max(f.porPagina ?? 50, 10), 200);
   const pagina = Math.max(f.pagina ?? 1, 1);
 
@@ -488,13 +742,23 @@ export async function listarDispositivos(f: FiltrosDispositivos = {}): Promise<P
       AND ($3::text     IS NULL OR d.name ILIKE '%' || $3 || '%'
            OR EXISTS (SELECT 1 FROM unnest(d.addresses) a
                       WHERE host(a) LIKE $3 || '%'))
+      AND ($4::text     IS NULL
+           OR ${sqlAntiguedad('sc.estado_desde', '$5::int', '$6::int')} = $4)
   `;
-  const params = [f.estado ?? null, f.tipoId ?? null, f.texto?.trim() || null];
+  const params = [
+    f.estado ?? null,
+    f.tipoId ?? null,
+    f.texto?.trim() || null,
+    f.antiguedad ?? null,
+    DIAS_RECIENTE,
+    DIAS_RESIDUO,
+  ];
 
   const totalFila = await consultarUna<{ n: number }>(
     `SELECT count(*)::int AS n
      FROM devices d
      LEFT JOIN device_types dt ON dt.id = d.type_id
+     ${JOIN_ESTADO_DESDE}
      ${where}`,
     params,
   );
@@ -510,12 +774,14 @@ export async function listarDispositivos(f: FiltrosDispositivos = {}): Promise<P
             d.status, d.status_label,
             ARRAY(SELECT host(a) FROM unnest(d.addresses) a) AS direcciones,
             d.services_total, d.services_up, d.services_down,
-            d.router_os
+            d.router_os,
+            sc.estado_desde
      FROM devices d
      LEFT JOIN device_types dt ON dt.id = d.type_id
+     ${JOIN_ESTADO_DESDE}
      ${where}
-     ORDER BY ${ORDEN[orden]} ${dir}, lower(d.name) ASC
-     LIMIT $4 OFFSET $5`,
+     ORDER BY ${ORDEN[orden]} ${dir}${nulos}, lower(d.name) ASC
+     LIMIT $7 OFFSET $8`,
     [...params, porPagina, (paginaReal - 1) * porPagina],
   );
 
@@ -557,14 +823,36 @@ export async function obtenerDispositivo(id: number): Promise<Dispositivo | null
             sp.name AS perfil_snmp, sp.version AS snmp_version,
             d.router_os, d.probe_enabled, d.probe_interval,
             d.probe_timeout, d.probe_down_count, d.dude_server,
-            d.services_total, d.services_up, d.services_down
+            d.services_total, d.services_up, d.services_down,
+            sc.estado_desde
      FROM devices d
      LEFT JOIN device_types  dt ON dt.id = d.type_id
      LEFT JOIN snmp_profiles sp ON sp.id = d.snmp_profile_id
+     ${JOIN_ESTADO_DESDE}
      WHERE d.id = $1`,
     [id],
   );
   return d ?? null;
+}
+
+/**
+ * ¿La topología está cargada en esta instalación?
+ *
+ * 🔴 `device_parents` está VACÍA en la base real, y el ETL es fiel: The Dude no
+ *    tiene `parentIDs` en ninguno de sus 885 equipos. El problema es de
+ *    lectura, no de datos: la ficha decía «No cuelga de ningún equipo. Es raíz
+ *    de la topología», que es una AFIRMACIÓN sobre la red. Y es falsa: lo
+ *    cierto es «este dato no está cargado en ninguna parte».
+ *
+ *    Distinguirlas necesita saber si la tabla tiene algo para ALGUIEN. Con la
+ *    tabla vacía, la sección lo dice; con la tabla poblada, un equipo sin
+ *    padres sí es una raíz.
+ */
+export async function hayTopologia(): Promise<boolean> {
+  const f = await consultarUna<{ hay: boolean }>(
+    'SELECT EXISTS (SELECT 1 FROM device_parents) AS hay',
+  );
+  return f?.hay ?? false;
 }
 
 /**
@@ -662,6 +950,108 @@ export async function hijosDe(deviceId: number): Promise<Vecino[]> {
               lower(d.name)`,
     [deviceId],
   );
+}
+
+// ── La tarjeta de un nodo ───────────────────────────────────────────────────
+
+export interface InterfazConTrafico {
+  /** Nombre de la interfaz, ya sin el « @ equipo rx» que le pone The Dude. */
+  interfaz: string;
+  entrada_bits: number | null;
+  salida_bits: number | null;
+  /** Instante de la muestra más nueva de las dos. */
+  ts: string | null;
+}
+
+/**
+ * Tráfico por interfaz de un equipo, para la tarjeta emergente.
+ *
+ * Mismo truco de índice que `traficoDeMapa` —un `LIMIT 1` por balde en vez de
+ * un `DISTINCT ON` que barre la tabla— y por el mismo motivo.
+ *
+ * El nombre de la interfaz sale de recortarle a `chart_sources.name` el sufijo
+ * ` @ <equipo> rx|tx` que arma The Dude. No es un parseo frágil: el sufijo lo
+ * escribe siempre el mismo código del origen, y si un día no coincide, lo que
+ * pasa es que se muestra el nombre entero — feo, no falso.
+ */
+export async function traficoDeDispositivo(
+  deviceId: number,
+  limite = 6,
+): Promise<InterfazConTrafico[]> {
+  return consultar<InterfazConTrafico>(
+    `WITH fuentes AS (
+       SELECT cs.id,
+              regexp_replace(cs.name, '\\s+@\\s+.*\\s+(rx|tx)$', '') AS interfaz,
+              CASE WHEN cs.name LIKE '% rx' THEN 'rx'
+                   WHEN cs.name LIKE '% tx' THEN 'tx' END AS sentido
+       FROM chart_sources cs
+       WHERE cs.device_id = $1 AND cs.unit = 'bit/s'
+     ),
+     ult AS (
+       SELECT f.interfaz, f.sentido, u.ts, u.value
+       FROM fuentes f
+       CROSS JOIN LATERAL (
+         SELECT x.ts, x.value
+         FROM (VALUES ('raw', 1), ('10min', 2), ('2hour', 3), ('1day', 4)) AS b(bucket, pref)
+         CROSS JOIN LATERAL (
+           SELECT c.ts, c.value FROM chart_values c
+           WHERE c.source_id = f.id AND c.bucket = b.bucket AND c.value IS NOT NULL
+           ORDER BY c.ts DESC LIMIT 1
+         ) x
+         ORDER BY x.ts DESC, b.pref LIMIT 1
+       ) u
+       WHERE f.sentido IS NOT NULL
+     )
+     SELECT interfaz,
+            max(value) FILTER (WHERE sentido = 'rx') AS entrada_bits,
+            max(value) FILTER (WHERE sentido = 'tx') AS salida_bits,
+            max(ts) AS ts
+     FROM ult
+     GROUP BY interfaz
+     ORDER BY GREATEST(COALESCE(max(value) FILTER (WHERE sentido = 'rx'), 0),
+                       COALESCE(max(value) FILTER (WHERE sentido = 'tx'), 0)) DESC,
+              interfaz
+     LIMIT $2`,
+    [deviceId, limite],
+  );
+}
+
+export interface FichaNodo {
+  equipo: Dispositivo;
+  servicios: Servicio[];
+  mapas: { id: number; nombre: string }[];
+  interfaces: InterfazConTrafico[];
+  /** Caídas cerradas del histórico. Sólo las últimas; el resto vive en la ficha. */
+  caidas: Caida[];
+  /** `false` si `device_parents` está vacía en toda la base. Ver `hayTopologia`. */
+  topologiaCargada: boolean;
+  padres: Vecino[];
+}
+
+/**
+ * Todo lo que muestra la tarjeta emergente de un nodo, en un viaje.
+ *
+ * 🔴 Una función y no seis llamadas desde la ruta: así el barrido antifuga de
+ *    `consultas.test.ts` cubre la tarjeta entera con una sola entrada, en vez
+ *    de depender de que alguien se acuerde de agregar cada consulta nueva.
+ *
+ * El límite de servicios y de caídas es bajo a propósito: la tarjeta es una
+ * respuesta rápida, no la ficha. Cuando hay más, dice cuántos hay y linkea.
+ */
+export async function fichaNodo(deviceId: number): Promise<FichaNodo | null> {
+  const equipo = await obtenerDispositivo(deviceId);
+  if (!equipo) return null;
+
+  const [servicios, mapas, interfaces, caidas, topologiaCargada, padres] = await Promise.all([
+    serviciosDe(deviceId),
+    mapasDeDispositivo(deviceId),
+    traficoDeDispositivo(deviceId),
+    caidasDe(deviceId, 3),
+    hayTopologia(),
+    cadenaDePadres(deviceId),
+  ]);
+
+  return { equipo, servicios, mapas, interfaces, caidas, topologiaCargada, padres };
 }
 
 // ── Búsqueda ────────────────────────────────────────────────────────────────

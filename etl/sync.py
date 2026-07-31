@@ -305,7 +305,14 @@ def extraer(ruta: str) -> Snapshot:
         lid = _fk(o.num("linkID"), ids_enlace) if clase == "link" else None
         s.map_elements.append((
             o.id, mid, clase, o.num("itemX"), o.num("itemY"), o.num("itemShape"),
-            _fk(o.num("itemImage"), ids_archivo), o.nombre,
+            _fk(o.num("itemImage"), ids_archivo),
+            # La escala del icono, en por ciento. The Dude la guarda POR
+            # ELEMENTO: el mismo router puede ir al 100 en un mapa y al 10 en
+            # otro. Sin esto, una foto de 680×310 se dibuja a 22 píxeles y se ve
+            # como un icono genérico — el trabajo de quien cargó las fotos de
+            # cada equipo se pierde entero.
+            o.num("itemImageScale"),
+            o.nombre,
             did, smid, lid,
             _fk(o.num("linkFrom"), ids_elemento),
             _fk(o.num("linkTo"), ids_elemento),
@@ -323,7 +330,13 @@ def extraer(ruta: str) -> Snapshot:
             m.color("unknownColor"), m.color("ackedColor"),
             len(estados),
             sum(1 for e in estados if e == 1),
-            sum(1 for e in estados if e in (2, 3)),
+            sum(1 for e in estados if e == 3),
+            # Los degradados van en su propia cuenta, no sumados a los caídos.
+            # The Dude los separa —la plantilla [NetMap.DevicesPartiallyDownCount]
+            # es un campo distinto de [NetMap.DevicesDownCount]— y si acá se
+            # mezclaran, el rótulo del submapa diría un número que el original
+            # no dice.
+            sum(1 for e in estados if e == 2),
             total_por_mapa[m.id],
         ))
 
@@ -467,11 +480,11 @@ INSERTS = {
              " VALUES (%s,%s,%s,%s,%s,%s)",
     "maps": "INSERT INTO maps (id,name,elements_id,background_color,up_color,down_color,"
             "partial_color,unknown_color,acked_color,devices_total,devices_up,"
-            "devices_down,elements_total) VALUES "
-            "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-    "map_elements": "INSERT INTO map_elements (id,map_id,kind,x,y,shape,image_id,label,"
-                    "device_id,submap_id,link_id,link_from,link_to,link_width) VALUES "
-                    "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            "devices_down,devices_partial,elements_total) VALUES "
+            "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+    "map_elements": "INSERT INTO map_elements (id,map_id,kind,x,y,shape,image_id,image_scale,"
+                    "label,device_id,submap_id,link_id,link_from,link_to,link_width) VALUES "
+                    "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
     "chart_sources": "INSERT INTO chart_sources (id,name,device_id,service_id,link_id,"
                      "unit,enabled) VALUES (%s,%s,%s,%s,%s,%s,%s)",
 }

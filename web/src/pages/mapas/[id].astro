@@ -4,10 +4,13 @@ import VisorMapa from '@/components/VisorMapa.astro';
 import { reportarError } from '@/lib/errores';
 import {
   enlacesFueraDelMapa,
-  estadoSubmapas,
   lienzoMapa,
   obtenerMapa,
+  resumenSubmapas,
+  traficoDeMapa,
   type EnlacesFuera,
+  type ResumenSubmapa,
+  type TraficoEnlace,
 } from '@/lib/consultas';
 
 const id = Number(Astro.params.id);
@@ -15,17 +18,22 @@ if (!Number.isInteger(id) || id <= 0) return Astro.redirect('/mapas', 302);
 
 let mapa = null;
 let elementos: Awaited<ReturnType<typeof lienzoMapa>> = [];
-let submapas = new Map<number, 0 | 1 | 2 | 3>();
+// Recuentos y no sólo estado: los rótulos de submapa piden «total / parciales /
+// caídos» y son 145 elementos en la base real.
+let submapas = new Map<number, ResumenSubmapa>();
 let fuera: EnlacesFuera | undefined;
+// El tráfico de los enlaces. Medido sobre `VLANS`: 0,58 ms — se pide siempre.
+let trafico = new Map<number, TraficoEnlace>();
 let error: string | null = null;
 
 try {
   mapa = await obtenerMapa(id);
   if (mapa) {
-    [elementos, submapas, fuera] = await Promise.all([
+    [elementos, submapas, fuera, trafico] = await Promise.all([
       lienzoMapa(id),
-      estadoSubmapas(id),
+      resumenSubmapas(id),
       enlacesFueraDelMapa(id),
+      traficoDeMapa(id),
     ]);
   }
 } catch (e) {
@@ -78,6 +86,7 @@ if (!mapa && !error) {
           elementos={elementos}
           submapas={submapas}
           fuera={fuera}
+          trafico={trafico}
         />
       )
     }

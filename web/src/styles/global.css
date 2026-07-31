@@ -181,6 +181,93 @@
     border-radius: 0.75rem;
   }
 
+  /* ── Píldora de antigüedad ────────────────────────────────────────────────
+     🔴 Deliberadamente distinta de `.pildora`: rectangular en vez de redonda,
+        más chica y sin relleno saturado. La forma dice «esto es otra cosa».
+
+        Si se pareciera a la píldora de estado, en dos semanas alguien estaría
+        leyendo «Residuo» como si fuera un estado, y el panel habría empezado a
+        contradecir a The Dude. La antigüedad CALIFICA al estado, no lo
+        reemplaza — y eso se tiene que ver antes de leer la palabra. */
+  .antig {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0 0.3rem;
+    border-radius: 0.25rem;
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    line-height: 1.1rem;
+    white-space: nowrap;
+    border: 1px solid transparent;
+    color: var(--color-tenue);
+  }
+  /* ── La rampa de antigüedad, dibujada con CSS ─────────────────────────────
+     🔴 Con CSS y no con un carácter, y esto se aprendió en pantalla.
+
+        Era `● ◐ ○`: lleno, medio, hueco. Perfecto en escala de grises… salvo
+        que `◐` (U+25D0) no existe en la fuente monoespaciada del sistema y
+        salía como `‹`. El escalón del medio de una rampa de tres era un
+        carácter de repuesto. Los tests, verdes.
+
+        Un disco, un medio disco y un aro hechos con `border` y un degradado no
+        dependen de ninguna fuente instalada en ninguna parte. Y heredan
+        `currentColor`, así que siguen al tema y al estado sin una sola regla
+        de color más. */
+  .rampa {
+    display: inline-block;
+    width: 0.62em;
+    height: 0.62em;
+    flex: none;
+    border-radius: 9999px;
+    border: 1.5px solid currentColor;
+    box-sizing: border-box;
+  }
+  .rampa[data-antiguedad='reciente'] {
+    background: currentColor;
+  }
+  /* Medio lleno. El corte va en 50 % exacto para que se lea como «mitad» y no
+     como un disco mal pintado. */
+  .rampa[data-antiguedad='arrastre'] {
+    background: linear-gradient(90deg, currentColor 0 50%, transparent 50% 100%);
+  }
+  .rampa[data-antiguedad='residuo'] {
+    background: transparent;
+  }
+  /* Sin fecha: ni lleno ni vacío, punteado. No sabemos. */
+  .rampa[data-antiguedad='sin-fecha'] {
+    background: transparent;
+    border-style: dotted;
+  }
+
+  /* Reciente es lo único que se destaca. Los otros dos bajan de intensidad, que
+     es justamente el mensaje. */
+  .antig-reciente {
+    color: var(--color-caido-txt);
+    background: var(--color-caido-bg);
+    border-color: color-mix(in oklch, var(--color-caido) 35%, transparent);
+  }
+  .antig-arrastre {
+    color: var(--color-tenue);
+    background: var(--color-panel-2);
+    border-color: var(--color-borde);
+  }
+  .antig-residuo {
+    color: var(--color-tenue);
+    background: transparent;
+    border-color: var(--color-borde);
+    /* La cursiva es el canal que sobrevive a la escala de grises y a una
+       fotocopia: se distingue de «arrastre» sin depender del tono. */
+    font-style: italic;
+    font-weight: 500;
+  }
+  .antig-sin-fecha {
+    color: var(--color-tenue);
+    border-style: dashed;
+    border-color: var(--color-borde);
+    font-weight: 500;
+  }
+
   /* Enlace sobrio: subrayado sólo al pasar, para que las tablas no parezcan
      un campo de minas azul. */
   .enlace {
@@ -248,6 +335,15 @@
   stroke-width: 3px;
   stroke-linejoin: round;
   pointer-events: none;
+}
+
+/* Los renglones que siguen al nombre: la IP, los servicios caídos, el recuento
+   del submapa. Son detalle, no título, y con 400 nodos en pantalla la jerarquía
+   es lo único que evita que el mapa se convierta en una pared de texto. */
+.nodo-mapa .etiqueta .secundaria {
+  font-size: 9px;
+  font-weight: 500;
+  fill: var(--color-tenue);
 }
 
 /* Estado por color Y por trazo: el borde punteado, el rayado y el continuo se
@@ -333,6 +429,21 @@
   fill: var(--color-tinta);
 }
 
+/* ── Enlaces ──────────────────────────────────────────────────────────────
+   🔴 Los CUATRO estados llevan trazo propio, y hubo que arreglarlo.
+
+      «Arriba» y «sin datos» se dibujaban los dos con línea llena: la única
+      diferencia era el color. O sea que la regla que este proyecto no negocia
+      —el estado nunca sólo por color— se cumplía en los 1.047 nodos y NO en
+      los 542 enlaces. En escala de grises, un enlace sano y uno del que no se
+      sabe nada eran el mismo dibujo.
+
+      Ahora el patrón del trazo alcanza para leerlos sin ver un solo color:
+
+        continuo         arriba
+        rayado largo     caída parcial
+        rayado corto     caído
+        punteado         sin datos                                          */
 .enlace-mapa {
   stroke: var(--color-borde-fuerte);
   stroke-width: 2;
@@ -349,6 +460,87 @@
 }
 .enlace-mapa[data-estado='1'] {
   stroke: color-mix(in oklch, var(--color-up) 70%, var(--color-borde-fuerte));
+  stroke-dasharray: none;
+}
+/* Punteado y con `butt`: con `round` los puntos de 1 unidad se convierten en
+   círculos que se tocan y vuelve a parecer una línea llena. */
+.enlace-mapa[data-estado='0'] {
+  stroke: var(--color-desconocido);
+  stroke-dasharray: 1 3.5;
+  stroke-linecap: butt;
+}
+
+/* ── Antigüedad en el mapa ────────────────────────────────────────────────
+   🔴 Acá NO se toca el glifo ni el trazo de estado. Ni uno ni el otro.
+
+      Un residuo está caído: mismo `✕`, mismo punteado. Lo único que cambia es
+      cuánta luz recibe. Si la antigüedad tocara el trazo, el mapa estaría
+      diciendo que un equipo caído hace dos años está en otro estado que uno
+      caído hace dos minutos, y eso es falso: los dos están caídos.
+
+      Y por eso mismo la atenuación NUNCA es el único canal: el `aria-label` y
+      el `<title>` de cada nodo dicen «así desde hace 1.595 días» con todas las
+      letras, y la tarjeta emergente lo pone arriba de todo. */
+[data-atenuar-residuos] .nodo-mapa[data-antiguedad='residuo'] {
+  opacity: 0.34;
+}
+[data-atenuar-residuos] .nodo-mapa[data-antiguedad='residuo']:hover,
+[data-atenuar-residuos] .nodo-mapa[data-antiguedad='residuo']:focus-visible {
+  /* Al apuntarlo vuelve entero: atenuar es para leer el conjunto, no para
+     esconder. Lo que se atenúa tiene que poder mirarse. */
+  opacity: 1;
+}
+
+/* Lo reciente se realza con FORMA, no con color: un segundo aro alrededor de
+   la marca de estado. Se ve en escala de grises y no se puede confundir con
+   ningún estado, porque ningún estado dibuja dos aros. */
+.nodo-mapa[data-antiguedad='reciente'] .marca-estado .fondo {
+  stroke: var(--color-tinta);
+  stroke-width: 1.8;
+  paint-order: stroke;
+}
+.nodo-mapa[data-antiguedad='reciente'] .aro {
+  stroke-width: 3;
+}
+
+/* ── Tarjeta emergente del nodo ───────────────────────────────────────────── */
+
+#tarjeta-nodo[data-modo='flotante'] {
+  /* Aparece sin animación de entrada: 140 ms de demora ya son la transición.
+     Un desvanecido encima agrega latencia percibida donde no hace falta. */
+  pointer-events: auto;
+}
+
+/* En pantalla táctil la tarjeta es una HOJA abajo de todo, no un globito al
+   lado del dedo: el dedo tapa justo lo que se quiere mirar, y una tarjeta de
+   22 rem no entra al costado de un nodo en 390 px de ancho. */
+#tarjeta-nodo[data-modo='hoja'] {
+  pointer-events: auto;
+  inset: auto 0 0 0;
+  width: 100%;
+  max-width: none;
+  max-height: 70vh;
+  overflow-y: auto;
+  border-radius: 1rem 1rem 0 0;
+  border-bottom: none;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+#tarjeta-nodo[data-modo='hoja'] [data-tarjeta-cerrar] {
+  display: grid;
+}
+/* Lugar para el botón de cerrar. Sin esto se monta encima de la píldora de
+   estado, que también va arriba a la derecha: en el teléfono se leía
+   «✕ Caí…» con la cruz de cerrar tapando el resto. */
+#tarjeta-nodo[data-modo='hoja'] header {
+  padding-right: 2.75rem;
+}
+
+#tarjeta-nodo a {
+  color: var(--color-acento-txt);
+  text-decoration: none;
+}
+#tarjeta-nodo a:hover {
+  text-decoration: underline;
 }
 
 /* Una caída que acaba de entrar late tres veces y para. Animación infinita en

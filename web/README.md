@@ -112,6 +112,48 @@ sabe de columnas: pide funciones a `consultas.ts`.
 
 ### Decisiones que conviene conocer antes de tocar algo
 
+**Hace cuánto que está así es la mitad de la información.** Medido sobre la base
+real: de los 267 equipos caídos, **121 llevan más de un año** — el 45 %. No son
+caídas: son bajas que nadie sacó del monitoreo. Y en «sin datos» hay uno que no
+reporta desde 2012.
+
+Un tablero con 121 rojos permanentes **enseña a ignorar el rojo**, y el día que
+se caiga un troncal va a estar mezclado ahí adentro. Por eso el panel agrega un
+eje que The Dude no tiene, con tres escalones —reciente, arrastre, residuo— que
+atraviesan el tablero, la lista, la ficha y el mapa. Vive en `lib/antiguedad.ts`.
+
+Tres reglas que no se negocian, porque sin ellas el eje hace más daño que bien:
+
+- **No es un cuarto estado.** Un residuo *está caído*, con el mismo glifo `✕` y
+  el mismo trazo punteado. Si el panel dijera otra cosa que The Dude, mentiría.
+  La antigüedad califica al estado; nunca lo reemplaza.
+- **Los cuatro contadores del tablero no se tocan.** Siguen diciendo 267. La
+  partición va ARRIBA, en su propia sección, no restando.
+- **Atenuar no puede ser el único canal.** El `aria-label` y el `<title>` de
+  cada nodo dicen «así desde hace 1.595 días» con todas las letras, y en la
+  lista hay una columna con el número exacto.
+
+`devices` no tiene `status_changed_at`: sólo lo tienen los servicios. La
+antigüedad de un equipo se deriva, y la regla está escrita en un solo lugar
+(`SQL_ESTADO_DESDE` en `consultas.ts`) justamente para poder discutirla.
+
+**Una cobertura medida una vez no es una propiedad del sistema.** Esta la
+aprendimos cara: `[Interface.InBitRate]` —el rótulo más frecuente del mapa, 1.169
+elementos— estuvo marcado como «el panel no replica esto» durante una versión
+entera, por una medición que era cierta el día que se tomó. El ETL replica la
+serie de a 250.000 filas por vuelta, así que se midió un sistema llenándose y la
+conclusión quedó escrita como si fuera del sistema lleno.
+
+Ahora el tráfico se resuelve, y el pie del mapa **cuenta la cobertura en cada
+dibujo**: «tráfico de entrada del enlace · 174 · 1 con dato (1 %)». Un número
+calculado no puede envejecer. Si mañana el ETL termina, sube solo.
+
+> Y hay una segunda trampa en la misma medición, que conviene tener presente
+> antes de contar nada sobre `chart_values`: de sus 1.584.013 filas, **544.920
+> tienen el instante puesto y `value` en nulo**. Contar filas por fuente dice que
+> 348 fuentes con enlace tienen mediciones; contar valores dice que diez. Las dos
+> consultas se diferencian en una palabra.
+
 **El estado nunca se comunica sólo con color.** Cada uno tiene además un glifo
 (`✓ ! ✕ ?`) y una palabra, y en el mapa también un trazo distinto (continuo,
 rayado, punteado). Hay operadores daltónicos y un tablero que sólo distingue
@@ -156,6 +198,24 @@ de la que hay, así que la barra inferior dice *«308 enlaces, 107 dibujados —
 152 conectan con equipos de otros mapas, 49 tienen extremos que ya no existen»*
 y ofrece **ir a esos mapas**. Se distinguen los dos motivos porque no son lo
 mismo: uno se puede navegar, el otro es dato roto del origen.
+
+**La tarjeta del mapa la dibuja el servidor y se pide al apuntar.** Pasar el
+mouse por un nodo abre una tarjeta con lo que hace falta para decidir sin hacer
+clic: estado, desde cuándo, sondas, tráfico por interfaz, últimas caídas y en
+qué mapas aparece. El cuerpo lo sirve `/parciales/nodo/<id>` con la misma
+plantilla que cualquier página — mismo criterio que `/parciales/caidas`: dos
+plantillas para lo mismo terminan diciendo cosas distintas.
+
+Se midió la alternativa (incrustar las 95 tarjetas de `Ponte` en la página) y el
+resultado no fue el esperado: **el doble en crudo y sólo 7,6 kB más comprimido**.
+Los bytes no eran el argumento. Lo que decide es que una tarjeta incrustada nace
+vieja —el panel refresca cada 30 s sin recargar— y que son 257 kB de HTML que un
+teléfono tiene que analizar para mostrar tres. El detalle está en el encabezado
+de `scripts/tarjeta-nodo.ts`.
+
+Hay **una** tarjeta en el documento y **una** escucha delegada por mapa, no una
+por nodo: con 401 elementos eso es la diferencia entre dos escuchas y ochocientas.
+Con dedo la tarjeta es una hoja abajo de todo y el toque nunca navega solo.
 
 **Los filtros viven en la URL, no en memoria.** `/dispositivos?estado=3&orden=tipo`
 se comparte por WhatsApp, funciona con el botón de atrás y no obliga a mandarle
@@ -220,19 +280,67 @@ Comprobado ensanchando el `SELECT` a propósito: los dos fallan.
 
 ---
 
+## La prueba de legibilidad
+
+`test/legibilidad.test.ts` existe por una deuda concreta. Al entregar la primera
+versión del visor, la suite verificaba que el dato fuera **fiel** y lo era; en
+pantalla se veían, uno atrás del otro: plantillas crudas en 2.216 rótulos, un
+cero decorativo bajo 522 nombres, `1192.0.2.42` —un contador pegado a una
+dirección— y fotos de 22×4 unidades. **Los cuatro pasaban todos los tests.**
+
+Cuatro defectos seguidos que sólo se ven mirando la pantalla no son mala suerte:
+son que la suite preguntaba «¿el dato es cierto?» y ninguno de los cuatro era un
+dato falso. Eran datos ciertos dibujados de una forma que no se puede leer.
+
+El barrido que se hacía a mano ahora corre solo, en tres capas:
+
+1. **El auditor contra defectos plantados.** Se le dan lienzos que tienen cada
+   defecto y tiene que encontrarlos. Sin esta capa, un auditor que devuelve `[]`
+   siempre pasaría las otras dos en verde.
+2. **Todos los mapas de la base**, no tres elegidos: plantilla cruda, cero
+   solitario, dígito pegado a una IP, nodo mudo, nombre que es un id crudo,
+   lado corto por debajo del mínimo legible y caja que deforma su archivo.
+3. **El SVG renderizado de verdad**, con el Container API de Astro. Acá vive la
+   lección de los `<symbol>`: el `<defs>` del visor tiene uno por icono, así que
+   contar `class="nodo-mapa"` a secas da de más — los nodos son los que llevan
+   `data-id`. Y se verifican los `width`/`height` que se escriben realmente en
+   el SVG, no los que calculó la geometría.
+
+También verifica que los **cuatro** estados de enlace tengan patrón de trazo
+distinto. No lo tenían: «arriba» y «sin datos» se dibujaban los dos con línea
+llena, así que la regla de no comunicar sólo con color se cumplía en los 1.047
+nodos y no en los 542 enlaces.
+
+> Lo que esta prueba NO hace: comprobar que dos etiquetas no se pisen. Depende
+> de la tipografía del navegador y del zoom, y una regla aproximada daría rojos
+> falsos en cada corrida. Sigue siendo trabajo de mirar la pantalla.
+
+---
+
 ## Pendiente
 
-- **Gráficos de series.** `chart_values` y `chart_sources` ya están en el
-  esquema y el seed las carga; el panel todavía no las dibuja.
+- 🔴 **Las etiquetas de los nodos se pisan entre sí.** Se ve en cualquier mapa
+  con nodos cercanos: en `AViveroS`, «Comsat 3» queda encima de «IsoStation
+  Comsat4». Las coordenadas son las de The Dude y el texto es más largo que el
+  de él, así que no es un bug del origen: es que el visor no resuelve colisiones.
+  Es el defecto de legibilidad más visible que queda y el que la prueba
+  automática **no** puede agarrar. Necesita medir texto, o sea un navegador.
+- **Gráficos de series.** `chart_values` tiene 1.584.013 filas replicadas y el
+  panel dibuja cero. Hoy sólo se lee el último valor de tráfico por enlace y por
+  interfaz. Antes de graficar, medir la cobertura **en caliente** y contando
+  `value IS NOT NULL`, no filas.
+- **El histórico de caídas no es alcanzable.** `outages` tiene 11.988 filas; la
+  ficha de un equipo muestra 20 y no hay una vista de caídas. Es justo la
+  historia que este proyecto dice estar rescatando.
+- **La tarjeta emergente sólo sale en los equipos.** Un submapa o una red no la
+  tienen: no hay una `fichaNodo` para ellos. Su rótulo ya trae el recuento
+  «total / parciales / caídos», así que la falta se nota poco, pero está.
+- **Los enlaces no se pueden apuntar.** El caudal viaja en el `<title>` de una
+  línea de 2 px, que con el mouse es casi imposible de acertar. Darle un blanco
+  usable son ~540 elementos invisibles más por mapa; se dejó afuera a propósito.
 - **Verificación con lector de pantalla.** El marcado está pensado para eso
-  (roles, `aria-label`, texto además del glifo), pero no se probó con NVDA ni
-  con Orca.
-- **Los bytes de `data/files/` todavía no se vieron.** Ya se sabe qué nombres y
-  qué formatos registra la base, y el camino está probado con un SVG que imita
-  la basura de un editor de 2011 (DOCTYPE, namespaces de Inkscape, degradados,
-  `xlink:href` interno) más PNG y JPG de prueba. Falta montar el directorio real
-  de la VM y mirar el resultado con los ojos.
-- **Nadie miró el visor en una pantalla.** Todo lo verificado es el HTML servido
-  y los tiempos. Que los 401 elementos de `Segmentos` se lean bien —que las fichas
-  de VLAN no se pisen entre sí, que el zoom se sienta bien con el trackpad— es
-  una afirmación no comprobada.
+  (roles, `aria-label`, texto además del glifo, la antigüedad en el nombre
+  accesible), pero no se probó con NVDA ni con Orca.
+- **La referencia del mapa muestra la antigüedad, pero flojo.** Los tres
+  ejemplos se distinguen por la rampa y la palabra; la diferencia de dibujo
+  —atenuado contra resaltado— casi no se lee en 34×16 píxeles.

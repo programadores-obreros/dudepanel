@@ -1,0 +1,57 @@
+---
+import FichaNodo from '@/components/FichaNodo.astro';
+import { fichaNodo } from '@/lib/consultas';
+import { reportarError } from '@/lib/errores';
+
+/**
+ * El cuerpo de la tarjeta emergente de un nodo, como fragmento de HTML.
+ *
+ * Mismo criterio que `/parciales/caidas`: lo dibuja el servidor con la misma
+ * plantilla que usaría cualquier página, para no terminar con una versión en
+ * Astro y otra en JavaScript diciendo cosas distintas.
+ *
+ * 🔴 Los tres finales son TRES, y se distinguen en el código de estado, no en
+ *    el texto:
+ *
+ *      · 200 → hay ficha.
+ *      · 404 → el equipo no existe. El cliente lo dice y no reintenta.
+ *      · 503 → no se pudo preguntar. El cliente lo dice, y es distinto de
+ *              «este equipo no tiene nada»: uno es una carencia de datos y el
+ *              otro es una base caída. Confundirlos es la misma familia de bug
+ *              que hacía que `/parciales/caidas` dijera «buena noticia» con
+ *              PostgreSQL apagado.
+ */
+export const partial = true;
+
+const id = Number(Astro.params.id);
+
+let ficha: Awaited<ReturnType<typeof fichaNodo>> = null;
+let error: string | null = null;
+
+if (!Number.isInteger(id) || id <= 0) {
+  Astro.response.status = 404;
+} else {
+  try {
+    ficha = await fichaNodo(id);
+    if (!ficha) Astro.response.status = 404;
+  } catch (e) {
+    error = reportarError('parciales/nodo', e);
+    Astro.response.status = 503;
+  }
+}
+---
+
+{
+  error ? (
+    <p class="text-caido-txt px-3 py-4 text-center text-xs">
+      <strong class="block font-bold">No se pudo leer el equipo.</strong>
+      <span class="mt-1 block font-mono break-all">{error}</span>
+    </p>
+  ) : !ficha ? (
+    <p class="text-tenue px-3 py-4 text-center text-xs">
+      Este elemento del mapa no tiene un equipo detrás.
+    </p>
+  ) : (
+    <FichaNodo ficha={ficha} />
+  )
+}

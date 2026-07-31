@@ -1,0 +1,51 @@
+---
+/**
+ * El armazón de la tarjeta emergente. Uno solo para todo el mapa.
+ *
+ * 🔴 Uno solo, y ese es el diseño entero desde el punto de vista del
+ *    rendimiento. El mapa más grande tiene 401 elementos: una tarjeta por nodo
+ *    serían 401 subárboles de DOM que nadie va a mirar, y 401 juegos de
+ *    escuchas. Acá hay UN nodo de DOM, UN juego de escuchas delegadas en el
+ *    contenedor, y el contenido se pide al servidor cuando hace falta.
+ *
+ * El cuerpo lo dibuja `/parciales/nodo/<id>` con la misma plantilla que
+ * cualquier otra página. Ver `FichaNodo.astro`.
+ */
+---
+
+{/* `hidden` de entrada: sin JavaScript la tarjeta no existe y el mapa se
+    comporta como siempre — los nodos son `<a>` y llevan a la ficha completa,
+    que tiene todo esto y más. La tarjeta es un atajo, nunca el único camino. */}
+<div
+  id="tarjeta-nodo"
+  data-tarjeta
+  hidden
+  aria-hidden="true"
+  class="border-borde-fuerte bg-panel pointer-events-none fixed z-40 w-[22rem] max-w-[calc(100vw-1.5rem)] overflow-hidden rounded-xl border shadow-2xl"
+>
+  <div data-tarjeta-cuerpo>
+    {/* Se reemplaza con el HTML del servidor. Lo de acá es el esqueleto que se
+        ve mientras viaja: bloques del tamaño del contenido real, para que la
+        tarjeta no salte cuando llega. */}
+  </div>
+
+  {/* Sólo en pantalla táctil: ahí la tarjeta es una hoja y necesita cerrarse a
+      mano, porque no hay un «sacar el mouse». */}
+  <button
+    type="button"
+    data-tarjeta-cerrar
+    class="border-borde bg-panel text-tenue hover:text-tinta absolute top-1.5 right-1.5 hidden size-7 place-items-center rounded-lg border text-base leading-none"
+    aria-label="Cerrar la tarjeta"
+  >
+    ✕
+  </button>
+</div>
+
+{/* 🔴 La tarjeta va `aria-hidden` y el resumen viaja por acá.
+    Motivo: la tarjeta tiene enlaces adentro y está al final del documento, así
+    que meterla en el orden de foco desde un nodo del mapa manda al lector de
+    pantalla a otro lado y lo deja ahí. Todo lo que dice la tarjeta está en la
+    ficha del equipo, a un Enter de distancia. Lo que sí es información nueva
+    —hace cuánto que está así— se anuncia en una línea, que es lo que un lector
+    necesita y no una tarjeta entera leída en voz alta. */}
+<p class="sr-only" data-tarjeta-resumen role="status" aria-live="polite"></p>

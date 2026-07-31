@@ -244,6 +244,11 @@ CREATE TABLE IF NOT EXISTS maps (
     devices_total     integer NOT NULL DEFAULT 0,
     devices_up        integer NOT NULL DEFAULT 0,
     devices_down      integer NOT NULL DEFAULT 0,
+    -- Separado de devices_down porque The Dude lo separa: la plantilla
+    -- [NetMap.DevicesPartiallyDownCount] es un campo propio en los rótulos de
+    -- 145 elementos de submapa. Sumarlo a los caídos haría que el rótulo diga
+    -- una cosa distinta de la que dice el original.
+    devices_partial   integer NOT NULL DEFAULT 0,
     elements_total    integer NOT NULL DEFAULT 0
 );
 COMMENT ON TABLE maps IS
@@ -263,6 +268,12 @@ CREATE TABLE IF NOT EXISTS map_elements (
     y            integer,
     shape        integer,
     image_id     bigint REFERENCES files(id) ON DELETE SET NULL,
+    -- 🔴 The Dude escala cada icono POR ELEMENTO, de 10 a 100 (por ciento).
+    --    Medido en la base real: 150 elementos al 100, 64 al 60, 43 al 10.
+    --    Ignorarlo y dibujar todo al mismo tamaño convierte la foto de un
+    --    router de 680×310 en una mancha de 22 píxeles — se ve como si fuera
+    --    un icono genérico y el trabajo de quien cargó las fotos se pierde.
+    image_scale  integer,
     label        text,
     -- según kind, uno de estos tiene valor
     device_id    bigint REFERENCES devices(id) ON DELETE CASCADE,

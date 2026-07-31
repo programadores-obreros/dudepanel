@@ -550,3 +550,96 @@ describe('juegoDeIconos', () => {
     expect(simbolos.size).toBe(2);
   });
 });
+
+/**
+ * 🔴 Medir el archivo, porque `image_scale` es un PORCENTAJE.
+ *
+ * Un porcentaje sin sobre qué aplicarlo no dice nada: The Dude lo aplica sobre
+ * el tamaño natural del archivo. Sin esto, los 127 elementos que están en
+ * escala 100 —con naturales de 41 a 628 px— se dibujarían todos iguales.
+ */
+describe('medirEncabezado', () => {
+  /** PNG mínimo: firma de 8 bytes + largo + 'IHDR' + ancho y alto big-endian. */
+  function png(w: number, h: number): Buffer {
+    const b = Buffer.alloc(24);
+    b.writeUInt32BE(0x89504e47, 0);
+    b.writeUInt32BE(0x0d0a1a0a, 4);
+    b.writeUInt32BE(13, 8);
+    b.write('IHDR', 12, 'latin1');
+    b.writeUInt32BE(w, 16);
+    b.writeUInt32BE(h, 20);
+    return b;
+  }
+
+  it('lee un PNG', () => {
+    expect(iconos.medirEncabezado(png(467, 92))).toEqual({ ancho: 467, alto: 92 });
+  });
+
+  it('lee un GIF', () => {
+    const b = Buffer.alloc(10);
+    b.write('GIF89a', 0, 'latin1');
+    b.writeUInt16LE(120, 6);
+    b.writeUInt16LE(80, 8);
+    expect(iconos.medirEncabezado(b)).toEqual({ ancho: 120, alto: 80 });
+  });
+
+  it('lee un BMP, y un alto NEGATIVO es orientación, no tamaño', () => {
+    const b = Buffer.alloc(26);
+    b.write('BM', 0, 'latin1');
+    b.writeInt32LE(64, 18);
+    b.writeInt32LE(-48, 22); // filas de arriba hacia abajo
+    expect(iconos.medirEncabezado(b)).toEqual({ ancho: 64, alto: 48 });
+  });
+
+  it('lee un JPEG caminando los segmentos hasta el SOF', () => {
+    // Antes del SOF va un APP0 de largo variable: no se puede leer de un
+    // offset fijo, que es el error clásico con JPEG.
+    const app0 = Buffer.alloc(18);
+    app0.writeUInt16BE(0xffe0, 0);
+    app0.writeUInt16BE(16, 2);
+    const sof = Buffer.alloc(11);
+    sof.writeUInt16BE(0xffc0, 0);
+    sof.writeUInt16BE(9, 2);
+    sof.writeUInt8(8, 4);
+    sof.writeUInt16BE(167, 5); // alto
+    sof.writeUInt16BE(167, 7); // ancho
+    const b = Buffer.concat([Buffer.from([0xff, 0xd8]), app0, sof]);
+    expect(iconos.medirEncabezado(b)).toEqual({ ancho: 167, alto: 167 });
+  });
+
+  it('un JPEG con un largo de segmento imposible no cuelga el recorrido', () => {
+    const b = Buffer.alloc(40);
+    b.writeUInt16BE(0xffd8, 0);
+    b.writeUInt16BE(0xffe0, 2);
+    b.writeUInt16BE(0, 4); // largo 0: no avanzaría nunca
+    expect(iconos.medirEncabezado(b)).toBeNull();
+  });
+
+  it('descarta lo absurdo en vez de devolver un icono de 200.000 px', () => {
+    expect(iconos.medirEncabezado(png(0, 100))).toBeNull();
+    expect(iconos.medirEncabezado(png(999_999, 10))).toBeNull();
+  });
+
+  it('un formato que no reconoce devuelve null, no una medida inventada', () => {
+    expect(iconos.medirEncabezado(Buffer.from('no soy una imagen'))).toBeNull();
+    expect(iconos.medirEncabezado(Buffer.alloc(0))).toBeNull();
+  });
+
+  it('medidaDeImagen lee del disco y no se sale de la raíz', async () => {
+    await writeFile(join(raiz, 'files', 'medible.png'), png(200, 43));
+    await expect(iconos.medidaDeImagen('files/medible.png')).resolves.toEqual({
+      ancho: 200,
+      alto: 43,
+    });
+    // Las mismas defensas que el resto del módulo: ni `..` ni nulos.
+    await expect(iconos.medidaDeImagen('../../etc/passwd')).resolves.toBeNull();
+    await expect(iconos.medidaDeImagen(null)).resolves.toBeNull();
+  });
+
+  it('medidasDeIconos saltea los SVG a propósito', async () => {
+    // Su `viewBox` está en unidades arbitrarias: compararlo contra los píxeles
+    // de un PNG no significa nada.
+    const m = await iconos.medidasDeIconos(['files/medible.png', 'files/router.svg', null]);
+    expect([...m.keys()]).toEqual(['files/medible.png']);
+  });
+});

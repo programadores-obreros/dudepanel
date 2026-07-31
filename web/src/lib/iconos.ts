@@ -1,4 +1,5 @@
-import { lstat, readFile, realpath } from 'node:fs/promises';
+import { lstat, open, readFile, realpath } from 'node:fs/promises';
+import type { FileHandle } from 'node:fs/promises';
 import { resolve, sep, basename } from 'node:path';
 import { texto } from './entorno';
 
@@ -498,6 +499,146 @@ function partir(svg: string): IconoSVG | null {
   };
 }
 
+/** Tamaño natural de una imagen, en píxeles. */
+export interface Medida {
+  ancho: number;
+  alto: number;
+}
+
+/**
+ * Cuántos bytes se leen para medir. Un PNG dice su tamaño en el byte 16 y un
+ * BMP en el 18; un JPEG hay que recorrerlo hasta el marcador SOF, que en estos
+ * archivos aparece enseguida pero podría esconderse detrás de una miniatura
+ * EXIF. 64 kB cubre todo lo que hay en `files/` y evita cargar en memoria el
+ * `crs317.png` de 833 kB sólo para leerle dos enteros.
+ */
+const BYTES_PARA_MEDIR = 64 * 1024;
+
+const cacheMedidas = new Map<string, Medida | null>();
+
+/**
+ * El tamaño natural de una imagen del disco, leído de su encabezado.
+ *
+ * 🔴 Hace falta porque `map_elements.image_scale` es un PORCENTAJE, y un
+ *    porcentaje sin sobre qué aplicarlo no dice nada. The Dude lo aplica sobre
+ *    el tamaño natural del archivo, y ahí está la información que se perdía:
+ *    medido sobre la base real, entre los 127 elementos que están en escala 100
+ *    los tamaños naturales van de 41 a 628 px. Ignorarlos y dibujar por la
+ *    escala sola aplana el mapa igual que dibujarlos todos de 22.
+ *
+ * Sin dependencias: son cuatro formatos y sus encabezados son triviales. Meter
+ * `sharp` o `image-size` en un panel de sólo lectura para leer ocho bytes sería
+ * regalar superficie de ataque a cambio de nada.
+ */
+export async function medidaDeImagen(rel: string | null | undefined): Promise<Medida | null> {
+  if (!rel) return null;
+  if (cacheMedidas.has(rel)) return cacheMedidas.get(rel) ?? null;
+
+  let medida: Medida | null = null;
+  const abs = await rutaDeArchivo(rel);
+  if (abs) {
+    let fd: FileHandle | null = null;
+    try {
+      fd = await open(abs, 'r');
+      const buf = Buffer.alloc(BYTES_PARA_MEDIR);
+      const { bytesRead } = await fd.read(buf, 0, BYTES_PARA_MEDIR, 0);
+      medida = medirEncabezado(buf.subarray(0, bytesRead));
+    } catch {
+      medida = null;
+    } finally {
+      await fd?.close().catch(() => {});
+    }
+  }
+
+  cacheMedidas.set(rel, medida);
+  return medida;
+}
+
+/** Mide todos los iconos distintos de un mapa de una sola pasada. */
+export async function medidasDeIconos(
+  rutas: readonly (string | null)[],
+): Promise<Map<string, Medida>> {
+  const salida = new Map<string, Medida>();
+  for (const rel of new Set(rutas.filter((r): r is string => !!r))) {
+    // Un SVG no tiene tamaño natural en píxeles: su `viewBox` está en unidades
+    // arbitrarias y compararlo contra los píxeles de un PNG no significa nada.
+    // Se lo deja sin medir a propósito, y el que dimensiona lo trata como el
+    // caso típico. Ver `ladoDeIcono`.
+    const ext = extension(rel);
+    if (ext === 'svg' || ext === 'svgz') continue;
+    const m = await medidaDeImagen(rel);
+    if (m) salida.set(rel, m);
+  }
+  return salida;
+}
+
+/** Lee ancho y alto del encabezado. `null` si el formato no se reconoce. */
+export function medirEncabezado(b: Buffer): Medida | null {
+  // PNG — firma de 8 bytes y después el chunk IHDR, big-endian.
+  if (b.length >= 24 && b.readUInt32BE(0) === 0x89504e47 && b.toString('latin1', 12, 16) === 'IHDR') {
+    return valida(b.readUInt32BE(16), b.readUInt32BE(20));
+  }
+
+  // GIF — 'GIF87a' o 'GIF89a', y el tamaño en little-endian de 16 bits.
+  if (b.length >= 10 && b.toString('latin1', 0, 3) === 'GIF') {
+    return valida(b.readUInt16LE(6), b.readUInt16LE(8));
+  }
+
+  // BMP — el alto puede venir NEGATIVO: significa que las filas van de arriba
+  // hacia abajo en vez de al revés. Es orientación, no tamaño.
+  if (b.length >= 26 && b.toString('latin1', 0, 2) === 'BM') {
+    return valida(Math.abs(b.readInt32LE(18)), Math.abs(b.readInt32LE(22)));
+  }
+
+  // JPEG — hay que caminar los segmentos hasta un SOF (Start Of Frame).
+  if (b.length >= 4 && b.readUInt16BE(0) === 0xffd8) return medirJpeg(b);
+
+  return null;
+}
+
+/**
+ * Recorre los segmentos de un JPEG hasta el marcador SOF, que es el único que
+ * trae las dimensiones.
+ *
+ * No se puede leer de un offset fijo: antes del SOF vienen APPn (EXIF, ICC) de
+ * largo variable, y en un archivo con miniatura pueden ocupar decenas de kB.
+ */
+function medirJpeg(b: Buffer): Medida | null {
+  // SOF0..SOF15 menos los tres que NO son de trama: DHT (c4), JPGA (c8), DAC (cc).
+  const SOF = new Set([
+    0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf,
+  ]);
+  let i = 2;
+  while (i + 9 < b.length) {
+    if (b[i] !== 0xff) {
+      i++;
+      continue;
+    }
+    const marca = b[i + 1]!;
+    // Relleno `ff ff`, y los marcadores sin carga útil (RSTn, SOI, EOI).
+    if (marca === 0xff) {
+      i++;
+      continue;
+    }
+    if (marca === 0xd8 || marca === 0xd9 || (marca >= 0xd0 && marca <= 0xd7)) {
+      i += 2;
+      continue;
+    }
+    if (SOF.has(marca)) return valida(b.readUInt16BE(i + 7), b.readUInt16BE(i + 5));
+    const largo = b.readUInt16BE(i + 2);
+    // Un largo de 0 o 1 no avanza y colgaría el recorrido con un archivo roto.
+    if (largo < 2) return null;
+    i += 2 + largo;
+  }
+  return null;
+}
+
+/** Descarta lo absurdo: un 0 o un ancho de 200.000 px es un archivo corrupto. */
+function valida(ancho: number, alto: number): Medida | null {
+  const ok = (n: number) => Number.isFinite(n) && n > 0 && n <= 100_000;
+  return ok(ancho) && ok(alto) ? { ancho, alto } : null;
+}
+
 /** Lee y cachea un icono del disco. `null` si no está o no se pudo interpretar. */
 export async function leerIcono(rel: string | null | undefined): Promise<IconoSVG | null> {
   if (!rel) return null;
@@ -668,4 +809,5 @@ function numeroDe(v: string | undefined): number | null {
 /** Sólo para los tests: la caché es global al proceso. */
 export function limpiarCacheIconos(): void {
   cache.clear();
+  cacheMedidas.clear();
 }

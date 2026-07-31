@@ -1,0 +1,274 @@
+---
+import Pildora from '@/components/Pildora.astro';
+import Antiguedad from '@/components/Antiguedad.astro';
+import type { FichaNodo } from '@/lib/consultas';
+import {
+  bitsPorSegundo,
+  desde as haceCuanto,
+  duracion,
+  fechaHora,
+  fechaLarga,
+  numero,
+} from '@/lib/formato';
+import { TRAFICO_VENCIDO_S } from '@/lib/plantillas';
+import { segundosDesde } from '@/lib/antiguedad';
+
+interface Props {
+  ficha: FichaNodo;
+}
+
+const { ficha } = Astro.props;
+const { equipo: d, servicios, mapas, interfaces, caidas, topologiaCargada, padres } = ficha;
+
+/**
+ * El contenido de la tarjeta emergente, dibujado POR EL SERVIDOR.
+ *
+ * 🔴 Y por el servidor a propósito, siguiendo lo que ya hace
+ *    `/parciales/caidas`: si la tarjeta se armara en JavaScript habría dos
+ *    plantillas para lo mismo —una en Astro para la ficha, otra en el cliente
+ *    para la tarjeta— y en tres meses dirían cosas distintas. El servidor ya
+ *    sabe dibujar una píldora de estado y una antigüedad: que las dibuje él.
+ *
+ *    El costo es un viaje de red por nodo. Se mide y se justifica en el
+ *    comentario de `scripts/tarjeta-nodo.ts`; en resumen: el viaje arranca al
+ *    apuntar, antes de que la tarjeta se muestre, así que casi siempre ya
+ *    llegó cuando aparece.
+ */
+
+// Los caídos primero: si el equipo está mal, lo primero que se lee es por qué.
+const serviciosMostrados = servicios.slice(0, 5);
+const padreCaido = padres.find((p) => p.status === 3);
+
+/** Una interfaz con datos de hace tres días no es «el tráfico de ahora». */
+const traficoUtil = interfaces.filter((i) => {
+  const s = segundosDesde(i.ts);
+  return s != null && s <= TRAFICO_VENCIDO_S;
+});
+const traficoViejo = interfaces.length - traficoUtil.length;
+const edadTrafico = segundosDesde(traficoUtil[0]?.ts);
+---
+
+<div class="tarjeta-nodo-cuerpo">
+  {/* ── Identidad ────────────────────────────────────────────────────────── */}
+  <header class="border-borde flex items-start gap-2 border-b px-3 py-2">
+    <span class="min-w-0 flex-1">
+      <a href={`/dispositivos/${d.id}`} class="block truncate text-sm leading-tight font-semibold">
+        {d.nombre}
+      </a>
+      {
+        d.direcciones.length > 0 && (
+          <span class="text-tenue text-2xs block truncate font-mono">
+            {d.direcciones.join(' · ')}
+          </span>
+        )
+      }
+    </span>
+    {/* 🔴 Sin `texto={d.status_label}`, y se vio en pantalla: `status_label` es
+        el texto de The Dude y viene en INGLÉS — la tarjeta decía «✕ down»
+        mientras la tabla de al lado decía «✕ Caído». Dos palabras para el mismo
+        estado en la misma pantalla. El vocabulario del panel es uno solo. */}
+    <Pildora estado={d.status} class="shrink-0" />
+  </header>
+
+  {/* ── Desde cuándo. El renglón que The Dude no tiene. ──────────────────── */}
+  <p class="border-borde flex flex-wrap items-center gap-x-2 gap-y-1 border-b px-3 py-1.5 text-xs">
+    <span class="text-tenue">Así desde hace</span>
+    <Antiguedad estado={d.status} desde={d.estado_desde} variante="larga" />
+    {
+      d.estado_desde && (
+        /* La fecha corta al lado de la duración. `fechaLarga` («viernes, 23 de
+           febrero de 2026, 12:15:52 p. m.») ocupaba un renglón entero de una
+           tarjeta de 22 rem para decir algo que ya dice la píldora; queda en el
+           `title` para quien la necesite exacta. */
+        <time
+          class="text-tenue text-2xs"
+          datetime={d.estado_desde}
+          title={fechaLarga(d.estado_desde)}
+        >
+          desde el {fechaHora(d.estado_desde)}
+        </time>
+      )
+    }
+  </p>
+
+  {
+    padreCaido && (
+      <p class="border-parcial/40 bg-parcial-bg text-parcial-txt border-b px-3 py-1.5 text-2xs">
+        <strong class="font-bold">Puede ser arrastre.</strong> Depende de{' '}
+        <a href={`/dispositivos/${padreCaido.id}`} class="font-semibold underline">
+          {padreCaido.nombre ?? `#${padreCaido.id}`}
+        </a>
+        , que también está caído.
+      </p>
+    )
+  }
+
+  {/* ── Sondas ───────────────────────────────────────────────────────────── */}
+  <section class="border-borde border-b px-3 py-1.5">
+    <h3 class="text-tenue text-2xs mb-1 font-semibold tracking-wide uppercase">
+      Sondas · {d.services_up} de {d.services_total} arriba
+    </h3>
+    {
+      serviciosMostrados.length === 0 ? (
+        <p class="text-tenue text-2xs">Nadie sondea este equipo.</p>
+      ) : (
+        <ul class="flex flex-col gap-0.5">
+          {serviciosMostrados.map((s) => (
+            <li class="flex items-center gap-2 text-2xs">
+              <Pildora estado={s.status} compacta />
+              <span class="min-w-0 flex-1 truncate">
+                {s.sonda ?? `sonda #${s.id}`}
+                {s.probe_port ? <span class="text-tenue font-mono">:{s.probe_port}</span> : null}
+                {s.acked && <span class="text-acento-txt"> · reconocida</span>}
+                {s.enabled === false && <span class="text-tenue"> · deshabilitada</span>}
+              </span>
+              <Antiguedad estado={s.status} desde={s.cambio_en} class="shrink-0" />
+            </li>
+          ))}
+        </ul>
+      )
+    }
+    {
+      servicios.length > serviciosMostrados.length && (
+        <p class="text-tenue text-2xs mt-1">
+          y {numero(servicios.length - serviciosMostrados.length)} más
+        </p>
+      )
+    }
+  </section>
+
+  {/* ── Tráfico ──────────────────────────────────────────────────────────────
+      Se muestra con la edad puesta cuando no es de ahora. Un caudal de hace
+      tres días presentado como el actual manda a alguien a revisar un enlace
+      que está bien, o peor: lo deja tranquilo con uno que está mal. */}
+  {
+    traficoUtil.length > 0 && (
+      <section class="border-borde border-b px-3 py-1.5">
+        <h3 class="text-tenue text-2xs mb-1 flex items-center gap-1.5 font-semibold tracking-wide uppercase">
+          Tráfico
+          {edadTrafico != null && edadTrafico > 20 * 60 && (
+            <span class="text-parcial-txt normal-case" title="No es el caudal de ahora.">
+              medido hace {duracion(edadTrafico)}
+            </span>
+          )}
+        </h3>
+        <ul class="flex flex-col gap-0.5">
+          {traficoUtil.map((i) => (
+            <li class="text-2xs flex items-baseline gap-2">
+              <span class="text-tenue min-w-0 flex-1 truncate font-mono">{i.interfaz}</span>
+              <span class="shrink-0 tabular-nums">
+                <span class="text-tenue" aria-hidden="true">
+                  ↓
+                </span>
+                <span class="sr-only">entrada </span>
+                {bitsPorSegundo(i.entrada_bits)}
+              </span>
+              <span class="shrink-0 tabular-nums">
+                <span class="text-tenue" aria-hidden="true">
+                  ↑
+                </span>
+                <span class="sr-only">salida </span>
+                {bitsPorSegundo(i.salida_bits)}
+              </span>
+            </li>
+          ))}
+        </ul>
+        {traficoViejo > 0 && (
+          <p class="text-tenue text-2xs mt-1">
+            {numero(traficoViejo)} interfaz{traficoViejo === 1 ? '' : 'es'} más, sin dato fresco
+          </p>
+        )}
+      </section>
+    )
+  }
+
+  {/* ── Historial ────────────────────────────────────────────────────────── */}
+  {
+    caidas.length > 0 && (
+      <section class="border-borde border-b px-3 py-1.5">
+        <h3 class="text-tenue text-2xs mb-1 font-semibold tracking-wide uppercase">
+          Últimas caídas
+        </h3>
+        {/* «cayó hace» y no «cerró»: `haceCuanto(c.inicio)` mide desde que
+            EMPEZÓ la caída, así que «cerró hace 1 d» decía otra cosa que la que
+            mostraba. La duración va al lado, con su palabra. */}
+        <ul class="flex flex-col gap-0.5">
+          {caidas.map((c) => (
+            <li class="text-2xs flex items-baseline gap-2">
+              <span class="text-tenue min-w-0 flex-1 truncate">
+                {c.abierta ? 'abierta desde hace' : 'cayó hace'} {haceCuanto(c.inicio)}
+              </span>
+              <span class="shrink-0 tabular-nums">
+                duró {duracion(c.duracion_s)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </section>
+    )
+  }
+
+  {/* ── Contexto ─────────────────────────────────────────────────────────── */}
+  <section class="px-3 py-1.5">
+    <dl class="text-2xs grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5">
+      <dt class="text-tenue">Tipo</dt>
+      <dd class="truncate">
+        {d.tipo ?? '—'}
+        {d.router_os && <span class="text-tenue"> · RouterOS</span>}
+      </dd>
+
+      {
+        d.macs?.length > 0 && (
+          <>
+            <dt class="text-tenue">MAC</dt>
+            <dd class="truncate font-mono">{d.macs.join(', ')}</dd>
+          </>
+        )
+      }
+
+      <dt class="text-tenue">SNMP</dt>
+      <dd class="truncate">{d.perfil_snmp ?? 'hereda del servidor'}</dd>
+
+      <dt class="text-tenue">Depende de</dt>
+      <dd class="truncate">
+        {
+          /* 🔴 «Nadie» y «no cargado» son afirmaciones distintas sobre la red y
+             la ficha las venía diciendo igual. En esta instalación
+             `device_parents` está vacía: The Dude nunca guardó la topología. */
+          !topologiaCargada ? (
+            <span class="text-tenue" title="device_parents está vacía en toda la base: The Dude nunca cargó la topología.">
+              la topología no está cargada
+            </span>
+          ) : padres.length === 0 ? (
+            'nadie — es raíz'
+          ) : (
+            padres.map((p) => p.nombre ?? `#${p.id}`).join(' → ')
+          )
+        }
+      </dd>
+
+      <dt class="text-tenue">Mapas</dt>
+      <dd class="truncate">
+        {
+          mapas.length === 0 ? (
+            <span class="text-tenue">en ninguno</span>
+          ) : (
+            mapas.slice(0, 3).map((m, i) => (
+              <>
+                {i > 0 && <span class="text-tenue"> · </span>}
+                <a href={`/mapas/${m.id}`}>{m.nombre}</a>
+              </>
+            ))
+          )
+        }
+        {mapas.length > 3 && <span class="text-tenue"> y {mapas.length - 3} más</span>}
+      </dd>
+    </dl>
+  </section>
+
+  <footer class="border-borde bg-panel-2/60 border-t px-3 py-1.5">
+    <a href={`/dispositivos/${d.id}`} class="text-acento-txt text-2xs font-semibold">
+      Abrir la ficha completa →
+    </a>
+  </footer>
+</div>

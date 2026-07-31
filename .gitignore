@@ -47,12 +47,24 @@ files/
 .env
 .env.*
 !.env.example
+# `.env.*` también atrapaba a `.env.prod.example`, que es una PLANTILLA sin un
+# solo valor real. Sin esta línea el archivo existía en disco, funcionaba, y
+# nunca llegaba al repositorio: quien clonara se encontraba con que
+# `compose.prod.yml` exige variables que no están documentadas en ningún lado.
+!.env.prod.example
 
 # Andamios de verificación. Se escribieron CONTRA la base real de producción y
 # tanto sus salidas como sus aserciones tienen direcciones y nombres de equipos.
 # No son el producto: son la prueba de que el producto anda, y esa prueba sólo
 # se puede reproducir teniendo la base — que no está acá y no va a estar.
+#
+# 🔴 El comodín NO es pereza. La primera versión decía `qa/` a secas; un segundo
+#    verificador creó `qa2/` y quedó fuera del filtro, con doce direcciones del
+#    /27 público adentro. Un .gitignore sólo cubre lo que existía cuando se
+#    escribió, y los directorios de trabajo se multiplican solos.
 qa/
+qa*/
+verificacion*/
 
 # Node
 node_modules/

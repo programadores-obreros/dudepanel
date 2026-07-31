@@ -1,23 +1,37 @@
 ---
-import type { ElementoMapa, EnlacesFuera } from '@/lib/consultas';
-import { ALTO_LINEA, construirLienzo, TAMANIO_NODO } from '@/lib/mapa';
-import { juegoDeIconos } from '@/lib/iconos';
-import { metaEstado, type Estado, ESTADOS } from '@/lib/estado';
-import { numero } from '@/lib/formato';
+import type { ElementoMapa, EnlacesFuera, ResumenSubmapa, TraficoEnlace } from '@/lib/consultas';
+import { ALTO_LINEA, ALTO_LINEA_NODO, construirLienzo, medioRecuadro } from '@/lib/mapa';
+import { juegoDeIconos, medidasDeIconos } from '@/lib/iconos';
+import { metaEstado, ESTADOS } from '@/lib/estado';
+import { ANTIGUEDADES } from '@/lib/antiguedad';
+import { duracion, numero, porcentaje } from '@/lib/formato';
+import TarjetaNodo from '@/components/TarjetaNodo.astro';
 
 interface Props {
   mapaId: number;
   nombre: string;
   elementos: ElementoMapa[];
-  /** Estado consolidado de cada submapa que aparece en este mapa. */
-  submapas?: ReadonlyMap<number, Estado>;
+  /** Estado y recuentos de cada submapa que aparece en este mapa. */
+  submapas?: ReadonlyMap<number, ResumenSubmapa>;
   /** Clasificación de los enlaces que no se pueden dibujar acá. */
   fuera?: EnlacesFuera;
+  /** Última medición de tráfico por enlace. Ver `traficoDeMapa`. */
+  trafico?: ReadonlyMap<number, TraficoEnlace>;
 }
 
-const { mapaId, nombre, elementos, submapas = new Map(), fuera } = Astro.props;
+const { mapaId, nombre, elementos, submapas = new Map(), fuera, trafico } = Astro.props;
 
-const lienzo = construirLienzo(elementos, submapas);
+// El tamaño natural de cada icono se mide ANTES de armar la geometría: sin él
+// no se puede aplicar `image_scale`, que es un porcentaje sobre ese tamaño. Se
+// leen sólo los encabezados de los archivos distintos del mapa, y quedan en
+// caché para las cargas siguientes.
+const medidas = await medidasDeIconos(elementos.map((e) => e.icon));
+
+const lienzo = construirLienzo(elementos, submapas, medidas, { trafico });
+
+// Cuántos nodos son residuo. Es lo que justifica —o no— ofrecer atenuarlos.
+const residuos = lienzo.nodos.filter((n) => n.antiguedad === 'residuo').length;
+const recientes = lienzo.nodos.filter((n) => n.antiguedad === 'reciente').length;
 
 // Los submapas y las redes casi nunca traen icono asignado en The Dude, así que
 // se le da al buscador de repuestos la palabra que necesita para acertar.
@@ -30,14 +44,8 @@ const { simbolos, porNodo } = await juegoDeIconos(
   })),
 );
 
-const R = TAMANIO_NODO / 2;
-const LADO_ICONO = 22;
 /** Desplazamiento de la primera línea de base de una ficha de anotación. */
 const PRIMERA_BASE = 10;
-/** Corte de la etiqueta. Con nombres tipo `Vega_P_Aurora_AC2` 20 alcanza. */
-const MAX_ETIQUETA = 20;
-
-const recortar = (s: string) => (s.length > MAX_ETIQUETA ? s.slice(0, MAX_ETIQUETA - 1) + '…' : s);
 
 const vb = `${lienzo.vista.x} ${lienzo.vista.y} ${lienzo.vista.ancho} ${lienzo.vista.alto}`;
 
@@ -89,6 +97,33 @@ const destinos = enOtroMapa > 0 ? (fuera?.destinos ?? []) : [];
       data-nivel-zoom
       aria-live="off">100 %</span
     >
+
+    {/* ── Atenuar residuos ───────────────────────────────────────────────────
+        🔴 Sale sólo si hay residuos, y el número va en el propio botón.
+
+        Es el control que sostiene todo el eje de antigüedad en el mapa: sin él,
+        atenuar sería una decisión que el panel toma por el operador y que no se
+        puede deshacer. Con él es una lente que se prende y se apaga — y el
+        número de al lado ya cuenta la historia aunque nunca lo toques.
+
+        Empieza ENCENDIDO porque el defecto que se viene a arreglar es
+        exactamente que los rojos permanentes enseñan a ignorar el rojo. */}
+    {
+      residuos > 0 && (
+        <button
+          type="button"
+          data-atenuar
+          aria-pressed="true"
+          class="border-borde bg-panel/90 text-2xs aria-pressed:border-acento aria-pressed:text-acento-txt pointer-events-auto flex items-center gap-1.5 rounded-lg border px-2 py-1 font-medium backdrop-blur"
+          title="Los que llevan más de un año en el mismo estado casi seguro son bajas que nadie sacó del monitoreo. Atenuarlos deja ver lo que sí está pasando."
+        >
+          <span class="rampa" data-antiguedad="residuo" aria-hidden="true" />
+          {/* Una sola expresión: partido en dos líneas, JSX mete un espacio en
+              el medio y en pantalla se leía «Atenuar 6 residuo s». */}
+          <span>{`Atenuar ${numero(residuos)} residuo${residuos === 1 ? '' : 's'}`}</span>
+        </button>
+      )
+    }
   </div>
 
   {/* ── Referencia de estados ─────────────────────────────────────────────
@@ -118,6 +153,46 @@ const destinos = enOtroMapa > 0 ? (fuera?.destinos ?? []) : [];
         ))
       }
     </ul>
+
+    {/* ── Y el segundo eje ─────────────────────────────────────────────────
+        🔴 Va SEPARADO de los estados, con su propio título, y eso es
+           deliberado: la antigüedad NO es un quinto estado. Un residuo está
+           caído, con el mismo glifo y el mismo trazo que cualquier caído. Lo
+           que cambia es cuánta atención pide, y eso se dibuja atenuando o
+           realzando, nunca cambiando lo que el nodo dice que es.
+
+           Si esta referencia mezclara las dos listas, en tres semanas alguien
+           estaría diciendo «está en residuo» como si fuera un estado, y el
+           panel habría empezado a contradecir a The Dude. */}
+    <div class="border-borde/70 mt-1 border-t px-2.5 pt-1 pb-1">
+      <p class="text-2xs text-tenue mb-1 font-semibold">Y hace cuánto que está así</p>
+      <ul class="space-y-1">
+        {
+          ANTIGUEDADES.map((a) => (
+            <li class="flex items-center gap-2">
+              <svg width="34" height="16" viewBox="0 0 34 16" aria-hidden="true" class="shrink-0">
+                <g data-estado="3" data-antiguedad={a.clave} class="nodo-mapa">
+                  <circle class="aro" cx="9" cy="8" r="6" />
+                  <g class="marca-estado" transform="translate(24,8)">
+                    <circle class="fondo" r="6" />
+                    <text class="glifo" y="3">
+                      ✕
+                    </text>
+                  </g>
+                </g>
+              </svg>
+              <span class="text-tenue inline-flex items-center gap-1.5" title={a.explica}>
+                <span class="rampa" data-antiguedad={a.clave} aria-hidden="true" />
+                {a.etiqueta}
+              </span>
+            </li>
+          ))
+        }
+      </ul>
+      <p class="text-2xs text-tenue mt-1 max-w-[15rem] opacity-80">
+        Sigue siendo el mismo estado. Lo que cambia es cuánta atención pide.
+      </p>
+    </div>
   </details>
 
   {
@@ -163,7 +238,10 @@ const destinos = enOtroMapa > 0 ? (fuera?.destinos ?? []) : [];
               y2={l.y2}
               stroke-width={l.ancho}
             >
-              <title>{l.nombre ?? 'Enlace'} — {metaEstado(l.estado).etiqueta}</title>
+              <title>
+                {l.nombre ?? 'Enlace'}
+                {l.detalle ? ` — ${l.detalle}` : ''} — {metaEstado(l.estado).etiqueta}
+              </title>
             </line>
           ))
         }
@@ -197,15 +275,28 @@ const destinos = enOtroMapa > 0 ? (fuera?.destinos ?? []) : [];
             const que =
               n.kind === 'submap' ? 'Submapa' : n.kind === 'network' ? 'Red' : 'Equipo';
             const Nodo = n.href ? 'a' : 'g';
+            // 🔴 La antigüedad entra en el nombre accesible, no sólo en el
+            //    dibujo. Atenuar es un canal visual y nada más: quien usa
+            //    lector de pantalla tiene que escuchar la misma distinción que
+            //    ve el que mira, o el eje entero no existe para esa persona.
+            const cuanto =
+              n.edad_s != null ? ` — así desde hace ${duracion(n.edad_s)}` : '';
+            // El recuadro ya no es un cuadrado fijo: envuelve al icono, que
+            // ahora mide lo que pidió `image_scale` y con la proporción del
+            // archivo. La marca de estado y la etiqueta cuelgan de sus bordes.
+            const caja = medioRecuadro(n);
             return (
               <Nodo
                 class="nodo-mapa"
                 data-estado={n.estado}
                 data-id={n.id}
+                data-antiguedad={n.antiguedad ?? undefined}
+                data-edad={n.edad_s != null ? Math.round(n.edad_s) : undefined}
+                data-dev={n.deviceId ?? undefined}
                 href={n.href ?? undefined}
                 tabindex={n.href ? 0 : undefined}
                 role={n.href ? 'link' : 'img'}
-                aria-label={`${que} ${n.nombre} — ${m.etiqueta}${ips}`}
+                aria-label={`${que} ${n.nombre} — ${m.etiqueta}${ips}${cuanto}`}
                 data-rotulo={`${que} ${n.nombre}`}
                 data-ips={ips}
                 transform={`translate(${n.cx} ${n.cy})`}
@@ -213,46 +304,82 @@ const destinos = enOtroMapa > 0 ? (fuera?.destinos ?? []) : [];
                 <title>
                   {n.nombre} — {m.etiqueta}
                   {ips}
+                  {cuanto}
                 </title>
 
-                <circle class="halo" r={R + 6} />
-                <rect class="aro" x={-R} y={-R} width={TAMANIO_NODO} height={TAMANIO_NODO} rx="9" />
+                <rect
+                  class="halo"
+                  x={-caja.x - 6}
+                  y={-caja.y - 6}
+                  width={caja.x * 2 + 12}
+                  height={caja.y * 2 + 12}
+                  rx="14"
+                />
+                <rect
+                  class="aro"
+                  x={-caja.x}
+                  y={-caja.y}
+                  width={caja.x * 2}
+                  height={caja.y * 2}
+                  rx="9"
+                />
 
                 {/* SVG incrustado o PNG servido del disco, según el formato
                     real del icono de The Dude. Ver `Pincel`. */}
                 {(() => {
                   const p = porNodo.get(n.id);
-                  const caja = {
-                    x: -LADO_ICONO / 2,
-                    y: -LADO_ICONO / 2,
-                    width: LADO_ICONO,
-                    height: LADO_ICONO,
+                  const box = {
+                    x: -n.ancho / 2,
+                    y: -n.alto / 2,
+                    width: n.ancho,
+                    height: n.alto,
                   };
                   // `preserveAspectRatio`: los iconos de Ubiquiti no son
                   // cuadrados y sin esto se estiran, con lo que un nanostation
                   // parece otra cosa.
                   //
+                  // 🔴 Y por eso la caja ahora TIENE la proporción del archivo.
+                  //    Con el cuadro de 22×22 que había antes, `meet` metía una
+                  //    foto de 467×92 dentro del cuadrado: salía de 22×4, una
+                  //    astilla. La proporción correcta es la mitad del arreglo.
+                  //
                   // Sin carga diferida a propósito: un mapa de 400 nodos usa
                   // apenas 21 URLs distintas, así que el navegador hace 21
                   // peticiones y reusa. No hay nada que diferir.
                   return p?.tipo === 'imagen' ? (
-                    <image href={p.url} {...caja} preserveAspectRatio="xMidYMid meet" />
+                    <image href={p.url} {...box} preserveAspectRatio="xMidYMid meet" />
                   ) : (
-                    <use href={`#ico-${p?.clave ?? 'r-generico'}`} {...caja} class="text-tinta" />
+                    <use href={`#ico-${p?.clave ?? 'r-generico'}`} {...box} class="text-tinta" />
                   );
                 })()}
 
                 {/* La marca de estado: forma + glifo. Es la redundancia que
                     hace legible el mapa sin distinguir colores. */}
-                <g class="marca-estado" transform={`translate(${R - 1} ${-R + 1})`}>
+                <g class="marca-estado" transform={`translate(${caja.x - 1} ${-caja.y + 1})`}>
                   <circle class="fondo" r="7" />
                   <text class="glifo" y="3.2" data-glifo>
                     {m.glifo}
                   </text>
                 </g>
 
-                <text class="etiqueta" y={R + 14} text-anchor="middle">
-                  {recortar(n.nombre)}
+                {/* El rótulo de The Dude, ya resuelto y multilínea.
+                    Antes iba en un solo `<text>`: el `\r\n` del origen colapsa
+                    a un espacio y el recorte se comía la segunda línea, así que
+                    de `[Device.Name]\r\n[Device.FirstAddress]` se leía
+                    «[Device.Name] [Dev…» y la dirección no aparecía nunca.
+                    La primera línea es el nombre y va destacada; las que siguen
+                    son el detalle y van más chicas, para que 400 nodos con dos
+                    renglones cada uno sigan siendo un mapa y no una pared. */}
+                <text class="etiqueta" y={caja.y + 14} text-anchor="middle">
+                  {n.lineas.map((linea, i) => (
+                    <tspan
+                      x="0"
+                      dy={i === 0 ? 0 : ALTO_LINEA_NODO}
+                      class={i === 0 ? undefined : 'secundaria'}
+                    >
+                      {linea}
+                    </tspan>
+                  ))}
                 </text>
               </Nodo>
             );
@@ -329,9 +456,92 @@ const destinos = enOtroMapa > 0 ? (fuera?.destinos ?? []) : [];
         </p>
       )
     }
+
+    {/* ── Rótulos que piden datos que no tenemos ──────────────────────────────
+        Misma regla que arriba: el rótulo de The Dude es una plantilla y algunos
+        de sus campos no se pueden resolver. En vez de escribir
+        `[Interface.InBitRate]` en pantalla —o peor, un `0 Mbps` inventado— la
+        línea se omite y el hueco se declara acá, con nombre y cantidad.
+
+        🔴 Y con la COBERTURA al lado, que es lo que hacía falta. Este pie llegó
+           a declarar «el panel no replica el tráfico» en 38 de los 40 mapas
+           porque una medición vieja decía que casi ningún enlace tenía datos.
+           Hoy 173 de 1.169 sí los tienen. El pie ahora cuenta lo que encontró
+           EN ESTE DIBUJO —«N sin serie · M con dato»— así que no puede volver a
+           envejecer: si mañana el ETL termina de replicar, el número sube solo.
+           Ver `Hueco.resueltos`. */}
+    {
+      lienzo.huecos.length > 0 && (
+        <p class="border-borde/70 text-tenue flex flex-wrap items-center gap-x-3 gap-y-1 border-t px-3 py-1.5">
+          <span class="font-mono font-bold" aria-hidden="true">
+            ?
+          </span>
+          <span>Rótulos que quedaron sin dato:</span>
+
+          {lienzo.huecos.map((h) => (
+            <span
+              class="whitespace-nowrap"
+              title={
+                h.motivo === 'desconocida'
+                  ? `${h.plantilla} — plantilla que el panel no reconoce; hay que agregarla`
+                  : h.motivo === 'sin-dato'
+                    ? `${h.plantilla} — el panel sabe leer este campo; lo que falta es el dato de estos elementos`
+                    : `${h.plantilla} — campo conocido, sin origen en la base del panel`
+              }
+            >
+              <strong class="font-semibold">{h.como}</strong>
+              <span class="tabular-nums"> · {numero(h.veces)}</span>
+              {/* La cobertura viva. Sin esto, «996» se lee como «no anda». */}
+              {h.resueltos > 0 && (
+                <span class="text-up-txt tabular-nums">
+                  {' '}
+                  · {numero(h.resueltos)} con dato ({porcentaje(h.resueltos, h.resueltos + h.veces)})
+                </span>
+              )}
+              {h.motivo === 'desconocida' && (
+                <span class="text-parcial-txt font-mono" aria-label="plantilla no reconocida">
+                  {' '}
+                  ‹?›
+                </span>
+              )}
+            </span>
+          ))}
+        </p>
+      )
+    }
+
+    {/* Cuántos nodos son alarma viva y cuántos son paisaje. Es la lectura que
+        el mapa de The Dude no da y por la que existe todo este eje. */}
+    {
+      (recientes > 0 || residuos > 0) && (
+        <p class="border-borde/70 text-tenue flex flex-wrap items-center gap-x-3 gap-y-1 border-t px-3 py-1.5">
+          {recientes > 0 && (
+            <span class="inline-flex items-center gap-1.5">
+              <span class="rampa" data-antiguedad="reciente" aria-hidden="true" />
+              <span>
+                <strong class="text-tinta font-semibold tabular-nums">{numero(recientes)}</strong>{' '}
+                cambiaron esta semana
+              </span>
+            </span>
+          )}
+          {residuos > 0 && (
+            <span class="inline-flex items-center gap-1.5">
+              <span class="rampa" data-antiguedad="residuo" aria-hidden="true" />
+              <span>
+                <strong class="font-semibold tabular-nums">{numero(residuos)}</strong> llevan más de
+                un año igual
+              </span>
+            </span>
+          )}
+        </p>
+      )
+    }
   </div>
+
+  <TarjetaNodo />
 </div>
 
 <script>
   import '@/scripts/visor-mapa';
+  import '@/scripts/tarjeta-nodo';
 </script>

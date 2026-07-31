@@ -18,6 +18,13 @@ interface Conteo {
   desconocidos: number;
 }
 
+interface ConteoEdad {
+  reciente: number;
+  arrastre: number;
+  residuo: number;
+  sinFecha: number;
+}
+
 interface Pulso {
   ts: string;
   salud: SaludSync;
@@ -30,6 +37,8 @@ interface Pulso {
     enlaces: number;
     caidas_abiertas: number;
     caidas_24h: number;
+    caidos_por_antiguedad: ConteoEdad;
+    desconocidos_por_antiguedad: ConteoEdad;
   };
   caidas: { id: number; abierta: boolean }[];
 }
@@ -113,6 +122,13 @@ const CLAVES: Record<string, (p: Pulso) => number> = {
   'sv-parcial': (p) => p.resumen.servicios.parcial,
   'sv-caidos': (p) => p.resumen.servicios.caidos,
   'sv-desc': (p) => p.resumen.servicios.desconocidos,
+  // 🔴 El reparto por antigüedad también se refresca. Si no, el bloque «Qué
+  //    mirar ahora» se quedaría congelado con la foto de cuando se abrió la
+  //    pestaña, y es justamente el que tiene que moverse cuando algo se cae:
+  //    un equipo nuevo caído entra en «reciente», no en «residuo».
+  'eq-caidos-reciente': (p) => p.resumen.caidos_por_antiguedad?.reciente ?? 0,
+  'eq-caidos-arrastre': (p) => p.resumen.caidos_por_antiguedad?.arrastre ?? 0,
+  'eq-caidos-residuo': (p) => p.resumen.caidos_por_antiguedad?.residuo ?? 0,
   mapas: (p) => p.resumen.mapas,
   enlaces: (p) => p.resumen.enlaces,
   'caidas-abiertas': (p) => p.resumen.caidas_abiertas,

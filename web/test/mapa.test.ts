@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import type { ElementoMapa } from '@/lib/consultas';
-import { construirLienzo, partirTexto, TAMANIO_NODO } from '@/lib/mapa';
+import type { ElementoMapa, ResumenSubmapa } from '@/lib/consultas';
+import {
+  cajaDeIcono,
+  construirLienzo,
+  ladoDeIcono,
+  medioRecuadro,
+  partirTexto,
+  TAMANIO_NODO,
+} from '@/lib/mapa';
 
 /** Fábrica corta para no repetir quince campos en cada caso. */
 function elem(p: Partial<ElementoMapa> & { element_id: number }): ElementoMapa {
@@ -19,8 +26,15 @@ function elem(p: Partial<ElementoMapa> & { element_id: number }): ElementoMapa {
     device_id: null,
     submap_id: null,
     direcciones: null,
+    services_down: null,
+    image_scale: 100,
     ...p,
   } as ElementoMapa;
+}
+
+/** Un submapa con sus recuentos, como los devuelve `resumenSubmapas`. */
+function submapa(p: Partial<ResumenSubmapa> = {}): ResumenSubmapa {
+  return { estado: 1, total: 0, arriba: 0, parciales: 0, caidos: 0, ...p };
 }
 
 describe('construirLienzo · nodos', () => {
@@ -61,9 +75,188 @@ describe('construirLienzo · nodos', () => {
     // pasamos el recalculado, gana ese.
     const { nodos } = construirLienzo(
       [elem({ element_id: 1, kind: 'submap', submap_id: 7, status: 1 })],
-      new Map([[7, 3]]),
+      new Map([[7, submapa({ estado: 3, total: 4, caidos: 1 })]]),
     );
     expect(nodos[0]!.estado).toBe(3);
+  });
+});
+
+describe('construirLienzo · el rótulo es una PLANTILLA', () => {
+  // 🔴 El bug que motivó todo esto: 2.216 de los 2.317 elementos de la base
+  //    real traen plantilla, y se dibujaban literales. En pantalla se leía
+  //    «[Device.Name] [dev…».
+  it('resuelve nombre y dirección, y las deja en renglones separados', () => {
+    const { nodos } = construirLienzo([
+      elem({
+        element_id: 1,
+        label: '[Device.Name]\r\n[Device.FirstAddress]',
+        name: 'Vega_P_Aurora_AC2',
+        direcciones: ['192.0.2.13'],
+      }),
+    ]);
+    expect(nodos[0]!.lineas).toEqual(['Vega_P_Aurora_AC2', '192.0.2.13']);
+    // Y el nombre para el `<title>` y el lector de pantalla es el de verdad.
+    expect(nodos[0]!.nombre).toBe('Vega_P_Aurora_AC2');
+  });
+
+  it('nunca deja un corchete en pantalla', () => {
+    const { nodos } = construirLienzo([
+      elem({ element_id: 1, label: '[Device.Name]\r\n[Loquesea.Nuevo]', name: 'RT_Core' }),
+    ]);
+    expect(nodos[0]!.lineas.join('\n')).not.toMatch(/\[[A-Za-z]/);
+  });
+
+  it('`AddressesColumn` pone una dirección por línea', () => {
+    const { nodos } = construirLienzo([
+      elem({
+        element_id: 1,
+        label: '[Device.Name]\r\n[Device.AddressesColumn]',
+        name: 'SW-Core',
+        direcciones: ['192.0.2.1', '192.0.2.2'],
+      }),
+    ]);
+    expect(nodos[0]!.lineas).toEqual(['SW-Core', '192.0.2.1', '192.0.2.2']);
+  });
+
+  it('un equipo sin dirección muestra un guion, no una línea fantasma', () => {
+    const { nodos } = construirLienzo([
+      elem({
+        element_id: 1,
+        label: '[Device.Name]\r\n[Device.FirstAddress]',
+        name: 'RT_Core',
+        direcciones: [],
+      }),
+    ]);
+    expect(nodos[0]!.lineas).toEqual(['RT_Core', '—']);
+  });
+
+  it('el rótulo de submapa arma «total / parciales / caídos» como The Dude', () => {
+    const { nodos } = construirLienzo(
+      [
+        elem({
+          element_id: 1,
+          kind: 'submap',
+          submap_id: 7,
+          name: 'Ponte',
+          label:
+            '[NetMap.Name]\r\n[NetMap.DevicesCount] / [NetMap.DevicesPartiallyDownCount] / [NetMap.DevicesDownCount]',
+        }),
+      ],
+      new Map([[7, submapa({ estado: 3, total: 95, arriba: 67, parciales: 0, caidos: 11 })]]),
+    );
+    expect(nodos[0]!.lineas).toEqual(['Ponte', '95 / 0 / 11']);
+  });
+
+  it('cero servicios caídos no deja un renglón decorativo', () => {
+    const { nodos } = construirLienzo([
+      elem({
+        element_id: 1,
+        label: '[Device.Name]\r\n[Device.ServicesDown]',
+        name: 'RT_Core',
+        services_down: 0,
+      }),
+    ]);
+    expect(nodos[0]!.lineas).toEqual(['RT_Core']);
+  });
+
+  it('con servicios caídos sí, y se lee de qué son', () => {
+    const { nodos } = construirLienzo([
+      elem({
+        element_id: 1,
+        label: '[Device.Name]\r\n[Device.ServicesDown]',
+        name: 'RT_Core',
+        services_down: 2,
+      }),
+    ]);
+    expect(nodos[0]!.lineas).toEqual(['RT_Core', '2 caídos']);
+  });
+
+  // 🔴 La regresión cara: el contador pegado adelante de la dirección fabricaba
+  //    `3192.0.2.104`, un número con forma de IP que no existe en ningún lado.
+  it('el contador nunca se pega a la dirección', () => {
+    const { nodos } = construirLienzo([
+      elem({
+        element_id: 1,
+        label: '[Device.Name]\r\n[device_performance()][Device.ServicesDown][Device.AddressesColumn]',
+        name: 'Mimosa a Oso',
+        services_down: 3,
+        direcciones: ['192.0.2.104'],
+      }),
+    ]);
+    expect(nodos[0]!.lineas).toEqual(['Mimosa a Oso', '3 caídos', '192.0.2.104']);
+    expect(nodos[0]!.lineas.join('\n')).not.toContain('3192');
+  });
+
+  it('una plantilla que no conocemos se marca y se registra', () => {
+    const l = construirLienzo([
+      elem({ element_id: 1, label: '[Device.Name]\r\n[Device.Inventada]', name: 'RT_Core' }),
+    ]);
+    expect(l.nodos[0]!.lineas).toEqual(['RT_Core', '‹?›']);
+    expect(l.huecos).toEqual([
+      {
+        plantilla: '[Device.Inventada]',
+        como: 'plantilla [Device.Inventada]',
+        motivo: 'desconocida',
+        veces: 1,
+        // Cuántas veces SÍ salió. Es lo que vuelve al pie del mapa una
+        // medición en caliente en vez de una afirmación que envejece.
+        resueltos: 0,
+      },
+    ]);
+  });
+
+  it('una línea cuyos únicos campos no tenemos se cae entera', () => {
+    // `Rx: [Interface.InBitRate][snmp_wireless_link_rx_rate()]` sin ninguno de
+    // los dos números es «Rx: », que es peor que no mostrar nada.
+    const l = construirLienzo([
+      elem({
+        element_id: 1,
+        label: 'Radio Norte\r\nRx: [Interface.InBitRate][snmp_wireless_link_rx_rate()]',
+        name: 'Radio Norte',
+      }),
+    ]);
+    expect(l.nodos[0]!.lineas).toEqual(['Radio Norte']);
+    // Pero se declara, con nombre y cantidad.
+    // 🔴 `sin-dato` y no `sin-replicar` para el tráfico: el panel SÍ sabe leer
+    //    ese campo desde que se encendió; lo que falta es la serie de ESTE
+    //    enlace. Son cosas distintas y confundirlas fue lo que tuvo la
+    //    funcionalidad apagada. Ver `SIN_DATO` en `plantillas.ts`.
+    expect(l.huecos.map((h) => [h.plantilla, h.veces, h.motivo])).toEqual([
+      ['[Interface.InBitRate]', 1, 'sin-dato'],
+      ['[snmp_wireless_link_rx_rate()]', 1, 'sin-replicar'],
+    ]);
+  });
+
+  it('el enlace sin nombre propio no cae en la plantilla cruda', () => {
+    // 1.168 de los 1.170 enlaces tienen `label` que resuelve a nada; muchos
+    // traen además `links.name` en cadena vacía, y con `??` el título salía
+    // en blanco.
+    const { enlaces } = construirLienzo([
+      elem({ element_id: 1, x: 0, y: 0 }),
+      elem({ element_id: 2, x: 100, y: 0 }),
+      elem({
+        element_id: 9,
+        kind: 'link',
+        link_from: 1,
+        link_to: 2,
+        name: '  ',
+        label: 'Rx: [Interface.InBitRate]\r\nTx: [Interface.OutBitRate]',
+      }),
+    ]);
+    expect(enlaces[0]!.nombre).toBeNull();
+  });
+
+  it('un rótulo sin plantilla no se toca', () => {
+    const { nodos } = construirLienzo([
+      elem({ element_id: 1, label: 'Torre Aurora', name: 'RT_Aurora_Torre' }),
+    ]);
+    expect(nodos[0]!.lineas).toEqual(['Torre Aurora']);
+    expect(nodos[0]!.nombre).toBe('Torre Aurora');
+  });
+
+  it('un mapa sin huecos no declara nada', () => {
+    const l = construirLienzo([elem({ element_id: 1, label: 'eth2' })]);
+    expect(l.huecos).toEqual([]);
   });
 });
 
@@ -334,5 +527,175 @@ describe('construirLienzo · encuadre', () => {
     ]);
     expect(l.nodos).toEqual([]);
     expect(l.enlaces).toEqual([]);
+  });
+});
+
+/**
+ * 🔴 El tamaño del icono, que el visor tiraba.
+ *
+ * `map_elements.image_scale` es un porcentaje sobre el tamaño natural del
+ * archivo, y el visor dibujaba todo en un cuadro fijo de 22×22. En la base real
+ * conviven escalas de 5 a 384 dentro del MISMO mapa.
+ */
+describe('ladoDeIcono · la escala de The Dude', () => {
+  it('un icono típico queda cerca del tamaño base', () => {
+    // 100 px naturales al 100 % es el caso mediano medido en la base.
+    expect(ladoDeIcono(100, { ancho: 100, alto: 100 })).toBe(44);
+  });
+
+  it('respeta el ORDEN que puso el operador', () => {
+    const nat = { ancho: 200, alto: 200 };
+    const chico = ladoDeIcono(10, nat);
+    const medio = ladoDeIcono(50, nat);
+    const grande = ladoDeIcono(100, nat);
+    expect(chico).toBeLessThan(medio);
+    expect(medio).toBeLessThan(grande);
+  });
+
+  it('y también el orden entre dos archivos con la MISMA escala', () => {
+    // Es la información que se pierde si se dibuja por la escala sola: entre
+    // los 127 elementos en escala 100 los naturales van de 41 a 628 px.
+    const chico = ladoDeIcono(100, { ancho: 41, alto: 41 });
+    const grande = ladoDeIcono(100, { ancho: 628, alto: 397 });
+    expect(chico).toBeLessThan(grande);
+  });
+
+  it('comprime el rango: 42× de entrada entran en 4,4× de salida', () => {
+    // Copiar la fórmula de The Dude pediría lados de 15 a 628 unidades, y la
+    // distancia mediana al vecino es 131: el mapa se taparía a sí mismo.
+    const min = ladoDeIcono(5, { ancho: 300, alto: 141 });
+    const max = ladoDeIcono(100, { ancho: 628, alto: 397 });
+    expect(max / min).toBeLessThan(5);
+  });
+
+  it('nunca baja del piso, por más que la escala diga 5 %', () => {
+    expect(ladoDeIcono(5, { ancho: 35, alto: 41 })).toBe(20);
+    expect(ladoDeIcono(1, { ancho: 30, alto: 89 })).toBe(20);
+  });
+
+  it('nunca pasa del techo, por más que la escala diga 384 %', () => {
+    expect(ladoDeIcono(384, { ancho: 3447, alto: 685 })).toBe(88);
+  });
+
+  // La columna es nullable y la base trae ceros. Ninguno de los dos es escala.
+  it('una escala nula o cero se trata como 100, no como invisible', () => {
+    const cien = ladoDeIcono(100, { ancho: 200, alto: 100 });
+    expect(ladoDeIcono(null, { ancho: 200, alto: 100 })).toBe(cien);
+    expect(ladoDeIcono(0, { ancho: 200, alto: 100 })).toBe(cien);
+    expect(ladoDeIcono(-5, { ancho: 200, alto: 100 })).toBe(cien);
+  });
+
+  it('sin tamaño natural —un SVG— la escala sigue mandando', () => {
+    // El `viewBox` de un SVG está en unidades arbitrarias: compararlo contra
+    // los píxeles de un PNG no significa nada, así que no se lo mide.
+    expect(ladoDeIcono(100, null)).toBe(44);
+    expect(ladoDeIcono(300, null)).toBeGreaterThan(44);
+    expect(ladoDeIcono(25, null)).toBeLessThan(44);
+  });
+});
+
+describe('cajaDeIcono · la proporción del archivo', () => {
+  // 🔴 La mitad del bug: con un cuadro de 22×22 y `preserveAspectRatio=meet`,
+  //    una foto de 467×92 entraba como 22×4. Una astilla, no un icono.
+  it('una foto apaisada no se dibuja dentro de un cuadrado', () => {
+    const c = cajaDeIcono('a.png', 100, { ancho: 467, alto: 92 });
+    expect(c.ancho).toBeGreaterThan(c.alto * 4);
+    expect(c.ancho / c.alto).toBeCloseTo(467 / 92, 1);
+  });
+
+  it('el lado mayor es el que manda el tamaño… salvo que el menor no se vea', () => {
+    // Proporción suave: el mayor sale clavado de `ladoDeIcono`.
+    const cuadrado = cajaDeIcono('a.png', 100, { ancho: 80, alto: 89 });
+    expect(Math.max(cuadrado.ancho, cuadrado.alto)).toBe(
+      ladoDeIcono(100, { ancho: 80, alto: 89 }),
+    );
+
+    // 🔴 Proporción marcada: 30×89 al 100 % pedía un mayor de 41,5 y dejaba el
+    //    menor en 14. Ahí el piso de legibilidad manda y la caja ENTERA crece,
+    //    así que el mayor pasa a ser más grande que `ladoDeIcono`. Es la regla
+    //    nueva, y el test la dice en vez de tolerarla.
+    const flaco = cajaDeIcono('a.png', 100, { ancho: 30, alto: 89 });
+    expect(Math.max(flaco.ancho, flaco.alto)).toBeGreaterThan(
+      ladoDeIcono(100, { ancho: 30, alto: 89 }),
+    );
+    expect(Math.min(flaco.ancho, flaco.alto)).toBeGreaterThanOrEqual(16);
+    expect(flaco.alto / flaco.ancho).toBeCloseTo(89 / 30, 1);
+  });
+
+  it('🔴 el lado MENOR no baja del mínimo legible, y la caja crece entera', () => {
+    // `rb1100.png` real: 200×40 al 60 %. Antes daba 48,2 × 9,6 — proporción
+    // impecable y nueve unidades de alto sobre un mapa cuya distancia mediana
+    // entre nodos es 131. Se veía una línea.
+    const c = cajaDeIcono('a.png', 60, { ancho: 200, alto: 40 });
+    expect(Math.min(c.ancho, c.alto)).toBeGreaterThanOrEqual(16);
+    // Creció, no se recortó: la foto sigue siendo 5:1.
+    expect(c.ancho / c.alto).toBeCloseTo(5, 1);
+  });
+
+  it('sin medida cae a un cuadrado, que es lo honesto', () => {
+    const c = cajaDeIcono('a.png', 100, null);
+    expect(c.ancho).toBe(c.alto);
+  });
+});
+
+describe('medioRecuadro · el chapón envuelve al icono', () => {
+  it('crece con el icono en vez de recortarlo', () => {
+    const chico = medioRecuadro({ ancho: 20, alto: 20 });
+    const grande = medioRecuadro({ ancho: 88, alto: 40 });
+    expect(grande.x).toBeGreaterThan(chico.x);
+    expect(grande.x * 2).toBeGreaterThanOrEqual(88);
+  });
+
+  it('pero nunca se achica más que el blanco mínimo para hacer clic', () => {
+    const c = medioRecuadro({ ancho: 8, alto: 8 });
+    expect(c.x * 2).toBe(TAMANIO_NODO);
+    expect(c.y * 2).toBe(TAMANIO_NODO);
+  });
+});
+
+describe('construirLienzo · el icono dimensionado', () => {
+  it('toma la medida del archivo por su rel_path', () => {
+    const { nodos } = construirLienzo(
+      [elem({ element_id: 1, icon: 'images/olt-tplink.png', image_scale: 100 })],
+      new Map(),
+      new Map([['images/olt-tplink.png', { ancho: 467, alto: 92 }]]),
+    );
+    expect(nodos[0]!.ancho).toBeGreaterThan(nodos[0]!.alto * 4);
+  });
+
+  it('sin medidas no rompe: cae al cuadrado del tamaño base', () => {
+    const { nodos } = construirLienzo([elem({ element_id: 1, icon: 'x.png' })]);
+    expect(nodos[0]!.ancho).toBe(nodos[0]!.alto);
+    expect(nodos[0]!.ancho).toBeGreaterThan(0);
+  });
+
+  it('🔴 el encuadre incluye los bordes del icono, no sólo el centro', () => {
+    // Con un icono de 88 unidades, encuadrar por el centro dejaba media foto
+    // fuera del lienzo.
+    const conIcono = construirLienzo(
+      [elem({ element_id: 1, x: 0, y: 0, icon: 'g.png', image_scale: 100 })],
+      new Map(),
+      new Map([['g.png', { ancho: 628, alto: 397 }]]),
+    );
+    const sinIcono = construirLienzo([elem({ element_id: 1, x: 0, y: 0, image_scale: 5 })]);
+    expect(conIcono.vista.ancho).toBeGreaterThan(sinIcono.vista.ancho);
+  });
+});
+
+describe('cajaDeIcono · sin imagen asignada', () => {
+  // 563 de los 1.047 nodos de la base no tienen ninguna imagen, y 554 traen la
+  // escala en 100 porque nadie la tocó nunca: no hay nada que escalar. Si se
+  // los agranda igual, el mapa se llena de dibujos de repuesto grandes que le
+  // comen el lugar a los nodos que sí traen una foto de verdad.
+  it('un nodo sin icono queda como estaba, por más escala que traiga', () => {
+    expect(cajaDeIcono(null, 100)).toEqual({ ancho: 22, alto: 22 });
+    expect(cajaDeIcono(null, 384)).toEqual({ ancho: 22, alto: 22 });
+    expect(cajaDeIcono(undefined, 5)).toEqual({ ancho: 22, alto: 22 });
+  });
+
+  it('así el tamaño significa «acá hay una foto de verdad»', () => {
+    const sinFoto = cajaDeIcono(null, 100);
+    const conFoto = cajaDeIcono('images/CCR1036-8G-2Splus.png', 100, { ancho: 628, alto: 397 });
+    expect(conFoto.ancho).toBeGreaterThan(sinFoto.ancho * 2);
   });
 });

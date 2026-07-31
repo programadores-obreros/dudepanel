@@ -1,0 +1,69 @@
+---
+import { antiguedadDe, metaAntiguedad, segundosDesde } from '@/lib/antiguedad';
+import { desde as haceCuanto, dias as aDias, fechaLarga, numero } from '@/lib/formato';
+
+interface Props {
+  /** El estado del objeto: sin él no se sabe si la antigüedad significa algo. */
+  estado: unknown;
+  /** Instante del último cambio de estado. */
+  desde: string | Date | null | undefined;
+  /** `larga` agrega los días exactos; `corta` es para tablas y tarjetas. */
+  variante?: 'corta' | 'larga';
+  /** Qué decir cuando no hay fecha. Nunca se inventa una. */
+  sinFecha?: string;
+  class?: string;
+}
+
+const {
+  estado,
+  desde,
+  variante = 'corta',
+  sinFecha = 'sin fecha de cambio',
+  class: clase = '',
+} = Astro.props;
+
+const a = antiguedadDe(estado, desde);
+const segundos = segundosDesde(desde);
+const d = aDias(segundos);
+
+/**
+ * 🔴 Los días exactos sólo cuando son muchos, y no es capricho.
+ *
+ * `duracion()` corta en «meses» arriba de 30 días: un residuo de 2022 sale
+ * como «52 meses», que se lee como un redondeo y no como un dato. «1.595 días»
+ * es el número que alguien copia a un ticket para dar de baja el equipo, y es
+ * justamente la cifra que vuelve indiscutible que eso no es una caída.
+ */
+const conDias = variante === 'larga' && d != null && d >= 60;
+---
+
+{
+  desde == null ? (
+    <span class:list={['antig antig-sin-fecha', clase]} title="El origen no registra cuándo cambió.">
+      <span class="rampa" data-antiguedad="sin-fecha" aria-hidden="true" />
+      <span>{sinFecha}</span>
+    </span>
+  ) : a == null ? (
+    /* Está arriba: la antigüedad es una buena noticia, no una alarma. Se
+       muestra en gris y sin píldora, porque no hay nada que atender.
+
+       Sólo la duración, sin «estable hace»: quien lo llama ya pone el marco
+       («Así desde hace», o la píldora de estado al lado). Con el prefijo se
+       leía «Así desde hace estable hace 18 h 39 min». */
+    <span class:list={['text-tenue tabular-nums', clase]} title={fechaLarga(desde)}>
+      {haceCuanto(desde)}
+    </span>
+  ) : (
+    <span
+      class:list={[`antig antig-${a}`, clase]}
+      data-antiguedad={a}
+      title={`${metaAntiguedad(a).explica} · ${fechaLarga(desde)}`}
+    >
+      <span class="rampa" data-antiguedad={a} aria-hidden="true" />
+      <span class="tabular-nums">
+        {conDias ? `${numero(d)} días` : haceCuanto(desde)}
+      </span>
+      <span class="sr-only"> — {metaAntiguedad(a).etiqueta}</span>
+    </span>
+  )
+}
