@@ -17,9 +17,23 @@ interface Props {
   fuera?: EnlacesFuera;
   /** Última medición de tráfico por enlace. Ver `traficoDeMapa`. */
   trafico?: ReadonlyMap<number, TraficoEnlace>;
+  /**
+   * ¿Esta persona puede acomodar los nodos?
+   *
+   * Lo decide el servidor con `lib/roles`, y de eso depende que el script de
+   * arrastre siquiera se cargue. La comprobación que IMPORTA está igual en el
+   * endpoint: esto ahorra bytes y evita ofrecer algo que no se va a poder
+   * hacer, pero no es la barrera.
+   */
+  editable?: boolean;
+  /** Cuántos nodos de este mapa ya tienen posición puesta a mano. */
+  movidos?: number;
 }
 
-const { mapaId, nombre, elementos, submapas = new Map(), fuera, trafico } = Astro.props;
+const {
+  mapaId, nombre, elementos, submapas = new Map(), fuera, trafico,
+  editable = false, movidos = 0,
+} = Astro.props;
 
 // El tamaño natural de cada icono se mide ANTES de armar la geometría: sin él
 // no se puede aplicar `image_scale`, que es un porcentaje sobre ese tamaño. Se
@@ -65,6 +79,7 @@ const destinos = enOtroMapa > 0 ? (fuera?.destinos ?? []) : [];
   class="border-borde bg-panel relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border"
   data-visor
   data-mapa-id={mapaId}
+  data-editable={editable ? 'si' : undefined}
 >
   {/* ── Controles ─────────────────────────────────────────────────────── */}
   <div class="pointer-events-none absolute top-2 right-2 z-10 flex flex-col items-end gap-2">
@@ -97,6 +112,31 @@ const destinos = enOtroMapa > 0 ? (fuera?.destinos ?? []) : [];
       data-nivel-zoom
       aria-live="off">100 %</span
     >
+
+    {/* ── Acomodar los nodos ─────────────────────────────────────────────────
+        Sólo para quien puede editar. Para el resto ni aparece — y aunque
+        apareciera, el endpoint contesta 403. */}
+    {
+      editable && (
+        <div class="pointer-events-auto flex flex-col items-end gap-1">
+          <span
+            class="border-borde bg-panel/90 text-2xs rounded border px-2 py-1 backdrop-blur transition-[opacity,color] duration-200 empty:opacity-0 data-[tono=error]:border-caido/60 data-[tono=error]:text-caido-txt data-[tono=guardado]:text-arriba-txt data-[tono=guardando]:text-tenue"
+            data-estado-guardado
+            aria-live="polite"
+          />
+          {movidos > 0 && (
+            <button
+              type="button"
+              data-restablecer
+              class="border-borde bg-panel/90 hover:bg-panel-2 text-2xs cursor-pointer rounded border px-2 py-1 backdrop-blur transition-colors duration-150 disabled:opacity-50"
+              title={`${movidos} ${movidos === 1 ? 'nodo tiene' : 'nodos tienen'} una posición puesta a mano. Esto los devuelve a la que trae The Dude.`}
+            >
+              Volver al original · {movidos}
+            </button>
+          )}
+        </div>
+      )
+    }
 
     {/* ── Atenuar residuos ───────────────────────────────────────────────────
         🔴 Sale sólo si hay residuos, y el número va en el propio botón.
@@ -544,4 +584,89 @@ const destinos = enOtroMapa > 0 ? (fuera?.destinos ?? []) : [];
 <script>
   import '@/scripts/visor-mapa';
   import '@/scripts/tarjeta-nodo';
+
+  /**
+   * 🔴 El arrastre se pide con `import()` DINÁMICO, y no es un capricho.
+   *
+   *    La primera versión era una etiqueta de script condicional en el cuerpo
+   *    del componente —`{editable && …}`— con un comentario que decía que el
+   *    código sólo le llegaba a quien puede editar. **Era mentira, y se
+   *    comprobó midiendo**: Astro procesa los scripts de un componente en
+   *    tiempo de COMPILACIÓN y los junta en el mismo paquete. La condición
+   *    decidía si se escribía la etiqueta en el HTML, no qué bytes bajaba el
+   *    navegador.
+   *
+   *    (Y de paso: dentro de un bloque de script no se puede escribir la
+   *    etiqueta de cierre ni siquiera en un comentario. El parser corta ahí y
+   *    el error que sale — «Expected ";" but found …» — apunta a otra línea.)
+   *
+   *    Bajando todo lo que servía la página a una cuenta de sólo lectura
+   *    aparecían `api/posiciones`, `sendBeacon` y `nodo-arrastrado`.
+   *
+   *    No era un agujero —el módulo busca `[data-visor][data-editable]`, que
+   *    el servidor no pone para esa cuenta, y el endpoint contesta 403 igual—
+   *    pero una afirmación de seguridad que no se cumple es peor que no
+   *    hacerla: la próxima decisión se toma creyéndola.
+   *
+   *    Con `import()` dentro de un `if`, Vite parte el módulo en su propio
+   *    trozo y el navegador sólo lo pide si entra en la condición. Ahora la
+   *    frase es verdad, y hay un test que la sostiene.
+   */
+  if (document.querySelector('[data-visor][data-editable]')) {
+    import('@/scripts/mover-nodos');
+  }
 </script>
+
+<style>
+  /* ── Arrastrar ────────────────────────────────────────────────────────────
+     El cursor es la única señal de que un nodo se puede mover: no hay tirador
+     ni borde extra, porque en un mapa de 400 nodos cualquier adorno por nodo
+     es ruido multiplicado por 400. */
+  :global([data-visor][data-editable] .nodo-mapa) {
+    cursor: grab;
+  }
+  :global([data-visor][data-moviendo-nodo] .nodo-mapa) {
+    cursor: grabbing;
+  }
+
+  /* El nodo agarrado se levanta un poco: la sombra y la escala dicen "esto
+     está en tu mano". 1.08 y no más — a 1.2 tapa a sus vecinos justo cuando
+     lo que estás haciendo es mirar dónde ponerlo. */
+  :global(.nodo-arrastrado) {
+    transform-box: fill-box;
+    transform-origin: center;
+    filter: drop-shadow(0 4px 10px rgb(0 0 0 / 0.45));
+  }
+  :global(.nodo-arrastrado image),
+  :global(.nodo-arrastrado use) {
+    scale: 1.08;
+    transform-box: fill-box;
+    transform-origin: center;
+  }
+
+  /* Mientras se arrastra, el resto del mapa baja un punto para que la vista se
+     quede en lo que se mueve. Es la única animación del lienzo. */
+  :global([data-visor][data-moviendo-nodo] .nodo-mapa:not(.nodo-arrastrado)) {
+    opacity: 0.55;
+  }
+  :global([data-visor] .nodo-mapa) {
+    transition: opacity 160ms ease-out;
+  }
+
+  /* Marca discreta en los que alguien acomodó. Un punto, no un cartel: hay que
+     poder ver de un vistazo qué se tocó sin que compita con el estado, que es
+     lo que de verdad importa en un mapa de monitoreo. */
+  :global([data-visor][data-editable] .nodo-mapa[data-movido]) {
+    outline: none;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :global([data-visor] .nodo-mapa) {
+      transition: none;
+    }
+    :global(.nodo-arrastrado image),
+    :global(.nodo-arrastrado use) {
+      scale: 1;
+    }
+  }
+</style>

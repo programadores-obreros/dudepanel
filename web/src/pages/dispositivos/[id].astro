@@ -3,15 +3,20 @@ import Base from '@/layouts/Base.astro';
 import Pildora from '@/components/Pildora.astro';
 import ListaCaidas from '@/components/ListaCaidas.astro';
 import Antiguedad from '@/components/Antiguedad.astro';
+import Accesos from '@/components/Accesos.astro';
+import Grafico from '@/components/Grafico.astro';
 import {
   cadenaDePadres,
   caidasDe,
+  datosDeAcceso,
   hayTopologia,
   hijosDe,
+  historiaDe,
   mapasDeDispositivo,
   obtenerDispositivo,
   serviciosDe,
 } from '@/lib/consultas';
+import { accesos as calcularAccesos, type Acceso } from '@/lib/accesos';
 import { duracion, numero } from '@/lib/formato';
 import { reportarError } from '@/lib/errores';
 
@@ -32,19 +37,39 @@ let caidas: Awaited<ReturnType<typeof caidasDe>> = [];
  *    equipos, así que lo cierto es que el dato no existe.
  */
 let topologiaCargada = false;
+let accesos: Acceso[] = [];
+let series: Awaited<ReturnType<typeof historiaDe>> = [];
 let error: string | null = null;
+
+/**
+ * Cuántas horas de historia se muestran. Va por la URL para que un enlace a
+ * «este equipo, últimos 7 días» se pueda pegar en un chat y llegue igual.
+ */
+const HORAS = [
+  { h: 6, texto: '6 h' },
+  { h: 24, texto: '24 h' },
+  { h: 24 * 7, texto: '7 d' },
+  { h: 24 * 30, texto: '30 d' },
+];
+const horasPedidas = Number(Astro.url.searchParams.get('h'));
+const horas = HORAS.some((o) => o.h === horasPedidas) ? horasPedidas : 24;
 
 try {
   d = await obtenerDispositivo(id);
   if (d) {
-    [servicios, padres, hijos, mapas, caidas, topologiaCargada] = await Promise.all([
-      serviciosDe(id),
-      cadenaDePadres(id),
-      hijosDe(id),
-      mapasDeDispositivo(id),
-      caidasDe(id, 20),
-      hayTopologia(),
-    ]);
+    let acc: Awaited<ReturnType<typeof datosDeAcceso>> = null;
+    [servicios, padres, hijos, mapas, caidas, topologiaCargada, acc, series] =
+      await Promise.all([
+        serviciosDe(id),
+        cadenaDePadres(id),
+        hijosDe(id),
+        mapasDeDispositivo(id),
+        caidasDe(id, 20),
+        hayTopologia(),
+        datosDeAcceso(id),
+        historiaDe(id, horas),
+      ]);
+    if (acc) accesos = calcularAccesos(acc);
   }
 } catch (e) {
   error = reportarError('dispositivos/[id]', e);
@@ -110,8 +135,73 @@ const SNMP = ['v1', 'v2c', 'v3'];
           </div>
         )}
 
+        {/* ── Acceso al equipo ─────────────────────────────────────────────
+            Arriba de todo, antes de los servicios. Cuando alguien abre la
+            ficha de un equipo caído a las tres de la mañana, lo que necesita
+            es entrar — no leer. Lo que se busca primero va primero. */}
+        <section class="tarjeta mb-4 p-3">
+          <Accesos accesos={accesos} nombre={d!.nombre} />
+        </section>
+
         <div class="grid gap-4 lg:grid-cols-[2fr_1fr]">
           <div class="flex flex-col gap-4">
+            {/* ── Historia medida ─────────────────────────────────────────── */}
+            <section class="tarjeta overflow-hidden" aria-labelledby="t-graf">
+              <header
+                class="border-borde flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2"
+              >
+                <h2 id="t-graf" class="text-sm font-semibold">Historia medida</h2>
+                <nav class="flex gap-1" aria-label="Rango de tiempo del gráfico">
+                  {
+                    HORAS.map((o) => (
+                      <a
+                        href={`?h=${o.h}`}
+                        class:list={[
+                          'text-2xs rounded px-2 py-1 tabular-nums transition-colors duration-150',
+                          o.h === horas
+                            ? 'bg-acento text-fondo font-semibold'
+                            : 'text-tenue hover:bg-panel-2 hover:text-texto',
+                        ]}
+                        aria-current={o.h === horas ? 'page' : undefined}
+                      >
+                        {o.texto}
+                      </a>
+                    ))
+                  }
+                </nav>
+              </header>
+
+              {
+                series.length === 0 ? (
+                  /* 🔴 Un gráfico vacío se lee como «no hay tráfico», que es
+                     una afirmación sobre la red. Acá se dice la verdad: el
+                     dato no está. Y se dice POR QUÉ, que es lo que evita que
+                     alguien lo reporte como una falla del panel. */
+                  <p class="text-tenue p-3 text-sm leading-relaxed">
+                    No hay mediciones de este equipo en las últimas{' '}
+                    {horas < 48 ? `${horas} horas` : `${Math.round(horas / 24)} días`}.
+                    <br />
+                    <span class="text-xs">
+                      The Dude guarda historia sólo de los servicios con gráfico habilitado.
+                      En esta instalación son <strong class="text-texto">428 de 885</strong>{' '}
+                      equipos, casi todos de latencia de ping.
+                    </span>
+                  </p>
+                ) : (
+                  <div class="flex flex-col gap-3 p-3">
+                    {series.map((s) => (
+                      <Grafico
+                        titulo={s.nombre}
+                        unidad={s.unidad}
+                        puntos={s.puntos}
+                        bucket={s.bucket}
+                      />
+                    ))}
+                  </div>
+                )
+              }
+            </section>
+
             {/* ── Servicios ───────────────────────────────────────────────── */}
             <section class="tarjeta overflow-hidden" aria-labelledby="t-srv">
               <header class="border-borde flex items-center justify-between gap-2 border-b px-3 py-2">

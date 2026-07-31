@@ -1,0 +1,243 @@
+---
+/**
+ * El historial de caídas. La página del operador de guardia.
+ *
+ * 🔴 Existe porque la base tiene **12.146 caídas** y hasta ahora no había
+ *    ninguna pantalla donde recorrerlas: sólo las últimas doce en el tablero y
+ *    las de un equipo en su ficha. Un historial que no se puede consultar es
+ *    un historial que no existe para quien está de guardia a las tres de la
+ *    mañana con un cliente al teléfono.
+ *
+ * El filtro que la hace usable es el de duración mínima. Sin él, las caídas de
+ * treinta segundos —ruido de sondeo, no incidentes— entierran a las de dos
+ * horas, que son las que hay que mirar. Por eso arranca en un minuto.
+ */
+import Base from '@/layouts/Base.astro';
+import ListaCaidas from '@/components/ListaCaidas.astro';
+import Icono from '@/components/Icono.astro';
+import { historialCaidas, type PaginaCaidas } from '@/lib/consultas';
+import { duracion, numero } from '@/lib/formato';
+import { reportarError } from '@/lib/errores';
+
+const p = Astro.url.searchParams;
+
+const RANGOS = [
+  { h: 24, texto: '24 h' },
+  { h: 24 * 7, texto: '7 días' },
+  { h: 24 * 30, texto: '30 días' },
+  { h: 24 * 365, texto: 'todo' },
+];
+const MINIMOS = [
+  { s: 0, texto: 'todas' },
+  { s: 60, texto: '≥ 1 min' },
+  { s: 300, texto: '≥ 5 min' },
+  { s: 3600, texto: '≥ 1 h' },
+];
+
+const horas = RANGOS.some((r) => r.h === Number(p.get('h'))) ? Number(p.get('h')) : 24 * 7;
+const minimo = MINIMOS.some((m) => m.s === Number(p.get('min'))) ? Number(p.get('min')) : 60;
+const q = (p.get('q') ?? '').trim().slice(0, 80);
+const pagina = Math.max(Number(p.get('p')) || 1, 1);
+
+let datos: PaginaCaidas | null = null;
+let error: string | null = null;
+try {
+  datos = await historialCaidas({ horas, minimo_s: minimo, q, pagina });
+} catch (e) {
+  error = reportarError('caidas', e);
+}
+
+/** Arma una URL conservando los demás filtros. Volver a la página 1 al filtrar. */
+function con(cambios: Record<string, string | number>): string {
+  const u = new URLSearchParams({ h: String(horas), min: String(minimo) });
+  if (q) u.set('q', q);
+  for (const [k, v] of Object.entries(cambios)) u.set(k, String(v));
+  if (!('p' in cambios)) u.delete('p');
+  return `?${u}`;
+}
+
+const rangoTexto = RANGOS.find((r) => r.h === horas)?.texto ?? '';
+---
+
+<Base titulo="Caídas">
+  <header class="mb-4">
+    <h1 class="text-xl font-semibold">Historial de caídas</h1>
+    <p class="text-tenue mt-1 text-sm">
+      Lo que registró The Dude. Cada fila es un servicio que dejó de responder y
+      —si terminó— cuándo volvió.
+    </p>
+  </header>
+
+  {
+    error ? (
+      <p class="tarjeta text-caido-txt p-4 text-sm">{error}</p>
+    ) : (
+      <>
+        {/* ── Lo que se mira primero ─────────────────────────────────────── */}
+        {/* Tarjetas propias y no `Kpi`: ese componente muestra un número y un
+            porcentaje, y acá dos de los cuatro valores son texto (una duración
+            y un rango). Forzar su contrato para que acepte cadenas lo
+            empeoraría para los seis lugares donde ya funciona bien. */}
+        <div class="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {[
+            { t: 'Caídas', v: numero(datos!.total), n: `en ${rangoTexto}` },
+            { t: 'Equipos afectados', v: numero(datos!.equipos_afectados), n: 'distintos' },
+            { t: 'Tiempo fuera', v: duracion(datos!.tiempo_total_s), n: 'sumado' },
+            {
+              t: 'Sin resolver',
+              v: numero(datos!.caidas.filter((c) => c.abierta).length),
+              n: 'en esta página',
+              alerta: datos!.caidas.some((c) => c.abierta),
+            },
+          ].map((k) => (
+            <div class="tarjeta p-3">
+              <p class="text-tenue text-2xs font-semibold tracking-wide uppercase">{k.t}</p>
+              <p
+                class:list={[
+                  'mt-1 text-2xl font-semibold tabular-nums',
+                  k.alerta && 'text-caido-txt',
+                ]}
+              >
+                {k.v}
+              </p>
+              <p class="text-tenue text-2xs mt-0.5">{k.n}</p>
+            </div>
+          ))}
+        </div>
+
+        {/* ── Filtros ────────────────────────────────────────────────────── */}
+        <form
+          class="tarjeta mb-4 flex flex-wrap items-end gap-x-4 gap-y-3 p-3"
+          method="get"
+          role="search"
+        >
+          <div class="min-w-48 flex-1">
+            <label for="q" class="text-tenue text-2xs mb-1 block font-semibold uppercase">
+              Equipo
+            </label>
+            <input
+              id="q"
+              name="q"
+              type="search"
+              value={q}
+              placeholder="nombre o parte del nombre"
+              autocomplete="off"
+              class="border-borde bg-panel-2 focus-visible:outline-acento w-full rounded-lg border px-3 py-2 text-sm focus-visible:outline-2"
+            />
+          </div>
+
+          <fieldset class="flex flex-col gap-1">
+            <legend class="text-tenue text-2xs mb-1 font-semibold uppercase">Rango</legend>
+            <div class="flex gap-1" role="group">
+              {RANGOS.map((r) => (
+                <a
+                  href={con({ h: r.h })}
+                  class:list={[
+                    'text-2xs rounded px-2.5 py-2 transition-colors duration-150',
+                    r.h === horas
+                      ? 'bg-acento text-fondo font-semibold'
+                      : 'text-tenue hover:bg-panel-2 hover:text-texto border-borde border',
+                  ]}
+                  aria-current={r.h === horas ? 'true' : undefined}
+                >
+                  {r.texto}
+                </a>
+              ))}
+            </div>
+          </fieldset>
+
+          <fieldset class="flex flex-col gap-1">
+            <legend class="text-tenue text-2xs mb-1 font-semibold uppercase">
+              Duración mínima
+            </legend>
+            <div class="flex gap-1" role="group">
+              {MINIMOS.map((m) => (
+                <a
+                  href={con({ min: m.s })}
+                  class:list={[
+                    'text-2xs rounded px-2.5 py-2 transition-colors duration-150',
+                    m.s === minimo
+                      ? 'bg-acento text-fondo font-semibold'
+                      : 'text-tenue hover:bg-panel-2 hover:text-texto border-borde border',
+                  ]}
+                  aria-current={m.s === minimo ? 'true' : undefined}
+                >
+                  {m.texto}
+                </a>
+              ))}
+            </div>
+          </fieldset>
+
+          {/* Sin JavaScript los enlaces de arriba filtran igual; este botón es
+              para el campo de texto, que sí necesita enviarse. Los `hidden`
+              conservan los otros filtros al buscar. */}
+          <input type="hidden" name="h" value={horas} />
+          <input type="hidden" name="min" value={minimo} />
+          <button
+            type="submit"
+            class="border-borde bg-panel-2 hover:bg-panel focus-visible:outline-acento cursor-pointer rounded-lg border px-4 py-2 text-sm font-medium transition-colors duration-150 focus-visible:outline-2"
+          >
+            Buscar
+          </button>
+        </form>
+
+        {/* ── El aviso que evita una conclusión falsa ────────────────────── */}
+        {minimo > 0 && (
+          <p class="text-tenue mb-3 flex items-start gap-2 text-xs leading-relaxed">
+            <Icono nombre="alerta" tam={14} clase="mt-0.5" />
+            <span>
+              Se están ocultando las caídas de menos de{' '}
+              <strong class="text-texto">{duracion(minimo)}</strong>. Suelen ser
+              reintentos de sondeo, no cortes — pero si buscás un equipo que
+              parpadea, poné «todas».
+            </span>
+          </p>
+        )}
+
+        <section class="tarjeta overflow-hidden" aria-label="Caídas">
+          <ListaCaidas
+            caidas={datos!.caidas}
+            vacio={
+              q
+                ? `Ninguna caída de «${q}» en ${rangoTexto}.`
+                : `Ninguna caída de más de ${duracion(minimo)} en ${rangoTexto}.`
+            }
+          />
+        </section>
+
+        {/* ── Paginado ───────────────────────────────────────────────────── */}
+        {datos!.paginas > 1 && (
+          <nav
+            class="mt-3 flex items-center justify-between gap-2 text-sm"
+            aria-label="Paginación"
+          >
+            <a
+              href={con({ p: datos!.pagina - 1 })}
+              class:list={[
+                'border-borde hover:bg-panel-2 rounded-lg border px-3 py-2 transition-colors duration-150',
+                datos!.pagina <= 1 && 'pointer-events-none opacity-40',
+              ]}
+              aria-disabled={datos!.pagina <= 1 ? 'true' : undefined}
+            >
+              Anterior
+            </a>
+            <span class="text-tenue text-xs tabular-nums">
+              Página {numero(datos!.pagina)} de {numero(datos!.paginas)} ·{' '}
+              {numero(datos!.total)} caídas
+            </span>
+            <a
+              href={con({ p: datos!.pagina + 1 })}
+              class:list={[
+                'border-borde hover:bg-panel-2 rounded-lg border px-3 py-2 transition-colors duration-150',
+                datos!.pagina >= datos!.paginas && 'pointer-events-none opacity-40',
+              ]}
+              aria-disabled={datos!.pagina >= datos!.paginas ? 'true' : undefined}
+            >
+              Siguiente
+            </a>
+          </nav>
+        )}
+      </>
+    )
+  }
+</Base>

@@ -1,0 +1,130 @@
+---
+/**
+ * Cómo llegarle al equipo: Winbox, interfaz web, SSH, FTP.
+ *
+ * Todo sale de la base. Si acá no aparece SSH es porque este equipo no tiene
+ * un servicio SSH habilitado, no porque nos haya faltado ponerlo.
+ *
+ * 🔴 Los accesos que se COPIAN y los que se NAVEGAN se ven distinto a
+ *    propósito. Un botón que parece un enlace y no navega —o al revés— hace
+ *    dudar, y a las tres de la mañana la duda cuesta minutos.
+ */
+import type { Acceso } from '@/lib/accesos';
+import Icono from '@/components/Icono.astro';
+
+interface Props {
+  accesos: Acceso[];
+  /** Nombre del equipo, para el aviso de que no hay ninguno. */
+  nombre: string;
+}
+
+const { accesos, nombre } = Astro.props;
+---
+
+<section aria-labelledby="t-accesos">
+  <h2 id="t-accesos" class="text-tenue text-2xs mb-2 font-semibold tracking-wide uppercase">
+    Acceso al equipo
+  </h2>
+
+  {
+    accesos.length === 0 ? (
+      <p class="text-tenue text-sm">
+        {nombre} no tiene ninguna dirección cargada, así que no hay a dónde ir.
+      </p>
+    ) : (
+      /* Los enlaces abren en otra pestaña: un panel de monitoreo no debería
+         perder la suya porque alguien entró a la web de un router. Y
+         `noopener` no es opcional al abrir en otra — sin él, la página destino
+         puede tocar `window.opener` y redirigir esta. */
+      <ul class="flex flex-wrap gap-2" data-accesos>
+        {accesos.map((a) => {
+          const comun =
+            'group border-borde bg-panel-2 hover:bg-panel hover:border-acento/60 ' +
+            'focus-visible:outline-acento inline-flex cursor-pointer items-center gap-2 ' +
+            'rounded-lg border px-3 py-2 text-sm transition-[background-color,border-color,transform] ' +
+            'duration-150 active:scale-[0.98] focus-visible:outline-2 focus-visible:outline-offset-2';
+          return (
+            <li>
+              {a.modo === 'enlace' ? (
+                <a
+                  href={a.valor}
+                  class={comun}
+                  title={a.porque}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <Icono nombre={a.icono} />
+                  <span class="font-medium">{a.etiqueta}</span>
+                  <span class="text-tenue font-mono text-xs">{a.valor.replace(/^\w+:\/\//, '')}</span>
+                </a>
+              ) : (
+                <button
+                  type="button"
+                  class={comun}
+                  title={a.porque}
+                  data-copiar={a.valor}
+                  aria-label={`${a.etiqueta}: copiar ${a.valor}`}
+                >
+                  <Icono nombre={a.icono} />
+                  <span class="font-medium">{a.etiqueta}</span>
+                  <span class="text-tenue font-mono text-xs tabular-nums">{a.valor}</span>
+                  <span class="text-arriba-txt text-2xs hidden" data-listo>copiado</span>
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    )
+  }
+
+  {/* 🔴 Esto no es un descargo legal, es información operativa.
+      The Dude guarda la contraseña de cada equipo y la mete en la URL de
+      acceso de su plantilla. Quien use este panel tiene que saber que acá eso
+      NO pasa, porque si no va a suponer que el enlace lo deja adentro y va a
+      perder tiempo preguntándose por qué le pide credenciales. */}
+  {
+    accesos.some((a) => a.etiqueta === 'Interfaz web') && (
+      <p class="text-tenue mt-3 text-xs leading-relaxed">
+        Los enlaces web salen de la plantilla del tipo de equipo en The Dude,
+        <strong class="text-texto"> sin las credenciales</strong>: el cliente original
+        las manda en la barra de direcciones y este panel no las lee ni las guarda.
+        La interfaz del equipo te las va a pedir.
+      </p>
+    )
+  }
+</section>
+
+<script>
+  /**
+   * Copiar al portapapeles, con confirmación visible.
+   *
+   * Sin la confirmación, copiar es un acto sin respuesta: se hace clic, no
+   * pasa nada visible, y se vuelve a hacer clic. El acuse dura 1,4 s.
+   */
+  for (const b of document.querySelectorAll<HTMLButtonElement>('[data-copiar]')) {
+    b.addEventListener('click', async () => {
+      const valor = b.dataset.copiar!;
+      const acuse = b.querySelector<HTMLElement>('[data-listo]');
+      try {
+        await navigator.clipboard.writeText(valor);
+      } catch {
+        // `navigator.clipboard` no existe fuera de contexto seguro ni con
+        // permisos denegados. Se cae a seleccionar el texto, que al menos
+        // deja el Ctrl+C a un paso en vez de dejar a la persona sin salida.
+        const r = document.createRange();
+        const nodo = b.querySelector('.font-mono');
+        if (nodo) {
+          r.selectNodeContents(nodo);
+          const sel = window.getSelection();
+          sel?.removeAllRanges();
+          sel?.addRange(r);
+        }
+        return;
+      }
+      if (!acuse) return;
+      acuse.classList.remove('hidden');
+      window.setTimeout(() => acuse.classList.add('hidden'), 1400);
+    });
+  }
+</script>

@@ -12,6 +12,7 @@ import {
   type ResumenSubmapa,
   type TraficoEnlace,
 } from '@/lib/consultas';
+import { quien } from '@/lib/roles';
 
 const id = Number(Astro.params.id);
 if (!Number.isInteger(id) || id <= 0) return Astro.redirect('/mapas', 302);
@@ -43,6 +44,13 @@ try {
 if (!mapa && !error) {
   return new Response('Mapa no encontrado', { status: 404 });
 }
+
+// Quién es y qué puede. Se resuelve en el servidor: el cliente no decide sus
+// propios permisos, sólo se le dice qué se le ofrece.
+const yo = quien(Astro.request);
+// Cuántos nodos ya tienen posición puesta a mano — justifica el botón de
+// volver al original, y dice de un vistazo si el mapa está acomodado.
+const movidos = elementos.filter((e) => e.movido).length;
 ---
 
 <Base titulo={mapa?.nombre ?? 'Mapa'} ancho="completo">
@@ -87,6 +95,8 @@ if (!mapa && !error) {
           submapas={submapas}
           fuera={fuera}
           trafico={trafico}
+          editable={yo.puedeEditar}
+          movidos={movidos}
         />
       )
     }

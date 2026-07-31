@@ -355,6 +355,8 @@ export interface ElementoMapa {
   device_id: number | null;
   submap_id: number | null;
   direcciones: string[] | null;
+  /** ¿Alguien acomodó este nodo a mano? Ver `map_element_positions`. */
+  movido?: boolean;
   /** Para `[Device.ServicesDown]`. Nulo si el elemento no es un equipo. */
   services_down: number | null;
   /**
@@ -387,6 +389,7 @@ export async function lienzoMapa(mapId: number): Promise<ElementoMapa[]> {
             ARRAY(SELECT host(a) FROM unnest(c.addresses) a) AS direcciones,
             d.services_down,
             me.image_scale,
+            c.movido,
             sc.estado_desde
      FROM v_map_canvas c
      JOIN map_elements me ON me.id = c.element_id
@@ -1090,4 +1093,321 @@ export async function buscar(q: string, limite = 20): Promise<Resultado[]> {
      LIMIT $2`,
     [texto, limite],
   );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Posiciones puestas a mano
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Guarda dónde quedó cada nodo. Devuelve cuántas filas quedaron escritas.
+ *
+ * 🔴 Un solo `INSERT ... ON CONFLICT` con arrays, no N sentencias en un bucle.
+ *    Arrastrar una selección de treinta nodos serían treinta idas y vueltas a
+ *    Postgres; así es una. Y es **atómico**: o entra todo o no entra nada, que
+ *    es lo que hace falta para no dejar la mitad de una selección movida.
+ *
+ *    `unnest` de tres arrays en paralelo es la forma de mandar un lote sin
+ *    construir SQL a mano — nada de concatenar valores en la cadena.
+ */
+export async function guardarPosiciones(
+  movimientos: { id: number; x: number; y: number }[],
+  usuario: string,
+): Promise<number> {
+  if (movimientos.length === 0) return 0;
+
+  const filas = await consultar<{ element_id: string }>(
+    `INSERT INTO map_element_positions (element_id, x, y, moved_by, moved_at)
+     SELECT t.element_id, t.x, t.y, $4::text, now()
+       FROM unnest($1::bigint[], $2::int[], $3::int[]) AS t(element_id, x, y)
+     ON CONFLICT (element_id) DO UPDATE
+       SET x = EXCLUDED.x, y = EXCLUDED.y,
+           moved_by = EXCLUDED.moved_by, moved_at = EXCLUDED.moved_at
+     RETURNING element_id`,
+    [movimientos.map((m) => m.id), movimientos.map((m) => m.x), movimientos.map((m) => m.y), usuario],
+  );
+  return filas.length;
+}
+
+/** Vuelve a las coordenadas de The Dude: un mapa entero o unos nodos sueltos. */
+export async function restablecerPosiciones(
+  q: { mapa: number | null; ids: number[] },
+): Promise<number> {
+  if (q.ids.length > 0) {
+    const filas = await consultar<{ element_id: string }>(
+      'DELETE FROM map_element_positions WHERE element_id = ANY($1::bigint[]) RETURNING element_id',
+      [q.ids],
+    );
+    return filas.length;
+  }
+  const filas = await consultar<{ element_id: string }>(
+    `DELETE FROM map_element_positions p
+      USING map_elements e
+      WHERE e.id = p.element_id AND e.map_id = $1
+      RETURNING p.element_id`,
+    [q.mapa],
+  );
+  return filas.length;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Accesos por protocolo
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Lo que hace falta para ofrecer Winbox / web / SSH sobre un equipo.
+ *
+ * La resolución vive en `lib/accesos.ts`; acá sólo se juntan los datos. La
+ * separación importa: la regla de «no publicar credenciales» es lógica pura y
+ * así se puede probar sin base.
+ */
+export async function datosDeAcceso(deviceId: number): Promise<{
+  direcciones: string[];
+  routerOs: boolean | null;
+  urlTipo: string | null;
+  nombreTipo: string | null;
+  servicios: { sonda: string | null; puerto: number | null; puertoSonda: number | null; habilitado: boolean | null }[];
+} | null> {
+  const d = await consultarUna<{
+    direcciones: string[];
+    router_os: boolean | null;
+    url_tipo: string | null;
+    nombre_tipo: string | null;
+  }>(
+    `SELECT ARRAY(SELECT host(a) FROM unnest(d.addresses) a) AS direcciones,
+            d.router_os, dt.url AS url_tipo, dt.name AS nombre_tipo
+       FROM devices d
+       LEFT JOIN device_types dt ON dt.id = d.type_id
+      WHERE d.id = $1`,
+    [deviceId],
+  );
+  if (!d) return null;
+
+  const servicios = await consultar<{
+    sonda: string | null; puerto: number | null; puerto_sonda: number | null; habilitado: boolean | null;
+  }>(
+    `SELECT p.name AS sonda, s.probe_port AS puerto,
+            p.default_port AS puerto_sonda, s.enabled AS habilitado
+       FROM services s LEFT JOIN probes p ON p.id = s.probe_id
+      WHERE s.device_id = $1`,
+    [deviceId],
+  );
+
+  return {
+    direcciones: d.direcciones ?? [],
+    routerOs: d.router_os,
+    urlTipo: d.url_tipo,
+    nombreTipo: d.nombre_tipo,
+    servicios: servicios.map((s) => ({
+      sonda: s.sonda, puerto: s.puerto, puertoSonda: s.puerto_sonda, habilitado: s.habilitado,
+    })),
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Historia medida
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface SerieHistoria {
+  fuente_id: number;
+  nombre: string;
+  unidad: string | null;
+  /** [epoch en segundos, valor]. Ordenada por tiempo. */
+  puntos: [number, number][];
+  /** De qué cajón del origen salió. Se muestra: el detalle no es lo mismo. */
+  bucket: string;
+}
+
+/**
+ * Qué cajón de `chart_values` usar según el rango.
+ *
+ * 🔴 Hay que elegir UNO. Las cuatro resoluciones conviven en la misma tabla y
+ *    promediarlas juntas mezcla una medición cruda con el promedio de un día:
+ *    sale un número que no es ninguna de las dos cosas.
+ *
+ * 🔴 Y HAY QUE CONTAR LAS QUE TIENEN VALOR, NO LAS FILAS.
+ *
+ *    Contando filas, `10min` y `2hour` parecen los mejores: 1.083 fuentes cada
+ *    uno contra 439 de `raw`. Es una trampa. **Están casi vacíos**: The Dude
+ *    crea la fila del promedio y deja `value` en NULL hasta tener con qué
+ *    llenarla. Medido sobre la base real el 31/07/2026:
+ *
+ *      | cajón | filas   | con valor | %       |
+ *      |-------|--------:|----------:|--------:|
+ *      | raw   | 935.530 |   933.351 | **99,8**|
+ *      | 2hour | 269.290 |   113.089 |    42,0 |
+ *      | 10min | 215.796 |    86.441 |    40,1 |
+ *      | y en bit/s, `10min` llega al **1,7 %**           |
+ *
+ *    Fuentes que sirven de verdad, por cajón y unidad:
+ *
+ *      | unidad     | raw     | 2hour | 10min | 1day |
+ *      |------------|--------:|------:|------:|-----:|
+ *      | s (ping)   | **428** |   397 |   300 |  428 |
+ *      | bit/s      |      10 |     6 |     6 |   10 |
+ *
+ *    Así que `raw` gana en las dos cosas a la vez: mejor resolución **y** más
+ *    cobertura. Cubre 43 días de latencia y 38 de tráfico, de sobra para todo
+ *    lo que ofrece la interfaz salvo los rangos muy largos.
+ *
+ *    Elegí lo contrario hace un rato, por leer «1.083 fuentes» sin preguntar
+ *    cuántas tenían un número adentro. Contar filas y contar datos no es lo
+ *    mismo, y en una tabla de series temporales casi nunca lo es.
+ */
+function cajonPara(horas: number): { bucket: string; segundos: number } {
+  // `raw` mientras la ventana entre en su cobertura medida (43 días).
+  if (horas <= 24 * 30) return { bucket: 'raw', segundos: 60 };
+  return { bucket: '1day', segundos: 86400 };
+}
+
+/**
+ * Las series de un equipo para el rango pedido.
+ *
+ * La base tiene **1.668.471 mediciones** en 1.083 fuentes: 734 en segundos
+ * (latencia de ping) y 348 en bit/s (tráfico). Traerlas crudas para un rango
+ * largo son decenas de miles de puntos por serie para dibujar un gráfico de
+ * 600 píxeles de ancho — se manda cien veces más de lo que se puede ver.
+ *
+ * Por eso se agrega en Postgres con `date_bin`, que es exactamente para esto y
+ * está desde la 14. El tamaño del cajón sale del rango, para que el gráfico
+ * tenga siempre del orden de 200 puntos: legible en el teléfono y en una
+ * pantalla de NOC, y sin castigar a la base.
+ */
+export async function historiaDe(
+  deviceId: number,
+  horas = 24,
+): Promise<SerieHistoria[]> {
+  const h = Math.min(Math.max(Math.round(horas), 1), 24 * 90);
+  const { bucket, segundos: paso } = cajonPara(h);
+  // Nunca más fino que el propio cajón: pedirle 60 s a datos de 2 horas no
+  // agrega detalle, sólo multiplica las filas por 120 y deja huecos.
+  const segundos = Math.max(paso, Math.round((h * 3600) / 200 / paso) * paso);
+
+  const filas = await consultar<{
+    fuente_id: string; nombre: string; unidad: string | null; t: string; v: string;
+  }>(
+    `WITH fuentes AS (
+       SELECT cs.id, cs.name, cs.unit
+         FROM chart_sources cs
+        WHERE cs.device_id = $1
+           OR cs.service_id IN (SELECT id FROM services WHERE device_id = $1)
+     )
+     SELECT f.id AS fuente_id, f.name AS nombre, f.unit AS unidad,
+            extract(epoch FROM date_bin(
+              make_interval(secs => $3::int), cv.ts, timestamptz 'epoch'))::bigint AS t,
+            avg(cv.value) AS v
+       FROM fuentes f JOIN chart_values cv ON cv.source_id = f.id
+      WHERE cv.bucket = $4
+        -- 🔴 Sin esto el promedio de un cajón sin datos da NULL y la serie
+        --    sale llena de agujeros que parecen cortes de servicio.
+        AND cv.value IS NOT NULL
+        AND cv.ts >= now() - make_interval(hours => $2::int)
+      GROUP BY 1, 2, 3, 4
+      ORDER BY 1, 4`,
+    [deviceId, h, segundos, bucket],
+  );
+
+  const porFuente = new Map<number, SerieHistoria>();
+  for (const f of filas) {
+    const id = Number(f.fuente_id);
+    let s = porFuente.get(id);
+    if (!s) {
+      s = { fuente_id: id, nombre: f.nombre, unidad: f.unidad, puntos: [], bucket };
+      porFuente.set(id, s);
+    }
+    s.puntos.push([Number(f.t), Number(f.v)]);
+  }
+  // Las series con un solo punto no dibujan una línea: no se ofrecen.
+  return [...porFuente.values()].filter((s) => s.puntos.length > 1);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Caídas — la vista del operador
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface FiltrosCaidas {
+  /** Horas hacia atrás. */
+  horas?: number;
+  /** Sólo las que duraron al menos esto, en segundos. */
+  minimo_s?: number;
+  /** Texto contra el nombre del equipo. */
+  q?: string;
+  pagina?: number;
+  porPagina?: number;
+}
+
+export interface PaginaCaidas {
+  caidas: Caida[];
+  total: number;
+  pagina: number;
+  paginas: number;
+  /** Para el encabezado: cuántas y cuánto tiempo, en el rango filtrado. */
+  equipos_afectados: number;
+  tiempo_total_s: number;
+}
+
+/**
+ * El historial de caídas, filtrable y paginado.
+ *
+ * 🔴 Esto existe porque la base tiene **12.146 caídas registradas** y el panel
+ *    no tenía ninguna página donde verlas: sólo las últimas doce en el tablero
+ *    y las de un equipo en su ficha. Un historial que no se puede recorrer es
+ *    un historial que no existe para quien está de guardia.
+ *
+ * El filtro por duración mínima es el que hace usable la lista. Sin él, las
+ * caídas de treinta segundos —que son ruido de sondeo, no incidentes— entierran
+ * a las de dos horas, que son las que hay que mirar.
+ */
+export async function historialCaidas(f: FiltrosCaidas = {}): Promise<PaginaCaidas> {
+  const horas = Math.min(Math.max(Math.round(f.horas ?? 24 * 7), 1), 24 * 365);
+  const minimo = Math.max(Math.round(f.minimo_s ?? 0), 0);
+  const q = (f.q ?? '').trim();
+  const porPagina = Math.min(Math.max(Math.round(f.porPagina ?? 50), 10), 200);
+  const pagina = Math.max(Math.round(f.pagina ?? 1), 1);
+
+  const donde = `
+    WHERE o.started_at >= now() - make_interval(hours => $1::int)
+      AND COALESCE(o.duration_s, EXTRACT(epoch FROM now() - o.started_at)) >= $2
+      AND ($3 = '' OR d.name ILIKE '%' || $3 || '%')`;
+
+  const [resumen] = await consultar<{ total: string; equipos: string; tiempo: string }>(
+    `SELECT count(*) AS total,
+            count(DISTINCT o.device_id) AS equipos,
+            COALESCE(sum(COALESCE(o.duration_s, EXTRACT(epoch FROM now() - o.started_at))), 0) AS tiempo
+       FROM outages o LEFT JOIN devices d ON d.id = o.device_id
+       ${donde}`,
+    [horas, minimo, q],
+  );
+
+  const total = Number(resumen?.total ?? 0);
+  const paginas = Math.max(Math.ceil(total / porPagina), 1);
+  const desde = (Math.min(pagina, paginas) - 1) * porPagina;
+
+  const caidas = await consultar<Caida>(
+    `SELECT o.id, o.device_id, d.name AS equipo, p.name AS sonda,
+            o.started_at AS inicio, o.ended_at AS fin,
+            COALESCE(o.duration_s, EXTRACT(epoch FROM now() - o.started_at))::bigint AS duracion_s,
+            (o.ended_at IS NULL) AS abierta
+       FROM outages o
+       LEFT JOIN devices d  ON d.id = o.device_id
+       LEFT JOIN services s ON s.id = o.service_id
+       LEFT JOIN probes p   ON p.id = s.probe_id
+       ${donde}
+       -- Las abiertas primero: son las que todavía se pueden atender. Después
+       -- por duración, que es el orden en que importan las que ya terminaron.
+       ORDER BY (o.ended_at IS NULL) DESC,
+                COALESCE(o.duration_s, EXTRACT(epoch FROM now() - o.started_at)) DESC,
+                o.started_at DESC
+       LIMIT $4 OFFSET $5`,
+    [horas, minimo, q, porPagina, desde],
+  );
+
+  return {
+    caidas,
+    total,
+    pagina: Math.min(pagina, paginas),
+    paginas,
+    equipos_afectados: Number(resumen?.equipos ?? 0),
+    tiempo_total_s: Math.round(Number(resumen?.tiempo ?? 0)),
+  };
 }

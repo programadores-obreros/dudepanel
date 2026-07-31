@@ -1,0 +1,189 @@
+---
+/**
+ * Una serie temporal, dibujada en el servidor.
+ *
+ * ── Por qué no hay librería de gráficos ──────────────────────────────────────
+ *
+ * El CSP de este panel es `default-src 'none'`: no entra nada de afuera, ni un
+ * CDN ni una fuente. Traer Chart.js o similar significaría empaquetarlo —60 a
+ * 200 kB— para dibujar una polilínea. Un `<path>` de SVG hace lo mismo, se ve
+ * antes de que llegue el JavaScript, y se imprime bien.
+ *
+ * ── Qué se dibuja, y qué NO ──────────────────────────────────────────────────
+ *
+ * 🔴 Sólo hay datos de LATENCIA, y no para todos. Medido el 31/07/2026 sobre
+ *    la base real:
+ *
+ *      | unidad     | fuentes con valor real |
+ *      |------------|-----------------------:|
+ *      | s (ping)   |                    428 |
+ *      | bit/s      |                 **10** |
+ *      | %          |                      1 |
+ *
+ *    Las otras 338 fuentes de `bit/s` tienen filas pero con `value` en NULL:
+ *    The Dude crea el renglón del promedio y lo llena después, y en esta
+ *    instalación casi nunca lo llena. Por eso el panel no promete un gráfico
+ *    de tráfico que en 338 de 348 casos estaría vacío.
+ *
+ *    Un gráfico vacío no se lee como «no hay datos»: se lee como «no hay
+ *    tráfico», que es una afirmación sobre la red, y es falsa.
+ */
+import { duracion } from '@/lib/formato';
+
+interface Props {
+  titulo: string;
+  unidad: string | null;
+  /** [epoch en segundos, valor]. Ordenados por tiempo. */
+  puntos: [number, number][];
+  /** De qué resolución del origen salieron. Se muestra: el detalle importa. */
+  bucket?: string;
+  alto?: number;
+}
+
+const { titulo, unidad, puntos, bucket, alto = 132 } = Astro.props;
+
+// Caja de dibujo en unidades del viewBox. El SVG escala solo al ancho real.
+const A = 1000;
+const M = { arriba: 10, abajo: 22, izq: 46, der: 8 };
+const anchoUtil = A - M.izq - M.der;
+const altoUtil = alto - M.arriba - M.abajo;
+
+const xs = puntos.map((p) => p[0]);
+const ys = puntos.map((p) => p[1]);
+const t0 = Math.min(...xs);
+const t1 = Math.max(...xs);
+const vMin = Math.min(...ys);
+const vMax = Math.max(...ys);
+
+// 🔴 El eje NO arranca en cero, y es una decisión.
+//
+//    Para latencia, cero es un valor imposible y arrancar ahí aplasta toda la
+//    variación contra el borde de arriba: una serie que va de 3 a 8 ms se ve
+//    como una línea recta. Lo que se mira en un ping no es el valor absoluto,
+//    es el CAMBIO. Se deja un 10 % de aire arriba y abajo.
+//
+//    Es un compromiso conocido: un eje que no arranca en cero exagera las
+//    diferencias. Por eso el mínimo y el máximo van escritos en el eje, con
+//    número: quien mira ve la escala real, no sólo la forma.
+const aire = (vMax - vMin) * 0.1 || Math.abs(vMax) * 0.1 || 1;
+const y0 = vMin - aire;
+const y1 = vMax + aire;
+
+const px = (t: number) => M.izq + (t1 === t0 ? anchoUtil / 2 : ((t - t0) / (t1 - t0)) * anchoUtil);
+const py = (v: number) => M.arriba + (y1 === y0 ? altoUtil / 2 : (1 - (v - y0) / (y1 - y0)) * altoUtil);
+
+const linea = puntos.map((p, i) => `${i ? 'L' : 'M'}${px(p[0]).toFixed(1)} ${py(p[1]).toFixed(1)}`).join(' ');
+// El relleno cierra contra la base para dar cuerpo sin competir con la línea.
+const area = `${linea} L${px(t1).toFixed(1)} ${M.arriba + altoUtil} L${px(t0).toFixed(1)} ${M.arriba + altoUtil} Z`;
+
+/** Latencia en segundos → milisegundos, que es como se habla de un ping. */
+const esSegundos = unidad === 's';
+const fmt = (v: number) =>
+  esSegundos
+    ? `${(v * 1000).toLocaleString('es-AR', { maximumFractionDigits: 2 })} ms`
+    : unidad === 'bit/s'
+      ? `${(v / 1e6).toLocaleString('es-AR', { maximumFractionDigits: 2 })} Mbit/s`
+      : `${v.toLocaleString('es-AR', { maximumFractionDigits: 2 })}${unidad ? ` ${unidad}` : ''}`;
+
+const promedio = ys.reduce((a, b) => a + b, 0) / ys.length;
+const ventana = duracion(t1 - t0);
+const hora = (t: number) =>
+  new Date(t * 1000).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
+
+const idGrad = `g-${Math.abs([...titulo].reduce((a, c) => (a * 31 + c.charCodeAt(0)) | 0, 7))}`;
+---
+
+<figure class="border-borde bg-panel-2 rounded-lg border p-3">
+  <figcaption class="mb-2 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+    <span class="truncate text-sm font-medium">{titulo}</span>
+    <span class="text-tenue text-2xs tabular-nums">
+      mín {fmt(vMin)} · prom {fmt(promedio)} · máx {fmt(vMax)}
+    </span>
+  </figcaption>
+
+  <svg
+    viewBox={`0 0 ${A} ${alto}`}
+    class="h-auto w-full"
+    role="img"
+    preserveAspectRatio="none"
+    aria-label={`${titulo}: ${puntos.length} mediciones en ${ventana}. Mínimo ${fmt(vMin)}, promedio ${fmt(promedio)}, máximo ${fmt(vMax)}.`}
+  >
+    <defs>
+      <linearGradient id={idGrad} x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="currentColor" stop-opacity="0.22"></stop>
+        <stop offset="100%" stop-color="currentColor" stop-opacity="0"></stop>
+      </linearGradient>
+    </defs>
+
+    {/* Rejilla: tres líneas y nada más. Con más, compiten con el dato. */}
+    {
+      [0, 0.5, 1].map((f) => (
+        <line
+          x1={M.izq}
+          x2={A - M.der}
+          y1={M.arriba + f * altoUtil}
+          y2={M.arriba + f * altoUtil}
+          class="stroke-borde"
+          stroke-width="1"
+          vector-effect="non-scaling-stroke"
+        />
+      ))
+    }
+
+    {/* Etiquetas del eje: máximo y mínimo, con número. Es lo que hace honesto
+        un eje que no arranca en cero. */}
+    <text x={M.izq - 6} y={M.arriba + 4} text-anchor="end" class="fill-tenue text-[11px] tabular-nums">
+      {esSegundos ? (vMax * 1000).toFixed(1) : vMax.toFixed(0)}
+    </text>
+    <text x={M.izq - 6} y={M.arriba + altoUtil} text-anchor="end" class="fill-tenue text-[11px] tabular-nums">
+      {esSegundos ? (vMin * 1000).toFixed(1) : vMin.toFixed(0)}
+    </text>
+    <text x={M.izq} y={alto - 6} class="fill-tenue text-[11px]">{hora(t0)}</text>
+    <text x={A - M.der} y={alto - 6} text-anchor="end" class="fill-tenue text-[11px]">{hora(t1)}</text>
+
+    <g class="text-acento">
+      <path d={area} fill={`url(#${idGrad})`}></path>
+      <path
+        d={linea}
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.75"
+        stroke-linejoin="round"
+        stroke-linecap="round"
+        vector-effect="non-scaling-stroke"
+        class="trazo"
+      ></path>
+    </g>
+  </svg>
+
+  <p class="text-tenue text-2xs mt-1">
+    {puntos.length.toLocaleString('es-AR')} puntos · {ventana}
+    {bucket && <span> · resolución <code class="font-mono">{bucket}</code> del origen</span>}
+  </p>
+</figure>
+
+<style>
+  /* El trazo se dibuja solo al entrar. Es la única animación del gráfico y
+     dura menos de medio segundo: sirve para que el ojo siga la línea de
+     izquierda a derecha, que es como se lee el tiempo. */
+  .trazo {
+    stroke-dasharray: 2000;
+    stroke-dashoffset: 2000;
+    animation: trazar 480ms ease-out forwards;
+  }
+  @keyframes trazar {
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+  /* 🔴 Con `prefers-reduced-motion` el gráfico tiene que estar COMPLETO desde
+     el primer cuadro, no animarse más rápido. Sin esto, alguien con
+     sensibilidad al movimiento vería una línea creciendo cada vez que abre
+     una ficha. */
+  @media (prefers-reduced-motion: reduce) {
+    .trazo {
+      animation: none;
+      stroke-dashoffset: 0;
+    }
+  }
+</style>

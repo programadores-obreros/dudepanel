@@ -396,15 +396,71 @@ CREATE INDEX IF NOT EXISTS devices_name_trgm_idx ON devices USING gin (name gin_
 CREATE INDEX IF NOT EXISTS maps_name_trgm_idx    ON maps    USING gin (name gin_trgm_ops);
 
 
+-- ── Posiciones puestas por la gente ─────────────────────────────────────────
+--
+-- The Dude trae las coordenadas de cada elemento, pero están apretadas: la
+-- mediana entre vecinos es de 128 unidades y **62 nodos quedan a menos de 40**,
+-- que con el icono y el rótulo encima se pisan. Acá se guarda dónde los movió
+-- un operador, y esa posición gana sobre la del origen.
+--
+-- 🔴 SIN CLAVE FORÁNEA A `map_elements`, Y NO ES UN OLVIDO.
+--
+--    El ETL hace `DELETE FROM map_elements` seguido de `INSERT` en CADA corrida
+--    —cada 30 segundos— porque el origen no tiene forma de decir qué cambió.
+--    Con `REFERENCES ... ON DELETE CASCADE` esta tabla se vaciaría sola dos
+--    veces por minuto y el trabajo de acomodar un mapa duraría hasta la
+--    próxima vuelta. Con `RESTRICT` sería peor: reventaría el ETL entero.
+--
+--    El precio es que pueden quedar filas huérfanas si alguien borra un
+--    elemento en The Dude. Es barato y no molesta a nadie: la vista las ignora
+--    con el JOIN, y se limpian cuando se quiera con el DELETE de abajo.
+--
+--    Los ids de The Dude son estables entre corridas (son los suyos, no
+--    seriales nuestros), así que la posición sobrevive al borrado e inserción.
+--    Eso es lo que hace que esto funcione.
+CREATE TABLE IF NOT EXISTS map_element_positions (
+    element_id  bigint PRIMARY KEY,
+    x           integer NOT NULL,
+    y           integer NOT NULL,
+    moved_by    text    NOT NULL,
+    moved_at    timestamptz NOT NULL DEFAULT now()
+);
+
+COMMENT ON TABLE map_element_positions IS
+  'Posiciones puestas a mano, que ganan sobre las del origen. Sin FK a '
+  'map_elements a propósito: el ETL borra e inserta esa tabla entera cada 30 s '
+  'y un CASCADE vaciaría esto continuamente. Limpieza de huérfanas: '
+  'DELETE FROM map_element_positions p WHERE NOT EXISTS '
+  '(SELECT 1 FROM map_elements e WHERE e.id = p.element_id);';
+
+COMMENT ON COLUMN map_element_positions.moved_by IS
+  'Usuario autenticado que la movió, tal como lo pasa el proxy inverso en '
+  'X-Panel-Usuario. Sirve para auditar quién dejó un mapa como está.';
+
+
 -- ── Vistas ──────────────────────────────────────────────────────────────────
 
 -- Todo lo que hace falta para dibujar un mapa, en una consulta.
+--
+-- `x`/`y` son la posición EFECTIVA: la que puso la gente si existe, y si no la
+-- del origen. Quien dibuja no tiene que saber de dónde salió. `x_origen` e
+-- `y_origen` quedan expuestas para poder ofrecer «volver a la original» y para
+-- marcar en la interfaz qué nodos se movieron.
 CREATE OR REPLACE VIEW v_map_canvas AS
 SELECT
     e.map_id,
     e.id            AS element_id,
     e.kind,
-    e.x, e.y, e.shape,
+    -- 🔴 `x` e `y` SIGUEN EN SU LUGAR, con el mismo nombre y el mismo tipo.
+    --    `CREATE OR REPLACE VIEW` permite cambiar la EXPRESIÓN de una columna
+    --    y AGREGAR columnas AL FINAL, pero no insertarlas en el medio ni
+    --    reordenarlas: falla con «cannot change name of view column». Como
+    --    esta vista ya existe en producción y el esquema se aplica en cada
+    --    corrida del ETL, meter las nuevas acá arriba rompería la
+    --    sincronización cada 30 segundos. Van al final, después de `addresses`.
+    COALESCE(p.x, e.x) AS x,
+    COALESCE(p.y, e.y) AS y,
+    e.shape,
     e.label,
     f.rel_path      AS icon,
     e.link_from, e.link_to, e.link_width,
@@ -415,12 +471,19 @@ SELECT
              END)                                     AS status,
     d.id            AS device_id,
     sm.id           AS submap_id,
-    d.addresses
+    d.addresses,
+    -- ── Agregadas el 31/07/2026, al final por lo de arriba ──
+    e.x             AS x_origen,
+    e.y             AS y_origen,
+    (p.element_id IS NOT NULL) AS movido,
+    p.moved_by,
+    p.moved_at
 FROM map_elements e
 LEFT JOIN devices d  ON d.id  = e.device_id
 LEFT JOIN maps    sm ON sm.id = e.submap_id
 LEFT JOIN links   l  ON l.id  = e.link_id
-LEFT JOIN files   f  ON f.id  = e.image_id;
+LEFT JOIN files   f  ON f.id  = e.image_id
+LEFT JOIN map_element_positions p ON p.element_id = e.id;
 
 -- Buscador unificado: un equipo se encuentra por nombre O por IP.
 CREATE OR REPLACE VIEW v_search AS
