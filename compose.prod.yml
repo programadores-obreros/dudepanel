@@ -164,6 +164,18 @@ services:
       #    es un panel que parece roto y no explica por qué.
       DUDE_FILES: /origen/files
       DUDE_FILES_DIR: /origen/files
+
+      # 🔴 Quién puede acomodar los mapas. Sin esta línea la variable queda en
+      #    `.env.prod` y NUNCA llega al proceso: Compose sólo pasa al
+      #    contenedor lo que está declarado acá.
+      #
+      #    El fallo es silencioso del lado bueno —`lib/roles` falla cerrado y
+      #    nadie puede escribir— pero igual es un fallo: el editor configurado
+      #    recibe «no hay ningún editor configurado» y no tiene forma de saber
+      #    que el problema es el compose y no su cuenta. Pasó en el primer
+      #    despliegue de esta funcionalidad.
+      PANEL_EDITORES: ${PANEL_EDITORES:-}
+
       HOST: 0.0.0.0
       PORT: 4321
 

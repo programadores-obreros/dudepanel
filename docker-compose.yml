@@ -116,6 +116,13 @@ services:
       #    decir nada es un panel que parece roto y no explica por qué.
       DUDE_FILES: /origen/files
       DUDE_FILES_DIR: /origen/files
+
+      # Quién puede acomodar los mapas. En desarrollo no hay proxy que ponga
+      # `X-Panel-Usuario`, así que `PANEL_EDICION_LIBRE=1` es la única forma de
+      # probar el arrastre. NUNCA en un servidor: abre la escritura a cualquiera.
+      PANEL_EDITORES: ${PANEL_EDITORES:-}
+      PANEL_EDICION_LIBRE: ${PANEL_EDICION_LIBRE:-}
+
       HOST: 0.0.0.0
       PORT: 4321
 
