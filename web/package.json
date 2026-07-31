@@ -1,0 +1,29 @@
+{
+  "name": "dudepanel-web",
+  "type": "module",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Panel web de monitoreo de red de el ISP",
+  "scripts": {
+    "dev": "astro dev",
+    "start": "astro dev",
+    "build": "astro build",
+    "preview": "node ./dist/server/entry.mjs",
+    "astro": "astro",
+    "check": "astro check",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@astrojs/node": "^9.4.4",
+    "astro": "^5.16.2",
+    "pg": "^8.16.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.16",
+    "@types/pg": "^8.15.6",
+    "tailwindcss": "^4.1.16",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

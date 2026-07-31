@@ -1,0 +1,71 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  🔴 ESTE REPOSITORIO VA A GITHUB. LEÉ ESTO ANTES DE UN `git add .`
+#
+#  La base de The Dude contiene el usuario y la contraseña de acceso a TODOS
+#  los equipos de la red, en forma recuperable. No es una sospecha: The Dude
+#  se autentica contra cada router, así que necesita presentar el secreto.
+#  Un sistema que VERIFICA contraseñas guarda hashes; uno que las PRESENTA no
+#  tiene esa opción.
+#
+#  El código de este proyecto no las toca —`dudeobj.SECRETO` las excluye de la
+#  lectura— pero los ARCHIVOS de muestra sí las tienen. Y el historial de git
+#  no se borra: se reescribe, que es otra cosa y es un dolor.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Bases de The Dude. Nunca. Ni de muestra, ni recortadas, ni cifradas.
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+muestra.db
+
+# Volcados y exportaciones: el mismo contenido con otro envoltorio.
+*.sql.gz
+*.dump
+volcado*.sql
+back/
+data/
+files/
+
+# Salvo el esquema y las semillas, que son estructura sin datos reales.
+!etl/schema.sql
+!web/seed-dev.sql
+
+# Cifrados. Un .gpg en un repo público es una invitación a fuerza bruta
+# offline sobre una frase que eligió un humano apurado.
+*.gpg
+*.tar.gz
+*.tgz
+
+# Certificados y llaves.
+*.pem
+*.key
+*.crt
+*.p12
+
+# Variables de entorno: ahí viven DATABASE_URL y las credenciales de Postgres.
+.env
+.env.*
+!.env.example
+
+# Node
+node_modules/
+dist/
+.astro/
+.output/
+*.log
+npm-debug.log*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Entorno
+.DS_Store
+.idea/
+.vscode/
+.claude/

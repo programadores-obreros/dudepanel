@@ -1,0 +1,125 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Panel de The Dude — tres piezas
+#
+#    dude.db (SQLite)  ──ro──►  etl  ──►  postgres  ──►  web
+#
+#  El ETL es el único que toca la base de The Dude, y la toca EN SÓLO LECTURA.
+#  Ni el web ni nadie más la ve: si el panel tuviera un fallo, no hay camino
+#  desde ahí hasta el monitoreo de producción.
+#
+#  Copiar `.env.example` a `.env` antes de levantar.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: dudepanel
+
+services:
+
+  # ── Base de datos ─────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+
+    # 🔴 SIN `ports:`. Postgres no se publica al host: sólo lo alcanzan `etl` y
+    #    `web` por la red interna de Compose. Un Postgres expuesto en una VM con
+    #    IP pública es una invitación, y acá no hay ninguna razón para abrirlo.
+    #    Para inspeccionarlo a mano: `docker compose exec db psql -U dude`.
+
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-dude}
+      POSTGRES_USER: ${POSTGRES_USER:-dude}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?falta POSTGRES_PASSWORD en .env}
+      # Checksums de página: detecta corrupción silenciosa de disco en vez de
+      # servir datos rotos como si fueran buenos.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      # El esquema se aplica solo la primera vez que el volumen está vacío.
+      - ./etl/schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dude} -d ${POSTGRES_DB:-dude}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+    # Postgres necesita memoria compartida; el default de Docker (64 MB) le
+    # queda chico y produce errores raros bajo carga.
+    shm_size: 256mb
+
+    logging: &logs
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  # ── Sincronización desde The Dude ─────────────────────────────────────────
+  etl:
+    build: ./etl
+    restart: unless-stopped
+    depends_on:
+      db: { condition: service_healthy }
+
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-dude}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-dude}
+      DUDE_DB: /origen/dude.db
+      DUDE_FILES: /origen/files
+      SYNC_INTERVAL: ${SYNC_INTERVAL:-30}
+
+    volumes:
+      # 🔴 `:ro` NO ES DECORATIVO. Del otro lado está el monitoreo de un ISP.
+      #    El montaje de sólo lectura es la última barrera si el código falla.
+      #
+      #    ⚠️ Y NUNCA sobre NFS, CIFS ni virtiofs: SQLite depende de bloqueos
+      #       POSIX confiables. Un BLOCK DEVICE de red (iSCSI, Ceph RBD, qcow2
+      #       sobre NFS) sí sirve; un FILESYSTEM de red, no.
+      - ${DUDE_DATA:-/srv/thedude/data}:/origen:ro
+
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+
+    logging: *logs
+
+  # ── Panel web ─────────────────────────────────────────────────────────────
+  web:
+    build: ./web
+    restart: unless-stopped
+    depends_on:
+      db: { condition: service_healthy }
+
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-dude}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-dude}
+      # Los iconos SVG no están en la base de The Dude —el blob viene en 0
+      # bytes— sino en el directorio. Se sirven de acá, en sólo lectura.
+      DUDE_FILES: /origen/files
+      HOST: 0.0.0.0
+      PORT: 4321
+
+    volumes:
+      - ${DUDE_DATA:-/srv/thedude/data}:/origen:ro
+
+    ports:
+      # ⚠️ 127.0.0.1 A PROPÓSITO. En la VM de producción esta interfaz NO debe
+      #    quedar escuchando en la placa pública: se llega por túnel SSH, o
+      #    poniendo un proxy inverso con TLS de verdad y autenticación delante.
+      #
+      #    La lección viene de un error real: al encender el servidor web
+      #    propio de The Dude quedó su login de 2011 —con el certificado de
+      #    ejemplo de MikroTik de 2005 y TLSv1— atendiendo desde internet,
+      #    porque el puerto ya estaba abierto en el cortafuegos "sin nada
+      #    detrás". Poner un servicio detrás de un puerto abierto lo convierte
+      #    en una puerta.
+      - "127.0.0.1:${WEB_PORT:-4321}:4321"
+
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+
+    logging: *logs
+
+volumes:
+  db-data:
