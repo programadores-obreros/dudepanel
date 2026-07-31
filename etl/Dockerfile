@@ -22,6 +22,18 @@ FROM python:3.12-slim
 # que ser legible por ESTE usuario.
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin dude
 
+# 🔴 Este directorio TIENE que existir en la imagen, con este dueño y este modo.
+#
+#    Acá va la copia de trabajo de `dude.db` (ver `dudeobj.instantanea`), y del
+#    otro lado se monta un volumen de Docker. Un volumen con nombre que arranca
+#    vacío HEREDA dueño y permisos de lo que la imagen tenga en ese punto de
+#    montaje; si el directorio no existe, Docker lo crea `root:root 755` y el
+#    ETL —que corre como `dude`— no puede escribir la copia.
+#
+#    El 700 tampoco es de adorno: esa copia tiene el usuario y la contraseña de
+#    acceso a todos los equipos monitoreados.
+RUN mkdir -p /trabajo && chown dude:dude /trabajo && chmod 700 /trabajo
+
 COPY --from=build /instalado /usr/local
 
 WORKDIR /app
@@ -32,6 +44,7 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     DUDE_DB=/origen/dude.db \
     DUDE_FILES=/origen/files \
+    DUDE_SNAPSHOT=/trabajo/dude.db \
     SYNC_INTERVAL=30 \
     SCHEMA_FILE=/app/schema.sql
 

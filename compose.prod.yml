@@ -95,6 +95,21 @@ services:
       #       sobre NFS) sí sirve; un FILESYSTEM de red, no.
       - ${DUDE_DATA:?falta DUDE_DATA en .env.prod}:/origen:ro
 
+      # 🔴 EL ÚNICO PUNTO ESCRIBIBLE DEL ETL, y no es opcional.
+      #
+      #    The Dude toma un lock EXCLUSIVE sobre su base al arrancar y NO LO
+      #    SUELTA NUNCA: contra el archivo vivo, todo lector externo recibe
+      #    `database is locked` para siempre. Así que cada corrida copia acá la
+      #    base y su journal, lee la copia, y la borra.
+      #
+      #    Va un volumen y no el tmpfs de /tmp porque la copia pesa lo que pesa
+      #    `dude.db` —hoy 43 MB, techo 2 GiB— y un tmpfs es RAM.
+      #
+      #    El volumen nace con el dueño que la imagen tiene en `/trabajo`
+      #    (uid 10001, modo 700). Ver el `RUN mkdir` de `etl/Dockerfile`: sin
+      #    eso Docker lo crea `root:root` y el ETL no puede escribir.
+      - etl-trabajo:/trabajo
+
     # 🔴 SIN ESTO EL ETL NO LEE NADA. Y la solución obvia es la equivocada.
     #
     #    The Dude corre como root y su base queda `600 root:root`. El ETL corre
@@ -267,6 +282,9 @@ networks:
 
 volumes:
   db-data:
+  # Copia de trabajo del ETL. Se borra al final de cada corrida, así que en
+  # reposo está vacío — pero el volumen tiene que existir igual.
+  etl-trabajo:
   caddy-data:
   caddy-config:
   caddy-logs:

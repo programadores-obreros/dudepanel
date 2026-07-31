@@ -15,6 +15,7 @@ La prueba de extremo a extremo necesita un PostgreSQL:
 from __future__ import annotations
 
 import os
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -38,6 +39,32 @@ ELEMENTOS = 2_317
 pytestmark = pytest.mark.skipif(
     not Path(MUESTRA).exists(), reason="falta etl/muestra.db"
 )
+
+
+def _columnas(tabla: str) -> dict[str, int]:
+    """Nombre de columna → posición en la tupla, leído del INSERT de `sync`.
+
+    Los tests que indexan una tupla a mano (`f[11]`) se rompen en silencio en
+    cuanto alguien agrega una columna en el medio: siguen en verde, mirando
+    otra cosa. Ya pasó con `image_scale`. Acá el índice sale de la MISMA fuente
+    que arma la tupla, así que no puede desalinearse.
+    """
+    sql = sync.INSERTS[tabla]
+    dentro = sql[sql.index("(") + 1 : sql.index(")")]
+    return {nombre.strip(): n for n, nombre in enumerate(dentro.split(","))}
+
+
+def test_los_inserts_declaran_tantas_columnas_como_marcadores():
+    """Una columna sin su `%s` (o al revés) hace fallar TODAS las corridas.
+
+    Ya pasó: se agregó `maps.devices_partial` sin su marcador y el ETL falló
+    47 veces seguidas antes de que alguien mirara el registro."""
+    for tabla, sql in sync.INSERTS.items():
+        columnas = len(_columnas(tabla))
+        marcadores = sql.count("%s")
+        assert columnas == marcadores, (
+            f"{tabla}: {columnas} columnas y {marcadores} marcadores"
+        )
 
 
 @pytest.fixture(scope="session")
@@ -324,14 +351,35 @@ def test_cada_clase_apunta_a_donde_debe(objetos, snapshot):
 
 def test_link_from_to_resueltos(snapshot):
     """Apuntan a OTROS elementos de mapa. 58 de los 1.170 apuntan a elementos
-    borrados: se dejan en NULL en vez de rechazar el enlace."""
-    ids = {f[0] for f in snapshot.map_elements}
-    enlaces = [f for f in snapshot.map_elements if f[2] == "link"]
-    resueltos = [f for f in enlaces if f[11] is not None]
+    borrados: se dejan en NULL en vez de rechazar el enlace.
+
+    🔴 Corregido el 31/07/2026, y el fallo era del TEST, no del código.
+
+       Esto indexaba la tupla a mano: `f[11]` por `link_from`, `f[12]` por
+       `link_to`. Cuando se agregó `image_scale` en la posición 7, todo lo de
+       la derecha se corrió uno y `f[11]` pasó a ser `link_id` — que en un
+       enlace **nunca es NULL**. Así que la cuenta dio 1.170 de 1.170 y el test
+       se puso a afirmar una tautología.
+
+       Se notó sólo porque el número duro (1.112) quedó en evidencia. Sin esa
+       constante habría seguido en verde para siempre, custodiando nada.
+
+       Ahora el índice sale del INSERT de `sync.INSERTS`, que es la misma
+       fuente que arma la tupla. Agregar una columna ya no puede desalinear
+       esto en silencio.
+    """
+    i = _columnas("map_elements")
+    ids = {f[i["id"]] for f in snapshot.map_elements}
+    enlaces = [f for f in snapshot.map_elements if f[i["kind"]] == "link"]
+    # 1.170, no los ENLACES (1.171) de la tabla `links`: hay uno que existe
+    # como enlace pero no está dibujado en ningún mapa. Son dos cosas distintas.
+    assert len(enlaces) == 1170
+
+    resueltos = [f for f in enlaces if f[i["link_from"]] is not None]
     assert len(resueltos) == 1112
     for f in enlaces:
-        assert f[11] is None or f[11] in ids
-        assert f[12] is None or f[12] in ids
+        for extremo in ("link_from", "link_to"):
+            assert f[i[extremo]] is None or f[i[extremo]] in ids
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -601,3 +649,145 @@ def test_falla_registrada_en_sync_runs(pg, tmp_path):
     assert error
     # Y el snapshot bueno sigue en pie.
     assert pg.execute("SELECT count(*) FROM devices").fetchone()[0] == DISPOSITIVOS
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# El origen está BLOQUEADO — el fallo que llegó a producción
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The Dude corre con `locking_mode=EXCLUSIVE`: toma el lock al arrancar y no lo
+# suelta nunca. Medido en producción el 31/07/2026 — en /proc/locks, un POSIX
+# WRITE de `wineserver32` sobre 1073741824…1073742335, o sea PENDING + RESERVED
+# + los 510 bytes de SHARED de SQLite. En 60 muestras a un segundo, un lector
+# externo entró 0 veces.
+#
+# Todos los tests de arriba usan `muestra.db`, que es una copia muerta: nadie
+# escribe del otro lado. Por eso el ETL pasaba entero y despues no leía nada.
+# Estos tests ponen un escritor de verdad enfrente.
+
+def _tomar_exclusivo(ruta):
+    """Deja la base tomada igual que The Dude, con una transacción a medio hacer.
+
+    🔴 Los dos pasos hacen falta, y el primero es el que se me pasó al escribir
+       esto la primera vez.
+
+       `BEGIN IMMEDIATE` toma RESERVED, no EXCLUSIVE — y con RESERVED **los
+       lectores siguen entrando**, que es justamente el punto de un rollback
+       journal. Con eso, el test de «el archivo vivo no se puede leer» pasaba
+       leyendo, y no reproducía nada.
+
+       Lo que retiene el lock es la combinación `locking_mode = EXCLUSIVE` más
+       una escritura YA CONFIRMADA: ahí SQLite toma EXCLUSIVE y, en ese modo,
+       no lo suelta más. Recién después se abre la transacción a medio hacer,
+       que es la que deja el journal caliente.
+    """
+    con = sqlite3.connect(str(ruta), isolation_level=None)
+    con.execute("PRAGMA locking_mode = EXCLUSIVE")
+    con.execute("PRAGMA journal_mode = PERSIST")
+    con.execute("CREATE TABLE _confirmada (x int)")   # ← toma EXCLUSIVE y lo retiene
+    con.execute("BEGIN IMMEDIATE")
+    con.execute("CREATE TABLE _a_medio_hacer (x int)")  # ← deja el journal caliente
+    return con
+
+
+@pytest.fixture
+def vivo(tmp_path):
+    """Una base con un escritor encima que no la suelta."""
+    ruta = tmp_path / "vivo.db"
+    shutil.copyfile(MUESTRA, ruta)
+    escritor = _tomar_exclusivo(ruta)
+    yield ruta
+    escritor.rollback()
+    escritor.close()
+
+
+def test_el_archivo_vivo_no_se_puede_leer(vivo):
+    """Esto no es un caso raro: es el estado NORMAL de una instalación andando.
+
+    Si algún día este test pasa a fallar, quiere decir que The Dude dejó de
+    tomar el lock exclusivo — y recién ahí tendría sentido leer el original."""
+    with pytest.raises(sqlite3.Error):
+        con = dudeobj.abrir(str(vivo), timeout=0.2)
+        try:
+            con.execute("SELECT count(*) FROM objs").fetchone()
+        finally:
+            con.close()
+
+
+def test_la_instantanea_si_se_puede_leer(vivo, tmp_path):
+    copia = dudeobj.instantanea(str(vivo), str(tmp_path / "trabajo" / "dude.db"))
+    con = dudeobj.abrir(copia)
+    try:
+        assert con.execute("SELECT count(*) FROM objs").fetchone()[0] == OBJETOS
+    finally:
+        con.close()
+
+
+def test_la_instantanea_revierte_el_journal_caliente(vivo, tmp_path):
+    """La transacción a medio hacer del escritor NO tiene que aparecer.
+
+    Se copia el journal junto con la base y se abre la copia en lectura-escritura
+    justamente para esto: SQLite deshace lo incompleto y deja el último estado
+    confirmado. Es para lo que existe un rollback journal."""
+    copia = dudeobj.instantanea(str(vivo), str(tmp_path / "trabajo" / "dude.db"))
+    con = dudeobj.abrir(copia)
+    try:
+        tablas = [r[0] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")]
+    finally:
+        con.close()
+    assert "_a_medio_hacer" not in tablas   # la transacción incompleta, deshecha
+    assert "_confirmada" in tablas          # la ya confirmada, intacta
+    assert "objs" in tablas
+
+
+def test_la_instantanea_no_toca_el_origen(vivo, tmp_path):
+    antes = vivo.stat().st_mtime_ns, vivo.stat().st_size
+    dudeobj.instantanea(str(vivo), str(tmp_path / "trabajo" / "dude.db"))
+    assert (vivo.stat().st_mtime_ns, vivo.stat().st_size) == antes
+
+
+def test_origen_que_no_para_de_moverse_falla_cerrado(vivo, tmp_path, monkeypatch):
+    """Si el origen cambia en cada intento, la copia puede haber quedado cosida
+    de dos instantes. Se lanza en vez de devolverla: un panel que no se actualiza
+    se nota, uno que muestra una red que no existe no."""
+    real = shutil.copyfile
+
+    def copiar_y_ensuciar(src, dst, *a, **k):
+        r = real(src, dst, *a, **k)
+        os.utime(vivo, ns=(0, vivo.stat().st_mtime_ns + 1_000_000))
+        return r
+
+    monkeypatch.setattr(dudeobj.shutil, "copyfile", copiar_y_ensuciar)
+    with pytest.raises(dudeobj.OrigenInestable):
+        dudeobj.instantanea(
+            str(vivo), str(tmp_path / "trabajo" / "dude.db"), intentos=2, espera=0
+        )
+
+
+def test_descartar_no_deja_las_credenciales_tiradas(vivo, tmp_path):
+    """Esa copia tiene el usuario y la contraseña de TODOS los equipos."""
+    destino = tmp_path / "trabajo" / "dude.db"
+    dudeobj.instantanea(str(vivo), str(destino))
+    dudeobj.descartar(str(destino))
+    assert not destino.exists()
+    assert not Path(f"{destino}-journal").exists()
+    dudeobj.descartar(str(destino))  # idempotente: no explota si ya no está
+
+
+@sin_postgres
+def test_corrida_completa_contra_un_dude_bloqueado(pg, vivo, tmp_path, monkeypatch):
+    """La prueba que faltaba, de punta a punta.
+
+    Antes de este arreglo, esta corrida terminaba en
+    `OperationalError: database is locked` tras 30 s — y así estuvo en
+    producción, con el panel arriba, con certificado, mostrando cero equipos."""
+    monkeypatch.setattr(sync, "SNAPSHOT", str(tmp_path / "trabajo" / "dude.db"))
+    sync.corrida(pg, str(vivo))
+    ok, error = pg.execute(
+        "SELECT ok, error FROM sync_runs ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert ok is True, f"la corrida falló: {error}"
+    assert pg.execute("SELECT count(*) FROM devices").fetchone()[0] == DISPOSITIVOS
+    # Y la copia no quedó tirada en el disco.
+    assert not (tmp_path / "trabajo" / "dude.db").exists()

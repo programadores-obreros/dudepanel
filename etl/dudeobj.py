@@ -17,10 +17,12 @@ cambiar porque el proveedor se fue.**
 from __future__ import annotations
 
 import re
+import shutil
 import sqlite3
 import struct
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Iterator
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -429,8 +431,12 @@ class BaseOcupada(RuntimeError):
     """La base estuvo bloqueada más allá de los reintentos."""
 
 
+class OrigenInestable(RuntimeError):
+    """El origen cambió durante cada intento de copiarlo."""
+
+
 def abrir(ruta: str, timeout: float = 30.0) -> sqlite3.Connection:
-    """Abre `dude.db` en modo estrictamente de sólo lectura.
+    """Abre una base de The Dude en modo estrictamente de sólo lectura.
 
     `mode=ro` no es cosmético: es la garantía de que un error nuestro no puede
     corromper el monitoreo de producción de un ISP.
@@ -438,10 +444,120 @@ def abrir(ruta: str, timeout: float = 30.0) -> sqlite3.Connection:
     El `timeout` importa porque SQLite 3.6.14 —la versión compilada dentro de
     dude.exe, de 2009— **no tiene WAL**: en modo rollback journal el escritor
     toma bloqueo exclusivo al confirmar y todo lector recibe SQLITE_BUSY.
+
+    ⚠️ Esto sirve para leer una INSTANTÁNEA, no el archivo vivo. Contra un
+       The Dude corriendo no entra nadie: ver `instantanea()`.
     """
     con = sqlite3.connect(f"file:{ruta}?mode=ro", uri=True, timeout=timeout)
     con.execute("PRAGMA query_only = ON")
     return con
+
+
+# El primer byte de la región de bloqueo de SQLite: PENDING_BYTE = 0x40000000.
+# Le siguen RESERVED (+1) y los 510 bytes de SHARED. Está acá sólo para que el
+# número mágico de la explicación de abajo sea rastreable.
+PENDING_BYTE = 0x40000000
+
+
+def _huella(p: Path) -> tuple | None:
+    """(mtime en nanosegundos, tamaño) — o None si el archivo no está."""
+    try:
+        st = p.stat()
+    except FileNotFoundError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def instantanea(
+    origen: str, destino: str, intentos: int = 5, espera: float = 1.0
+) -> str:
+    """Copia `dude.db` y su journal a un lugar donde SÍ se los pueda leer.
+
+    🔴 **The Dude no comparte su base. No es que la bloquee al escribir: la
+       bloquea y no la suelta nunca.** Medido el 31/07/2026 en producción:
+
+           /proc/locks →  POSIX ADVISORY WRITE  <pid de wineserver32>
+                          bytes 1073741824 … 1073742335
+
+       `1073741824` es `0x40000000`, el PENDING_BYTE de SQLite; el rango llega
+       hasta PENDING + RESERVED + los 510 bytes de SHARED, tomado entero como
+       WRITE. Eso es un lock **EXCLUSIVE**, o sea `PRAGMA locking_mode=EXCLUSIVE`.
+       En 60 muestras a un segundo, un lector externo entró **0 veces**.
+
+       Así que `abrir(archivo_vivo)` no falla a veces: no puede funcionar nunca.
+       Agotaba los 30 s de `timeout`, los 5 reintentos, y anotaba
+       `OperationalError: database is locked` cada 30 s para siempre — con el
+       panel arriba, con certificado, mostrando cero equipos.
+
+       Esto no se vio en desarrollo porque ahí el ETL leía `muestra.db`, una
+       copia. **Nadie escribía del otro lado, y por eso todo andaba.**
+
+    La copia es segura por dos razones, y hacen falta las dos:
+
+    1. **Se copia el journal junto con la base.** The Dude corre con
+       `journal_mode=PERSIST`, así que el archivo está siempre y muchas veces
+       está caliente. Abriendo la copia en LECTURA-ESCRITURA, SQLite revierte
+       la transacción a medio hacer y deja el último estado confirmado. Eso no
+       es un parche: es exactamente para lo que existe un rollback journal.
+
+    2. **Se verifica que el origen no se haya movido durante la copia.** Se
+       toma (mtime_ns, tamaño) de los dos archivos antes y después; si algo
+       cambió, la copia pudo quedar cosida de dos instantes distintos y se
+       descarta. Con nanosegundos, cualquier escritura del otro lado se ve.
+
+    Si los intentos se agotan lanza `OrigenInestable` en vez de devolver una
+    copia sospechosa: **un panel que no se actualiza se nota; uno que muestra
+    una red que no existe, no.**
+    """
+    src, dst = Path(origen), Path(destino)
+    src_j, dst_j = Path(f"{origen}-journal"), Path(f"{destino}-journal")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+
+    ultimo = None
+    for n in range(intentos):
+        antes = (_huella(src), _huella(src_j))
+        if antes[0] is None:
+            raise FileNotFoundError(origen)
+
+        dst_j.unlink(missing_ok=True)  # que no sobreviva el de la vuelta pasada
+        shutil.copyfile(src, dst)
+        if antes[1] is not None:
+            shutil.copyfile(src_j, dst_j)
+
+        if antes == (_huella(src), _huella(src_j)):
+            break
+        ultimo = antes
+        time.sleep(espera)
+    else:
+        raise OrigenInestable(
+            f"{origen} cambió durante los {intentos} intentos de copiarlo "
+            f"(último: mtime/tamaño {ultimo})"
+        )
+
+    # LECTURA-ESCRITURA a propósito, y sólo sobre la COPIA: es lo que habilita
+    # a SQLite a revertir el journal caliente. Sobre el original sería
+    # exactamente lo que este proyecto promete no hacer nunca.
+    con = sqlite3.connect(str(dst))
+    try:
+        estado = con.execute("PRAGMA quick_check").fetchone()[0]
+    finally:
+        con.close()
+    if estado != "ok":
+        raise OrigenInestable(f"la copia de {origen} no pasa quick_check: {estado}")
+
+    return str(dst)
+
+
+def descartar(destino: str) -> None:
+    """Borra la copia y su journal.
+
+    🔴 No es higiene de archivos temporales: esa copia tiene el usuario y la
+       contraseña de acceso a TODOS los equipos monitoreados, en claro. Dejarla
+       entre corridas duplica el archivo más sensible de la instalación en un
+       segundo lugar del disco, con otro dueño y otros permisos.
+    """
+    for p in (Path(destino), Path(f"{destino}-journal")):
+        p.unlink(missing_ok=True)
 
 
 def leer_objetos(

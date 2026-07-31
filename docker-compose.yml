@@ -78,6 +78,16 @@ services:
       #       sobre NFS) sí sirve; un FILESYSTEM de red, no.
       - ${DUDE_DATA:-/srv/thedude/data}:/origen:ro
 
+      # Copia de trabajo. El ETL nunca lee el archivo vivo: The Dude toma un
+      # lock EXCLUSIVE al arrancar y no lo suelta, así que un lector externo
+      # recibe `database is locked` siempre. Ver `dudeobj.instantanea`.
+      #
+      # En desarrollo esto suele dar igual —se apunta `DUDE_DATA` a una copia
+      # muerta y nadie escribe del otro lado— y por eso el fallo tardó en
+      # aparecer: la primera vez que el ETL vio un The Dude CORRIENDO fue en
+      # producción.
+      - etl-trabajo:/trabajo
+
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     read_only: true
@@ -145,3 +155,4 @@ services:
 
 volumes:
   db-data:
+  etl-trabajo:

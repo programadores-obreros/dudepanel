@@ -625,7 +625,10 @@ dp down -v                     # 🔴 BORRA la base Y LOS CERTIFICADOS
 | Caddy no arranca: `module not registered: http.encoders.br` | Alguien agregó `br` a `encode` | Sacarlo. La compilación estándar no sabe escribir brotli |
 | La página parpadea en blanco al cargar | Alguien puso un CSP en Caddy | `curl -sI ... \| grep content-security` — si no trae `sha256-`, no es el de la app. Sacar el CSP del `Caddyfile` |
 | El panel funciona pero se ve sin estilos | El CSS quedó bloqueado por un CSP ajeno | Lo mismo de arriba |
-| `sync_runs.ok = false` con `database is locked` | The Dude estaba confirmando | Normal si es esporádico. Constante = revisar `SYNC_INTERVAL` |
+| 🔴 **El sitio anda pero muestra CERO equipos** | El ETL nunca sincronizó | `dp logs etl`. Las dos causas están acá abajo. **Ninguna se ve desde el navegador** |
+| `PermissionError: '/origen/dude.db'`, reiniciando | Falta el grupo de lectura | Crear `dudepanel` y poner `DUDE_GID` — ver «el permiso de lectura» arriba |
+| `database is locked` cada 30 s, exacto | 🔴 El ETL está leyendo el archivo VIVO | **No es contención**: The Dude toma el lock `EXCLUSIVE` y no lo suelta nunca. El ETL tiene que leer una copia. Comprobar que el volumen `etl-trabajo` esté montado y `DUDE_SNAPSHOT` apunte adentro |
+| `OrigenInestable: ... quick_check` | La copia salió cosida de dos instantes | Se descarta sola y reintenta. Constante = disco muy lento o `dude.db` enorme |
 | El panel muestra datos viejos | El ETL no corre | `dp logs etl` |
 | `user_version` distinto de 1 | 🔴 la base de The Dude está mal | **Parar y restaurar** desde el respaldo de la base |
 | Faltan iconos | `files/` no montado | Revisar `DUDE_DATA` en `.env.prod` |

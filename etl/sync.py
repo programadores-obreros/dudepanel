@@ -46,6 +46,14 @@ log = logging.getLogger("sync")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 DUDE_DB = os.environ.get("DUDE_DB", "/origen/dude.db")
 DUDE_FILES = os.environ.get("DUDE_FILES", "")
+
+#: Dónde se deja la copia de trabajo de cada corrida. Tiene que ser un
+#: directorio ESCRIBIBLE por el usuario del contenedor y con lugar para el
+#: tamaño de `dude.db` más su journal (hoy 43 + 6 MB; el techo es 2 GiB).
+#:
+#: 🔴 No usar `/tmp`: es un tmpfs de 64 MB, o sea RAM, y la base lo pasa el mes
+#:    que viene. Va un volumen de Docker — ver `compose.prod.yml`.
+SNAPSHOT = os.environ.get("DUDE_SNAPSHOT", "/trabajo/dude.db")
 SYNC_INTERVAL = float(os.environ.get("SYNC_INTERVAL", "30"))
 SCHEMA_FILE = os.environ.get("SCHEMA_FILE", str(Path(__file__).with_name("schema.sql")))
 
@@ -695,12 +703,19 @@ def corrida(con: psycopg.Connection, ruta: str) -> None:
 
     error = None
     datos: dict = {}
+    copia = None
     try:
         st = os.stat(ruta)
         datos["source_mtime"] = datetime.fromtimestamp(st.st_mtime, timezone.utc)
         datos["source_size"] = st.st_size
 
-        s = extraer(ruta)
+        # 🔴 Se lee una COPIA, nunca el archivo vivo. The Dude toma un lock
+        #    EXCLUSIVE al arrancar y no lo suelta jamás: contra el original,
+        #    todo lector recibe `database is locked` para siempre. El porqué
+        #    completo, con la medición, está en `dudeobj.instantanea`.
+        copia = dudeobj.instantanea(ruta, SNAPSHOT)
+
+        s = extraer(copia)
         datos.update(
             user_version=s.user_version, objs_total=s.objs_total,
             devices=len(s.devices), services=len(s.services),
@@ -732,7 +747,7 @@ def corrida(con: psycopg.Connection, ruta: str) -> None:
                 log.debug("snapshot sin cambios (%s), no se reescribe", huella[:12])
             else:
                 cargar_nucleo(cur, s)
-            origen = dudeobj.abrir(ruta)
+            origen = dudeobj.abrir(copia)
             try:
                 datos["outages_upserted"] = sincronizar_outages(cur, origen)
                 datos["chart_values_inserted"] = sincronizar_chart_values(
@@ -743,6 +758,11 @@ def corrida(con: psycopg.Connection, ruta: str) -> None:
     except Exception as e:  # noqa: BLE001 — se registra y se sigue en la próxima
         error = f"{type(e).__name__}: {e}"
         log.error("corrida %d fallida: %s", run_id, error)
+    finally:
+        # Siempre, también si la corrida reventó: esa copia tiene las
+        # credenciales de todos los equipos. No se deja tirada entre vueltas.
+        if copia:
+            dudeobj.descartar(copia)
 
     datos["duration_ms"] = int((time.monotonic() - inicio) * 1000)
     columnas = ", ".join(f"{k} = %({k})s" for k in datos)

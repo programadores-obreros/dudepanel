@@ -20,8 +20,15 @@ Y su base es una sola tabla de blobs binarios: no se puede consultar, ni
 agregar, ni cruzar con nada.
 
 ```
-dude.db (SQLite, intocable)  ──ro──►  ETL  ──►  PostgreSQL  ──►  panel web
+dude.db (SQLite, intocable)  ──copia──►  ETL  ──►  PostgreSQL  ──►  panel web
 ```
+
+> 🔴 **Dice «copia» y no «lectura directa» por una razón medida.** The Dude
+> corre con `locking_mode=EXCLUSIVE`: toma el bloqueo del archivo al arrancar
+> y **no lo suelta nunca**. Contra la base viva, un lector externo recibe
+> `database is locked` siempre — 0 lecturas exitosas en 60 intentos. El ETL
+> copia la base y su journal, verifica que el origen no se movió durante la
+> copia, lee la copia y la borra. Ver `dudeobj.instantanea`.
 
 | lo que aporta | cómo |
 |---|---|
@@ -93,6 +100,29 @@ ssh -L 4321:127.0.0.1:4321 usuario@servidor
   red (iSCSI, Ceph RBD, qcow2 sobre NFS) sí sirve.
 - El directorio `files/` al lado, que es de donde salen los iconos SVG: en la
   base sólo está el índice, los bytes están en disco.
+- **Legible por el usuario del contenedor** (uid 10001). The Dude deja su base
+  en `600 root:root`; hay que darle un grupo. Ver `docs/PRODUCCION.md`.
+- **Espacio para una copia más** del tamaño de `dude.db` + su journal, en el
+  volumen `etl-trabajo`. Dura lo que dura una corrida.
+
+### 🔴 Lo que no se puede hacer, y cuesta un día descubrirlo
+
+**Leer `dude.db` mientras The Dude corre.** No es contención ocasional: es un
+lock `EXCLUSIVE` permanente. Medido en producción, en `/proc/locks`:
+
+```
+POSIX  ADVISORY  WRITE  <pid de wineserver32>  bytes 1073741824 … 1073742335
+```
+
+`1073741824` es `0x40000000`, el PENDING_BYTE de SQLite; el rango cubre
+PENDING + RESERVED + los 510 bytes de SHARED, tomado entero como WRITE.
+
+Y esto **no aparece en desarrollo**, porque ahí se apunta el ETL a una copia
+muerta y nadie escribe del otro lado. La primera vez que este proyecto vio un
+The Dude corriendo fue en producción: cuatro contenedores en `healthy`,
+certificado válido, sitio contestando 200 — y cero equipos.
+
+**Un panel vacío no se lee como un fallo. Se lee como una red sin equipos.**
 
 ---
 
