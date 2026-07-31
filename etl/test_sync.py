@@ -287,7 +287,18 @@ def test_dnsnames_de_la_base(objetos):
 
 
 def test_macs():
-    assert dudeobj.macs(bytes.fromhex("D4CA6D4EE836")) == ["d4:ca:6d:4e:e8:36"]
+    # 🔴 Prefijo de fabricante REAL (D4:CA:6D es MikroTik, dato público del
+    #    IEEE) con el sufijo en cero. Antes acá había una dirección COMPLETA
+    #    copiada de la base del ISP: seis bytes que identifican una placa
+    #    concreta en una torre concreta, en un repositorio público.
+    #
+    #    Un prefijo dice «esto lo fabricó MikroTik». Una MAC entera dice cuál.
+    assert dudeobj.macs(bytes.fromhex("D4CA6D000000")) == ["d4:ca:6d:00:00:00"]
+    # Dos seguidas se parten de a seis bytes.
+    assert dudeobj.macs(bytes.fromhex("D4CA6D000000" "00156D000000")) == [
+        "d4:ca:6d:00:00:00",
+        "00:15:6d:00:00:00",
+    ]
 
 
 def test_registro_truncado_no_explota():
@@ -791,3 +802,45 @@ def test_corrida_completa_contra_un_dude_bloqueado(pg, vivo, tmp_path, monkeypat
     assert pg.execute("SELECT count(*) FROM devices").fetchone()[0] == DISPOSITIVOS
     # Y la copia no quedó tirada en el disco.
     assert not (tmp_path / "trabajo" / "dude.db").exists()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# La MAC que no es una MAC
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_el_centinela_dude_no_sale_como_mac():
+    """🔴 `\\x00dude-` son seis bytes que The Dude guarda en el campo `macs`.
+
+    Leídos como texto dicen «\\0dude-». Aparecen IDÉNTICOS en 111 de los 796
+    equipos con MAC de la base real — y una dirección es única por placa, así
+    que repetida cien veces no puede ser más que basura.
+
+    El panel los mostraba como `00:64:75:64:65:2d` en 112 fichas. Una dirección
+    inventada que se ve plausible es peor que un campo vacío: alguien la copia
+    y la busca en un switch.
+    """
+    assert dudeobj.macs(dudeobj.CENTINELA_MAC) == []
+
+
+def test_el_centinela_no_arrastra_a_las_macs_buenas():
+    """Si un equipo trae el centinela Y una dirección real, la real se queda."""
+    real = bytes.fromhex("d4ca6d000000")
+    assert dudeobj.macs(dudeobj.CENTINELA_MAC + real) == ["d4:ca:6d:00:00:00"]
+    assert dudeobj.macs(real + dudeobj.CENTINELA_MAC) == ["d4:ca:6d:00:00:00"]
+
+
+def test_no_se_filtra_por_heuristica_de_texto():
+    """🔴 Se excluye UN valor medido, no «lo que parezca texto».
+
+    `41:42:43:44:45:46` se lee «ABCDEF» y es una MAC perfectamente válida.
+    Una heurística de «bytes imprimibles» tiraría direcciones buenas.
+    """
+    assert dudeobj.macs(b"ABCDEF") == ["41:42:43:44:45:46"]
+
+
+@pytest.mark.skipif(not Path(MUESTRA).exists(), reason="falta etl/muestra.db")
+def test_ninguna_mac_de_la_base_real_es_el_centinela(objetos):
+    """De punta a punta contra los 885 equipos de la base real."""
+    todas = [m for o in objetos for m in o.macs()]
+    assert todas, "la base tiene que traer MACs"
+    assert "00:64:75:64:65:2d" not in todas

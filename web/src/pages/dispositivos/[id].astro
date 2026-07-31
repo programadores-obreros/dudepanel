@@ -17,6 +17,7 @@ import {
   serviciosDe,
 } from '@/lib/consultas';
 import { accesos as calcularAccesos, type Acceso } from '@/lib/accesos';
+import { fabricante, macsReales } from '@/lib/oui';
 import { duracion, numero } from '@/lib/formato';
 import { reportarError } from '@/lib/errores';
 
@@ -76,6 +77,10 @@ try {
 }
 
 if (!d && !error) return new Response('Equipo no encontrado', { status: 404 });
+
+// Direcciones MAC de verdad, y la marca que se deduce de ellas. Ver `lib/oui`.
+const macs = macsReales(d?.macs);
+const marca = fabricante(macs);
 
 // El padre caído es el dato que resuelve la guardia: si el troncal está abajo,
 // que este equipo esté abajo no es una falla propia, es una consecuencia.
@@ -313,10 +318,40 @@ const SNMP = ['v1', 'v2c', 'v3'];
                   </>
                 )}
 
-                {d!.macs?.length > 0 && (
+                {/* 🔴 `macsReales` y no `d.macs` a secas: The Dude guarda seis
+                    bytes que dicen «\0dude-» en el campo de la MAC de 112
+                    equipos, y el panel los mostraba como `00:64:75:64:65:2d`.
+                    Una dirección inventada que se ve plausible es peor que un
+                    campo vacío: alguien la copia y la busca en un switch. */}
+                {macs.length > 0 && (
                   <>
                     <dt class="text-tenue">MAC</dt>
-                    <dd class="font-mono break-all">{d!.macs.join(', ')}</dd>
+                    <dd class="font-mono break-all">{macs.join(', ')}</dd>
+                  </>
+                )}
+
+                {/* El fabricante sale del OUI de la MAC. Es lo único que se
+                    puede saber de la marca sin preguntarle nada al equipo: el
+                    90 % de los equipos tiene MAC, contra el 12,5 % que
+                    contesta SNMP. */}
+                {marca && (
+                  <>
+                    <dt class="text-tenue">Fabricante</dt>
+                    <dd>
+                      {marca.nombre}
+                      <span
+                        class="text-tenue text-2xs ml-1"
+                        title={
+                          marca.fuente === 'iconos'
+                            ? 'Deducido de los iconos que se le asignaron a los equipos de este mismo prefijo en esta instalación. No está confirmado contra el registro del IEEE.'
+                            : marca.fuente === 'ieee'
+                              ? 'Por el prefijo de la MAC, según el registro del IEEE.'
+                              : 'Por el prefijo de la MAC (registro del IEEE), y coincide con los iconos asignados a mano en esta instalación.'
+                        }
+                      >
+                        {marca.fuente === 'iconos' ? '· deducido' : '· por la MAC'}
+                      </span>
+                    </dd>
                   </>
                 )}
 

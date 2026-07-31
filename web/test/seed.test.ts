@@ -42,6 +42,36 @@ const EXENTAS = new Set(['0.0.0.0', '127.0.0.1', '255.255.255.255']);
 /** RFC 7042 §2.1.2: el rango que IEEE reservó para documentar. */
 const MAC_DOCUMENTACION = /^00:00:5E:00:53:[0-9A-F]{2}$/i;
 
+/**
+ * Un PREFIJO de fabricante, no una placa: los últimos tres bytes en cero.
+ *
+ * 🔴 Esta excepción se agregó con cuidado, y la distinción importa.
+ *
+ *    Lo que esta regla protege es que no salgan al repositorio público las
+ *    direcciones de los equipos de un ISP: una MAC completa identifica UNA
+ *    placa concreta en una torre concreta.
+ *
+ *    Los primeros tres bytes son otra cosa: son el OUI, dato PÚBLICO del
+ *    registro del IEEE, que dice «esto lo fabricó Ubiquiti». `lib/oui.ts`
+ *    necesita esos prefijos para existir, y sus pruebas necesitan escribirlos.
+ *
+ *    Con el sufijo en cero, `D4:CA:6D:00:00:00` dice «un MikroTik» y no
+ *    apunta a ningún equipo de nadie.
+ *
+ *    Y se comprobó que hacía falta: al escribir `lib/oui.ts` se colaron cinco
+ *    MACs COMPLETAS copiadas de la base de producción para usarlas de ejemplo.
+ *    Esta prueba las encontró antes del commit. Por eso el agujero se abre lo
+ *    mínimo — sufijo exactamente en cero — y no «cualquier MAC en un test».
+ */
+const MAC_PREFIJO_FABRICANTE = /^[0-9A-F]{2}(?::[0-9A-F]{2}){2}(?::00){3}$/i;
+
+/**
+ * Los seis bytes que The Dude guarda en `macs` y NO son una dirección: leídos
+ * como texto dicen «\0dude-». Tienen que poder escribirse literalmente en el
+ * código, porque el código existe justamente para filtrarlos.
+ */
+const MAC_CENTINELA_DUDE = /^00:64:75:64:65:2d$/i;
+
 const CUADRA = /\b\d{1,3}(?:\.\d{1,3}){3}\b/g;
 const MAC = /\b[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}\b/g;
 
@@ -112,6 +142,8 @@ describe('higiene de datos en web/', () => {
       const texto = sinEscapes(readFileSync(ruta, 'utf8'));
       for (const bruto of texto.match(MAC) ?? []) {
         if (MAC_DOCUMENTACION.test(bruto)) continue;
+        if (MAC_PREFIJO_FABRICANTE.test(bruto)) continue;
+        if (MAC_CENTINELA_DUDE.test(bruto)) continue;
         fugas.push(`${relative(RAIZ, ruta)}: ${bruto}`);
       }
     }

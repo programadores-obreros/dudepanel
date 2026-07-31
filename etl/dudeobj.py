@@ -284,13 +284,38 @@ def color(v: bytes) -> int | None:
     return (v[0] << 16) | (v[1] << 8) | v[2]
 
 
+#: 🔴 Seis bytes que The Dude guarda en `macs` y NO son una dirección.
+#:
+#:    Decodificados como texto son `\0` + `dude-`. Aparecen **idénticos en 111
+#:    de los 796 equipos con MAC** de la base real — y una MAC es única por
+#:    placa, así que repetida cien veces no puede ser otra cosa que basura.
+#:    Parece un centinela de algún descubrimiento o importación que dejó el
+#:    prefijo de un nombre por defecto en el campo equivocado.
+#:
+#:    El panel las mostraba como `00:64:75:64:65:2d` en 112 fichas. Y una MAC
+#:    inventada que se ve plausible es PEOR que un campo vacío: alguien la
+#:    copia, la busca en un switch, filtra por ella, y pierde la tarde.
+#:
+#:    Lo delató buscar el fabricante por OUI: `006475` salía como el prefijo
+#:    más común de toda la red, y con iconos de MikroTik Y de Ubiquiti a la
+#:    vez. Un fabricante no hace eso.
+CENTINELA_MAC = b"\x00dude-"
+
+
 def macs(v: bytes) -> list[str]:
-    """Direcciones MAC, 6 bytes cada una."""
+    """Direcciones MAC, 6 bytes cada una.
+
+    Descarta los grupos que se sabe que no son direcciones. No hay heurística
+    acá a propósito: se excluye UN valor conocido y medido, no «lo que parezca
+    texto». `41:42:43:44:45:46` es texto legible («ABCDEF») y también es una
+    MAC perfectamente válida — adivinar tiraría datos buenos.
+    """
     if not v or len(v) % 6:
         return []
     return [
-        ":".join(f"{b:02x}" for b in v[i:i + 6])
-        for i in range(0, len(v), 6)
+        ":".join(f"{b:02x}" for b in g)
+        for g in (v[i:i + 6] for i in range(0, len(v), 6))
+        if g != CENTINELA_MAC
     ]
 
 
