@@ -1,6 +1,12 @@
 ---
 import type { ElementoMapa, EnlacesFuera, ResumenSubmapa, TraficoEnlace } from '@/lib/consultas';
-import { ALTO_LINEA, ALTO_LINEA_NODO, construirLienzo, medioRecuadro } from '@/lib/mapa';
+import {
+  ALTO_LINEA,
+  ALTO_LINEA_NODO,
+  TAMANIO_NODO,
+  construirLienzo,
+  medioRecuadro,
+} from '@/lib/mapa';
 import { juegoDeIconos, medidasDeIconos } from '@/lib/iconos';
 import { metaEstado, ESTADOS } from '@/lib/estado';
 import { ANTIGUEDADES } from '@/lib/antiguedad';
@@ -80,6 +86,7 @@ const destinos = enOtroMapa > 0 ? (fuera?.destinos ?? []) : [];
   data-visor
   data-mapa-id={mapaId}
   data-editable={editable ? 'si' : undefined}
+  {...(editable ? { 'data-offset-nodo': String(TAMANIO_NODO / 2) } : {})}
 >
   {/* ── Controles ─────────────────────────────────────────────────────── */}
   <div class="pointer-events-none absolute top-2 right-2 z-10 flex flex-col items-end gap-2">

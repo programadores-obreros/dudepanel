@@ -52,6 +52,27 @@ function habilitarMovimiento(visor: HTMLElement) {
   const svg = visor.querySelector<SVGSVGElement>('[data-svg-mapa]');
   if (!svg) return;
 
+  /**
+   * 🔴 LO QUE SE DIBUJA NO ES LO QUE SE GUARDA, Y HAY QUE RESTAR LA DIFERENCIA.
+   *
+   *    The Dude guarda la **esquina superior izquierda** del recuadro de un
+   *    nodo. El visor lo centra: `cx = x + TAMANIO_NODO / 2`, hoy 18 unidades.
+   *
+   *    Si se manda al servidor la coordenada dibujada, el nodo se corre 18
+   *    unidades en cada guardado y **se aleja un poco más cada vez que alguien
+   *    lo toca**. No se nota en el momento —18 unidades sobre un lienzo de
+   *    4.500 es nada— y por eso es peor: aparece semanas después como «el mapa
+   *    se fue desarmando solo».
+   *
+   *    Se detectó guardando 777,888 por la API y viendo que el mapa dibujaba
+   *    795,906. Arrastrando en pantalla no se habría visto nunca.
+   *
+   *    El número lo pasa el servidor en `data-offset-nodo` en vez de estar
+   *    escrito acá: si mañana cambia `TAMANIO_NODO`, hay un solo lugar donde
+   *    cambiarlo y esto lo sigue.
+   */
+  const OFFSET = Number(visor.dataset.offsetNodo ?? 0) || 0;
+
   const pendientes = new Map<number, Movimiento>();
   const historia: Paso[] = [];
   let temporizador: number | undefined;
@@ -224,7 +245,8 @@ function habilitarMovimiento(visor: HTMLElement) {
 
     historia.push({ id: a.id, de: a.inicio, a: fin });
     if (historia.length > MAX_DESHACER) historia.shift();
-    pendientes.set(a.id, { id: a.id, x: fin[0], y: fin[1] });
+    // Dibujado → guardado: se descuenta el centrado. Ver `OFFSET`.
+    pendientes.set(a.id, { id: a.id, x: fin[0] - OFFSET, y: fin[1] - OFFSET });
     programarGuardado();
   }
 
@@ -257,7 +279,7 @@ function habilitarMovimiento(visor: HTMLElement) {
     const nodo = svg.querySelector<SVGGraphicsElement>(`.nodo-mapa[data-id="${paso.id}"]`);
     if (!nodo) return;
     ubicar(nodo, paso.de[0], paso.de[1]);
-    pendientes.set(paso.id, { id: paso.id, x: paso.de[0], y: paso.de[1] });
+    pendientes.set(paso.id, { id: paso.id, x: paso.de[0] - OFFSET, y: paso.de[1] - OFFSET });
     programarGuardado();
   });
 

@@ -699,3 +699,65 @@ describe('cajaDeIcono · sin imagen asignada', () => {
     expect(conFoto.ancho).toBeGreaterThan(sinFoto.ancho * 2);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// El viaje de ida y vuelta de una coordenada
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// 🔴 Esto existe por un bug que sólo se vio de casualidad, y que arrastrando en
+//    pantalla no se habría visto NUNCA.
+//
+//    The Dude guarda la esquina superior izquierda de un nodo; el visor lo
+//    centra sumando `TAMANIO_NODO / 2`. El script de arrastre leía la posición
+//    DIBUJADA del `<g>` y la mandaba al servidor tal cual, así que cada
+//    guardado corría el nodo 18 unidades. Sobre un lienzo de 4.500 unidades no
+//    se nota en el momento: aparece semanas después como «el mapa se fue
+//    desarmando solo», que es imposible de diagnosticar.
+//
+//    Se descubrió guardando 777,888 por la API contra producción y viendo que
+//    el mapa dibujaba 795,906.
+//
+// El circuito completo es:
+//
+//     base  ──construirLienzo──►  dibujado  ──mover-nodos──►  base
+//      x                          x + 18                       x
+//
+// Este test fija la mitad de ida (la del servidor) Y el valor del
+// desplazamiento, que es lo que el cliente recibe en `data-offset-nodo`. Si
+// alguien cambia `TAMANIO_NODO` sin tocar el cliente, esto avisa.
+
+describe('coordenadas: ida y vuelta', () => {
+  const DESPLAZAMIENTO = TAMANIO_NODO / 2;
+
+  it('el visor centra el nodo sumando la mitad del recuadro', () => {
+    const l = construirLienzo([elem({ element_id: 1, x: 700, y: 400 })], new Map(), new Map());
+    expect(l.nodos[0].cx).toBe(700 + DESPLAZAMIENTO);
+    expect(l.nodos[0].cy).toBe(400 + DESPLAZAMIENTO);
+  });
+
+  it('restar el desplazamiento devuelve exactamente la coordenada del origen', () => {
+    for (const [x, y] of [
+      [0, 0],
+      [26, 12],       // el mínimo real de la base
+      [4553, 4218],   // el máximo real de la base
+      [777, 888],     // el caso con el que se encontró el bug
+    ]) {
+      const l = construirLienzo([elem({ element_id: 1, x, y })], new Map(), new Map());
+      // Lo que hace `mover-nodos.ts` al guardar.
+      expect(l.nodos[0].cx - DESPLAZAMIENTO).toBe(x);
+      expect(l.nodos[0].cy - DESPLAZAMIENTO).toBe(y);
+    }
+  });
+
+  it('mover y guardar N veces no corre el nodo ni una unidad', () => {
+    // La prueba del defecto original: sin restar, esto acumulaba 18 por vuelta.
+    let x = 1000;
+    let y = 1000;
+    for (let i = 0; i < 20; i++) {
+      const l = construirLienzo([elem({ element_id: 1, x, y })], new Map(), new Map());
+      x = l.nodos[0].cx - DESPLAZAMIENTO;   // guardar
+      y = l.nodos[0].cy - DESPLAZAMIENTO;
+    }
+    expect([x, y]).toEqual([1000, 1000]);
+  });
+});

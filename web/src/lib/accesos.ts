@@ -84,7 +84,7 @@ export function urlSegura(plantilla: string | null, ip: string | null): string |
   // primera dirección del equipo, que es lo que su nombre promete.
   let s = plantilla.replaceAll(/\[Device\.(FirstAddress|Address)\]/gi, ip);
 
-  // `http://1.2.3.4:/cfg?...` — The Dude deja los dos puntos con el puerto
+  // `http://192.0.2.1:/cfg?...` — The Dude deja los dos puntos con el puerto
   // vacío. Los navegadores lo toleran; se limpia igual porque después hay que
   // parsear la URL y un puerto vacío es exactamente lo que hace fallar a `URL`.
   s = s.replace(/:(?=\/|$|\?)/, (m, ...r) => (String(r.at(-1)).includes('://') ? m : ''));
