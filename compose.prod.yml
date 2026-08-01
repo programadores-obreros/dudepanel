@@ -270,6 +270,21 @@ services:
 
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+
+      # 🔴 Y EL ARCHIVO DE USUARIOS, que el Caddyfile importa.
+      #
+      #    Sin esta línea Caddy no arranca: `File to import not found`. Y como
+      #    Caddy es la ÚNICA puerta —el panel no publica puerto— eso es el
+      #    sitio entero caído.
+      #
+      #    Se separó del Caddyfile porque el repositorio es público y ahí
+      #    estaban las casillas reales del ISP. Vive sólo en el servidor, en
+      #    600 root:root, y `git check-ignore` lo confirma ignorado.
+      #
+      #    Para el primer despliegue en una máquina nueva hay que CREARLO
+      #    ANTES de levantar nada:
+      #      cp usuarios.caddy.example usuarios.caddy && $EDITOR usuarios.caddy
+      - ./usuarios.caddy:/etc/caddy/usuarios.caddy:ro
       # 🔴 `caddy-data` guarda la cuenta de ACME y los certificados. Borrarlo
       #    obliga a volver a pedir todo, y Let's Encrypt permite 5 certificados
       #    por dominio cada 7 días: con cinco arranques en falso el sitio se
