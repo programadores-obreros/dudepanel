@@ -1,0 +1,805 @@
+---
+/**
+ * Latencia, tráfico y caídas sobre un mismo eje temporal.
+ *
+ * ── Por qué un componente nuevo y no `Grafico.astro` ─────────────────────────
+ *
+ * `Grafico` dibuja UNA serie y calcula su propio eje horizontal a partir de sus
+ * propios puntos. Acá el eje horizontal es COMPARTIDO —lo fija la ventana, no
+ * los datos— y encima de él conviven dos paneles con unidades distintas y unas
+ * bandas que no son una serie. Son dos problemas de geometría distintos, y
+ * meterlos en el mismo componente le agregaría a `Grafico` un modo que sus
+ * otros usos no necesitan. `Grafico` queda como está.
+ *
+ * ── Por qué no hay una sola línea de JavaScript ──────────────────────────────
+ *
+ * El CSP del panel es `default-src 'none'`. Un `<script>` en línea lo mata en
+ * silencio: la página compila, se sirve, se ve bien y no hace nada. La regla
+ * del proyecto es que el JS vaya a `src/scripts/` y se importe.
+ *
+ * Acá directamente no hace falta. Lo que un gráfico suele resolver con JS
+ * —el globito con el valor— lo resuelve `<title>` dentro del SVG, que es
+ * nativo, funciona sin JS, lo lee un lector de pantalla y se imprime.
+ */
+import { duracion, numero } from '@/lib/formato';
+import {
+  OPCIONES_VENTANA,
+  anchoVisible,
+  armarBandas,
+  caminoDe,
+  coalescerParaDibujo,
+  dominioY,
+  escala,
+  instante,
+  necesitaAnio,
+  partirEnTramos,
+  ticksTiempo,
+  type OpcionVentana,
+  type Ventana,
+} from '@/lib/linea-tiempo';
+import type { DatosLineaTiempo, SerieLinea } from '@/lib/consultas';
+
+interface Props {
+  datos: DatosLineaTiempo;
+  ventana: Ventana & { opcion: OpcionVentana; anclada: boolean };
+  /** Para los enlaces del selector de rango. */
+  ruta: string;
+  ahora?: number;
+}
+
+const { datos, ventana, ruta, ahora = Math.floor(Date.now() / 1000) } = Astro.props;
+
+const { bandas, marcas, descartes } = armarBandas(datos.caidas, ventana, {
+  desde: datos.cobertura.dude_desde,
+  hasta: datos.cobertura.dude_hasta,
+});
+
+// Sólo lo que cae DENTRO de la ventana. La consulta trae de más a propósito
+// (una caída que arranca antes y termina adentro tiene que verse), y el recorte
+// fino ya lo hizo `armarBandas`; acá se recortan las series.
+const dentro = (s: SerieLinea): SerieLinea => ({
+  ...s,
+  puntos: s.puntos.filter(([t]) => t >= ventana.desde && t <= ventana.hasta),
+});
+const latencia = datos.latencia.map(dentro).filter((s) => s.puntos.length > 1);
+const trafico = datos.trafico.map(dentro).filter((s) => s.puntos.length > 1);
+
+const hayLatencia = latencia.length > 0;
+const hayTrafico = trafico.length > 0;
+
+// ── Geometría ───────────────────────────────────────────────────────────────
+// El viewBox es fijo, así que el alto sale del ancho por proporción y el hueco
+// está reservado desde el primer pintado: no hay salto de maquetación.
+const A = 1000;
+const M = { izq: 48, der: 10, arriba: 10 };
+const ANCHO = A - M.izq - M.der;
+const ALTO_LAT = hayLatencia ? 148 : 0;
+const ALTO_TRA = hayTrafico ? 84 : 0;
+// Sin ninguna serie el componente sigue sirviendo: es la tira de caídas sola.
+const ALTO_TIRA = !hayLatencia && !hayTrafico ? 44 : 0;
+const SEPARACION = 12;
+const ALTO_EJE = 20;
+
+const yLat = M.arriba;
+const yTra = M.arriba + ALTO_LAT + (ALTO_LAT && ALTO_TRA ? SEPARACION : 0);
+const yTira = M.arriba;
+const fondoAlto = ALTO_LAT + ALTO_TRA + ALTO_TIRA + (ALTO_LAT && ALTO_TRA ? SEPARACION : 0);
+const ALTO = M.arriba + fondoAlto + ALTO_EJE;
+
+const fx = escala(ventana.desde, ventana.hasta, M.izq, A - M.der);
+
+/** Un panel: su caja, su dominio vertical y sus tramos ya en coordenadas. */
+function panel(series: SerieLinea[], y: number, alto: number, desdeCero = false) {
+  const valores = series.flatMap((s) => s.puntos.map((p) => p[1]));
+  const dom = dominioY(valores, 0.1, desdeCero);
+  const fy = escala(dom.min, dom.max, y + alto, y);
+  return {
+    y,
+    alto,
+    dom,
+    fy,
+    trazos: series.map((s) => ({
+      serie: s,
+      // 🔴 Partir en tramos NO es cosmético: sin esto la línea cruza la caída
+      //    de lado a lado, plana, y dice «la latencia estuvo estable mientras
+      //    el equipo estaba caído». Durante la caída no hay medición porque el
+      //    equipo no contesta el ping.
+      caminos: partirEnTramos(s.puntos)
+        .map((tr) => caminoDe(tr, fx, fy))
+        .filter(Boolean),
+    })),
+  };
+}
+
+const pLat = hayLatencia ? panel(latencia, yLat, ALTO_LAT) : null;
+// El tráfico va con la base en cero: ver el comentario de `dominioY`.
+const pTra = hayTrafico ? panel(trafico, yTra, ALTO_TRA, true) : null;
+
+// Las bandas atraviesan TODOS los paneles: es lo que permite mirar la latencia
+// y el tráfico contra el mismo instante sin mover el ojo de columna.
+const bandaY = M.arriba;
+const bandaAlto = fondoAlto;
+
+/** Ancho mínimo de una banda, en unidades del viewBox. */
+const MIN_BANDA = 2;
+
+// 🔴 Lo que se DIBUJA no es lo que se CUENTA. Ver `coalescerParaDibujo`: con
+//    16.296 caídas en un año —el peor equipo medido— el navegador recibiría
+//    dieciséis mil `<rect>` para pintar unas 475 posiciones distinguibles. Los
+//    totales de la letra chica se siguen calculando sobre `bandas`, sin pegar.
+const bandasDibujo = coalescerParaDibujo(bandas, fx, MIN_BANDA);
+
+const ticks = ticksTiempo(ventana, ANCHO > 700 ? 6 : 4);
+
+// ── Formato ─────────────────────────────────────────────────────────────────
+const ms = (v: number) => `${(v * 1000).toLocaleString('es-AR', { maximumFractionDigits: 2 })} ms`;
+const mbit = (v: number) =>
+  `${(v / 1e6).toLocaleString('es-AR', { maximumFractionDigits: 2 })} Mbit/s`;
+
+// 🔴 Con la ventana de «1 a» el encabezado decía «1/8, 20:10 → 1/8, 20:10»:
+//    un rango de doce meses escrito como si durara cero. Ver `instante`.
+const CON_ANIO = necesitaAnio(ventana);
+const cuando = (t: number) => instante(t, CON_ANIO);
+
+const rango = ventana.hasta - ventana.desde;
+
+// ── Resumen para el lector de pantalla y para la letra chica ────────────────
+const totalCaidas = bandas.reduce((a, b) => a + b.cantidad, 0);
+const segundosCaido = bandas.reduce((a, b) => a + (b.fin - b.inicio), 0);
+// Por fuente se cuentan CAÍDAS, no bandas: si la leyenda dijera «47» (bandas)
+// y el renglón de abajo «64» (caídas), los dos números serían ciertos y
+// parecerían una contradicción. Se cuenta lo mismo en los dos lados.
+const caidasDude = bandas
+  .filter((b) => b.fuente === 'dude')
+  .reduce((a, b) => a + b.cantidad, 0);
+const caidasSyslog = bandas
+  .filter((b) => b.fuente === 'syslog')
+  .reduce((a, b) => a + b.cantidad, 0);
+const pegadas = bandasDibujo.filter((b) => b.pegada).length;
+
+
+const valoresLat = latencia.flatMap((s) => s.puntos.map((p) => p[1]));
+const valoresLatT = latencia.flatMap((s) => s.puntos.map((p) => p[0]));
+/**
+ * Qué parte de la ventana cubre realmente la latencia.
+ *
+ * 🔴 Con la ventana de «1 a», las dos horas de serie ocupan el 0,02 % del
+ *    ancho: una rayita pegada al borde derecho. Y eso se lee como «a este
+ *    equipo lo empezaron a medir hace un rato», que es falso — lo miden desde
+ *    siempre, lo que dura dos horas es el buffer de The Dude. Hay que decirlo.
+ */
+const cubreLatencia = hayLatencia
+  ? (Math.max(...valoresLatT) - Math.min(...valoresLatT)) / rango
+  : 0;
+
+const resumenLat = valoresLat.length
+  ? {
+      min: Math.min(...valoresLat),
+      max: Math.max(...valoresLat),
+      prom: valoresLat.reduce((a, b) => a + b, 0) / valoresLat.length,
+    }
+  : null;
+
+const descripcion = [
+  `Línea de tiempo de ${duracion(rango)}, de ${cuando(ventana.desde)} a ${cuando(ventana.hasta)}.`,
+  resumenLat
+    ? `Latencia: mínimo ${ms(resumenLat.min)}, promedio ${ms(resumenLat.prom)}, máximo ${ms(resumenLat.max)}.`
+    : 'Sin mediciones de latencia en esta ventana.',
+  hayTrafico ? `Tráfico en ${trafico.length} sentidos.` : '',
+  bandas.length
+    ? `${numero(totalCaidas)} caídas en ${numero(bandas.length)} bandas, ${duracion(segundosCaido)} fuera de servicio en total.`
+    : 'Sin caídas registradas en esta ventana.',
+].filter(Boolean).join(' ');
+
+/** El desfasaje del volcado. Es la explicación de por qué «24 h» sale vacío. */
+const atraso =
+  datos.cobertura.ultima_medicion != null ? ahora - datos.cobertura.ultima_medicion : null;
+
+const idGradLat = 'lt-grad-lat';
+const idRayado = 'lt-rayado';
+---
+
+<figure class="border-borde bg-panel rounded-xl border">
+  <figcaption
+    class="border-borde flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b px-3 py-2"
+  >
+    <div>
+      <h3 class="text-sm font-semibold">Latencia contra caídas</h3>
+      <p class="text-tenue text-2xs">
+        {cuando(ventana.desde)} → {cuando(ventana.hasta)} · {duracion(rango)}
+      </p>
+    </div>
+    <nav class="flex flex-wrap gap-1" aria-label="Ventana de la línea de tiempo">
+      {
+        OPCIONES_VENTANA.map((o) => (
+          <a
+            href={`${ruta}?lt=${o.valor}`}
+            title={o.ayuda}
+            class:list={[
+              'text-2xs rounded px-2 py-1 tabular-nums transition-colors duration-150',
+              o.valor === ventana.opcion
+                ? 'bg-acento text-panel font-semibold'
+                : 'text-tenue hover:bg-panel-2 hover:text-tinta',
+            ]}
+            aria-current={o.valor === ventana.opcion ? 'page' : undefined}
+          >
+            {o.texto}
+          </a>
+        ))
+      }
+    </nav>
+  </figcaption>
+
+  <div class="p-3">
+    <svg
+      viewBox={`0 0 ${A} ${ALTO}`}
+      class="h-auto w-full"
+      role="img"
+      preserveAspectRatio="none"
+      aria-label={descripcion}
+    >
+      <defs>
+        <linearGradient id={idGradLat} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="currentColor" stop-opacity="0.2"></stop>
+          <stop offset="100%" stop-color="currentColor" stop-opacity="0"></stop>
+        </linearGradient>
+
+        {/* 🔴 Las dos fuentes de caídas NO se distinguen sólo por color.
+            Un rayado y un lleno se diferencian también en escala de grises y
+            para quien no distingue rojos: es la misma información por dos
+            canales, que es lo que pide la pauta de contraste. */}
+        <pattern
+          id={idRayado}
+          width="7"
+          height="7"
+          patternUnits="userSpaceOnUse"
+          patternTransform="rotate(45)"
+        >
+          <rect width="7" height="7" class="fill-caido" opacity="0.08"></rect>
+          <line x1="0" y1="0" x2="0" y2="7" class="stroke-caido" stroke-width="3" opacity="0.3"
+          ></line>
+        </pattern>
+      </defs>
+
+      {/* ── La tira sola, cuando no hay ninguna serie ─────────────────────
+          Va PRIMERO: es el fondo sobre el que se apoyan las bandas. Dibujada
+          después las taparía, y esto se probó al revés una vez. */}
+      {
+        ALTO_TIRA > 0 && (
+          <rect
+            x={M.izq}
+            y={yTira}
+            width={ANCHO}
+            height={ALTO_TIRA}
+            class="fill-panel-2 stroke-borde"
+            stroke-width="1"
+            vector-effect="non-scaling-stroke"
+          />
+        )
+      }
+
+      {/* ── Bandas de caída, detrás de las series ─────────────────────────── */}
+      {
+        bandasDibujo.map((b) => {
+          const [x1, x2] = anchoVisible(fx(b.inicio), fx(b.fin), MIN_BANDA);
+          const dur = b.segundos_reales;
+          const que = b.fuente === 'dude' ? 'The Dude' : 'reconstruida del syslog';
+          return (
+            <g>
+              <rect
+                x={x1}
+                y={bandaY}
+                width={Math.max(x2 - x1, 0.1)}
+                height={bandaAlto}
+                fill={b.fuente === 'dude' ? 'currentColor' : `url(#${idRayado})`}
+                class:list={['text-caido', b.fuente === 'dude' && 'opacity-15']}
+              >
+                <title>
+                  {b.pegada
+                    ? `${numero(b.cantidad)} caídas · ${que}\n${cuando(b.inicio)} → ${cuando(b.fin)}\n${duracion(dur)} fuera de servicio en total\nSe dibujan juntas: a esta escala no se separan. Cambiá a una ventana más corta para verlas de a una.`
+                    : `Caída · ${que}\n${cuando(b.inicio)} → ${b.abierta ? 'sin recuperación registrada' : cuando(b.fin)}\n${duracion(dur)}${b.cantidad > 1 ? `\n${b.cantidad} caídas de sondas distintas, fusionadas` : ''}${b.recortada_inicio ? '\nEmpezó antes de esta ventana' : ''}`}
+                </title>
+              </rect>
+              {/* Sin recuperación registrada: el borde derecho es el de la
+                  ventana, no un dato. Se marca punteado para no prometer un
+                  final que nadie midió. */}
+              {b.abierta && (
+                <line
+                  x1={x2}
+                  x2={x2}
+                  y1={bandaY}
+                  y2={bandaY + bandaAlto}
+                  class="stroke-caido"
+                  stroke-width="1.5"
+                  stroke-dasharray="4 3"
+                  vector-effect="non-scaling-stroke"
+                />
+              )}
+            </g>
+          );
+        })
+      }
+
+      {/* ── Recuperaciones sin caída conocida ────────────────────────────── */}
+      {
+        marcas.map((m) => (
+          <line
+            x1={fx(m.t)}
+            x2={fx(m.t)}
+            y1={bandaY}
+            y2={bandaY + bandaAlto}
+            class="stroke-parcial"
+            stroke-width="1.5"
+            stroke-dasharray="2 3"
+            vector-effect="non-scaling-stroke"
+          >
+            <title>
+              {`Recuperación a las ${cuando(m.t)} sin caída registrada.\nEl syslog trae el "up" y no el "down": no se sabe cuándo empezó.`}
+            </title>
+          </line>
+        ))
+      }
+
+      {/* ── Panel de latencia ────────────────────────────────────────────── */}
+      {
+        pLat && (
+          <g>
+            {[0, 0.5, 1].map((f) => (
+              <line
+                x1={M.izq}
+                x2={A - M.der}
+                y1={pLat.y + f * pLat.alto}
+                y2={pLat.y + f * pLat.alto}
+                class="stroke-borde"
+                stroke-width="1"
+                vector-effect="non-scaling-stroke"
+              />
+            ))}
+            <text
+              x={M.izq - 6}
+              y={pLat.y + 4}
+              text-anchor="end"
+              class="fill-tenue text-[11px] tabular-nums"
+            >
+              {(pLat.dom.max * 1000).toFixed(1)}
+            </text>
+            <text
+              x={M.izq - 6}
+              y={pLat.y + pLat.alto}
+              text-anchor="end"
+              class="fill-tenue text-[11px] tabular-nums"
+            >
+              {(pLat.dom.min * 1000).toFixed(1)}
+            </text>
+            <text x={M.izq - 6} y={pLat.y + pLat.alto / 2} text-anchor="end" class="fill-tenue text-[10px]">
+              ms
+            </text>
+            <g class="text-acento">
+              {pLat.trazos.map((tz) =>
+                tz.caminos.map((d) => (
+                  <path
+                    d={`${d} L${A - M.der} ${pLat.y + pLat.alto} L${M.izq} ${pLat.y + pLat.alto} Z`}
+                    fill={`url(#${idGradLat})`}
+                    stroke="none"
+                    opacity="0.55"
+                  />
+                )),
+              )}
+              {pLat.trazos.map((tz) =>
+                tz.caminos.map((d) => (
+                  <path
+                    d={d}
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.6"
+                    stroke-linejoin="round"
+                    stroke-linecap="round"
+                    vector-effect="non-scaling-stroke"
+                    class="trazo"
+                  />
+                )),
+              )}
+            </g>
+          </g>
+        )
+      }
+
+      {/* ── Panel de tráfico ─────────────────────────────────────────────── */}
+      {
+        pTra && (
+          <g>
+            {[0, 1].map((f) => (
+              <line
+                x1={M.izq}
+                x2={A - M.der}
+                y1={pTra.y + f * pTra.alto}
+                y2={pTra.y + f * pTra.alto}
+                class="stroke-borde"
+                stroke-width="1"
+                vector-effect="non-scaling-stroke"
+              />
+            ))}
+            <text
+              x={M.izq - 6}
+              y={pTra.y + 4}
+              text-anchor="end"
+              class="fill-tenue text-[11px] tabular-nums"
+            >
+              {(pTra.dom.max / 1e6).toFixed(1)}
+            </text>
+            {/* El cero va escrito: es lo que hace legible que la base del
+                panel de tráfico SEA cero y no un mínimo flotante. */}
+            <text
+              x={M.izq - 6}
+              y={pTra.y + pTra.alto}
+              text-anchor="end"
+              class="fill-tenue text-[11px] tabular-nums"
+            >
+              0
+            </text>
+            <text x={M.izq - 6} y={pTra.y + pTra.alto / 2} text-anchor="end" class="fill-tenue text-[10px]">
+              Mbit/s
+            </text>
+            {/* rx lleno, tx punteado: el sentido no se distingue por color,
+                así que se distingue por trazo.
+
+                🔴 Y por eso mismo estas líneas NO llevan `.trazo`. La animación
+                   de entrada se hace con `stroke-dasharray`, y una regla CSS le
+                   gana a un atributo de presentación: `.trazo` le pisaría el
+                   guion al `tx` y los dos sentidos saldrían idénticos. Se probó
+                   y pasa. La línea de latencia sí se anima, porque no usa
+                   guion para significar nada. */}
+            <g class="text-acento">
+              {pTra.trazos.map((tz) =>
+                tz.caminos.map((d) => (
+                  <path
+                    d={d}
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linejoin="round"
+                    stroke-linecap="round"
+                    vector-effect="non-scaling-stroke"
+                    stroke-dasharray={tz.serie.sentido === 'tx' ? '5 3' : undefined}
+                  />
+                )),
+              )}
+            </g>
+          </g>
+        )
+      }
+
+      {/* ── Eje del tiempo ───────────────────────────────────────────────── */}
+      <line
+        x1={M.izq}
+        x2={A - M.der}
+        y1={M.arriba + fondoAlto}
+        y2={M.arriba + fondoAlto}
+        class="stroke-borde-fuerte"
+        stroke-width="1"
+        vector-effect="non-scaling-stroke"></line>
+      {
+        ticks.map((tk) => (
+          <g>
+            <line
+              x1={fx(tk.t)}
+              x2={fx(tk.t)}
+              y1={M.arriba + fondoAlto}
+              y2={M.arriba + fondoAlto + 4}
+              class="stroke-borde-fuerte"
+              stroke-width="1"
+              vector-effect="non-scaling-stroke"
+            />
+            <text
+              x={fx(tk.t)}
+              y={ALTO - 5}
+              text-anchor="middle"
+              class="fill-tenue text-[11px] tabular-nums"
+            >
+              {tk.texto}
+            </text>
+          </g>
+        ))
+      }
+    </svg>
+
+    {/* ── Leyenda ──────────────────────────────────────────────────────────
+        Con nombre propio para cada fuente. «Caída» a secas serían dos cosas
+        distintas bajo la misma palabra: una la registró The Dude en su base,
+        la otra la dedujo el ETL leyendo mensajes de syslog viejos. */}
+    <ul class="text-tenue text-2xs mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
+      {
+        hayLatencia && (
+          <li class="flex items-center gap-1.5">
+            <span class="bg-acento inline-block h-0.5 w-4" aria-hidden="true"></span>
+            latencia de ping
+          </li>
+        )
+      }
+      {
+        hayTrafico && (
+          <li class="flex items-center gap-1.5">
+            <span
+              class="border-acento inline-block h-0 w-4 border-t border-dashed"
+              aria-hidden="true"></span>
+            tráfico ({trafico.map((s) => s.sentido ?? 'sin sentido').join(' / ')})
+          </li>
+        )
+      }
+      {
+        caidasDude > 0 && (
+          <li class="flex items-center gap-1.5">
+            <span class="bg-caido/25 border-caido/40 inline-block h-3 w-4 border" aria-hidden="true"
+            ></span>
+            caídas de The Dude ({numero(caidasDude)})
+          </li>
+        )
+      }
+      {
+        caidasSyslog > 0 && (
+          <li class="flex items-center gap-1.5">
+            <span class="rayado border-caido/40 inline-block h-3 w-4 border" aria-hidden="true"
+            ></span>
+            reconstruidas del syslog ({numero(caidasSyslog)})
+          </li>
+        )
+      }
+      {
+        marcas.length > 0 && (
+          <li class="flex items-center gap-1.5">
+            <span
+              class="border-parcial inline-block h-3 w-0 border-l-2 border-dashed"
+              aria-hidden="true"></span>
+            recuperación sin caída registrada ({numero(marcas.length)})
+          </li>
+        )
+      }
+    </ul>
+
+    {/* ── Lo que hay que decir con palabras ────────────────────────────────
+        Todo lo de acá abajo existe porque el gráfico solo mentiría por
+        omisión. Un hueco sin explicar se lee como «acá no pasó nada». */}
+    <div class="text-tenue text-2xs mt-2 flex flex-col gap-1 leading-relaxed">
+      {
+        resumenLat && (
+          <p>
+            Latencia · mín <strong class="text-tinta">{ms(resumenLat.min)}</strong> · prom{' '}
+            <strong class="text-tinta">{ms(resumenLat.prom)}</strong> · máx{' '}
+            <strong class="text-tinta">{ms(resumenLat.max)}</strong> sobre{' '}
+            {numero(valoresLat.length)} mediciones.
+          </p>
+        )
+      }
+
+      {
+        hayLatencia && cubreLatencia < 0.05 && ventana.opcion !== 'medido' && (
+          /* 🔴 Sin esto, la rayita del borde derecho se lee como «recién
+             empiezan a medir a este equipo». Falso: lo miden desde siempre, y
+             lo que dura dos horas es el buffer circular de The Dude. */
+          <p>
+            La latencia sólo cubre{' '}
+            <strong class="text-tinta">
+              {(cubreLatencia * 100).toLocaleString('es-AR', { maximumFractionDigits: 2 })} %
+            </strong>{' '}
+            de esta ventana y se dibuja como una raya contra el borde. No es que hayan empezado a
+            medir recién: The Dude guarda unas dos horas de resolución fina y nada más. Para verla{' '}
+            <a href={`${ruta}?lt=medido`} class="enlace">
+              usá la ventana medido
+            </a>
+            .
+          </p>
+        )
+      }
+
+      {
+        bandas.length > 0 && (
+          <p>
+            <strong class="text-tinta">{numero(totalCaidas)}</strong> caídas en esta ventana,{' '}
+            <strong class="text-tinta">{duracion(segundosCaido)}</strong> fuera de servicio.
+          </p>
+        )
+      }
+
+      {
+        datos.ceros_descartados > 0 && (
+          /* 🔴 Medido el 01/08/2026: el 86,5 % de las muestras de latencia de
+             la base valen exactamente 0, y no existe NINGÚN valor entre 0 y
+             15 ms. Es el relleno que escribe The Dude en los casilleros que no
+             sondeó, no un ping instantáneo. Dibujarlos hundiría el promedio y
+             convertiría un enlace sano en un serrucho. Se descartan, y se
+             dice: un filtro que no se declara es un dato que desaparece. */
+          <p>
+            Se descartaron <strong class="text-tinta">{numero(datos.ceros_descartados)}</strong>{' '}
+            muestras en 0 ms. The Dude guarda una fila cada dos segundos pero sondea cada 10 a 60,
+            y rellena con cero lo que no midió: un ping de 0 ms no existe.
+          </p>
+        )
+      }
+
+      {
+        pegadas > 0 && (
+          /* 🔴 El pegado NO puede ser silencioso: sin este renglón, quien mira
+             una ventana de un año ve cinco bloques rojos y cuenta cinco
+             incidentes, cuando abajo dice que hubo miles. Medido: el peor
+             equipo tiene 16.296 caídas en un año y el eje sólo puede mostrar
+             unas 475 posiciones distintas. */
+          <p>
+            A esta escala hay caídas que no se pueden separar:{' '}
+            <strong class="text-tinta">{numero(pegadas)}</strong>{' '}
+            {pegadas === 1 ? 'banda agrupa' : 'bandas agrupan'} varias. Los totales de arriba son
+            los reales; para verlas de a una hay que acortar la ventana.
+          </p>
+        )
+      }
+
+      {
+        !hayLatencia && (
+          <p>
+            <strong class="text-tinta">No hay latencia para dibujar en esta ventana.</strong>{' '}
+            {datos.cobertura.ultima_medicion == null ? (
+              <>
+                Este equipo no tiene ninguna medición guardada. The Dude sólo grafica los
+                servicios con el gráfico habilitado: en esta instalación son{' '}
+                <strong class="text-tinta">167 fuentes de 734</strong> con unidad de tiempo, y
+                sólo <strong class="text-tinta">167 equipos de 885</strong>.
+              </>
+            ) : hayTrafico ? (
+              /* 🔴 Este equipo SÍ tiene serie —la de tráfico, que es la que
+                 ancló la ventana— pero no tiene la de ping. Mandarlo a la
+                 ventana `medido` sería mandarlo adonde ya está: se probó
+                 contra el equipo real que tiene rx/tx y el aviso decía
+                 exactamente eso. El dato que falta no es la ventana, es la
+                 sonda. */
+              <>
+                Este equipo tiene serie de tráfico pero no de ping: nadie le graficó la latencia.
+                Se arregla habilitando el gráfico en el servicio de ping desde el cliente de The
+                Dude.
+              </>
+            ) : ventana.opcion === 'medido' ? (
+              <>
+                La ventana ya está ajustada al tramo con mediciones y aun así no hay puntos de
+                ping en él. La última medición es del{' '}
+                <strong class="text-tinta">{cuando(datos.cobertura.ultima_medicion)}</strong>
+                {atraso != null && <> · hace {duracion(atraso)}</>}.
+              </>
+            ) : (
+              <>
+                La última medición de este equipo es del{' '}
+                <strong class="text-tinta">{cuando(datos.cobertura.ultima_medicion)}</strong>
+                {atraso != null && <> · hace {duracion(atraso)}</>}. Probá la ventana{' '}
+                <a href={`${ruta}?lt=medido`} class="enlace">
+                  medido
+                </a>
+                , que se ajusta al tramo que sí tiene datos.
+              </>
+            )}
+          </p>
+        )
+      }
+
+      {
+        hayLatencia && ventana.opcion === 'medido' && (
+          /* 🔴 La ventana `medido` no es la de «las últimas N horas» y hay que
+             decirlo, porque si no alguien compara dos equipos creyendo que
+             mira el mismo rato y no. */
+          <p>
+            Ventana ajustada al tramo con mediciones, no a las últimas horas:{' '}
+            <strong class="text-tinta">{duracion(rango)}</strong> terminando el{' '}
+            {cuando(datos.cobertura.ultima_medicion ?? ventana.hasta)}
+            {atraso != null && atraso > 3 * 3600 && <> · hace {duracion(atraso)}</>}. The Dude
+            guarda la resolución fina (<code class="font-mono">{datos.bucket}</code>) en un buffer
+            circular de unas dos horas; los cajones de 10 min, 2 h y 1 día están vacíos en esta
+            instalación.
+          </p>
+        )
+      }
+
+      {
+        !hayTrafico && (
+          /* 🔴 Un panel de tráfico vacío se lee como «este enlace no pasa
+             tráfico», que es una afirmación sobre la red y es falsa. Por eso el
+             panel no se dibuja y esto se escribe. */
+          <p>
+            Sin serie de tráfico. En esta instalación{' '}
+            <strong class="text-tinta">sólo 2 de 348</strong> fuentes de <code class="font-mono"
+              >bit/s</code
+            > tienen números —el resto tiene la fila creada y el valor en nulo—, así que hay{' '}
+            <strong class="text-tinta">1 equipo de 885</strong> con tráfico graficable. No
+            significa que este enlace no pase tráfico: significa que nadie lo está midiendo.
+          </p>
+        )
+      }
+
+      {
+        descartes.cruzan_hueco > 0 && (
+          /* 🔴 Medido el 01/08/2026: una sola fila del syslog tiene
+             `spans_gap`, del 23/11/2025 al 12/06/2026 — 201 días. Dibujarla
+             sería afirmar que la red estuvo caída siete meses. */
+          <p>
+            <strong class="text-tinta">{numero(descartes.cruzan_hueco)}</strong>{' '}
+            {descartes.cruzan_hueco === 1 ? 'caída del syslog cruza' : 'caídas del syslog cruzan'}{' '}
+            un tramo sin registro y no se {descartes.cruzan_hueco === 1 ? 'dibuja' : 'dibujan'}: el
+            «down» está de un lado del pozo y el «up» del otro, así que la duración sería inventada.
+          </p>
+        )
+      }
+
+      {
+        descartes.sin_inicio > 0 && (
+          <p>
+            <strong class="text-tinta">{numero(descartes.sin_inicio)}</strong>{' '}
+            {descartes.sin_inicio === 1 ? 'recuperación' : 'recuperaciones'} sin caída registrada.
+            Se {descartes.sin_inicio === 1 ? 'marca' : 'marcan'} con una línea punteada, no con una
+            banda: sabemos cuándo volvió, no cuándo se fue.
+          </p>
+        )
+      }
+
+      {
+        descartes.segundos_syslog_solapados > 0 && (
+          /* 🔴 Las dos fuentes se solapan. Medido el 01/08/2026: de 4.673
+             caídas del syslog dentro del tramo que cubre The Dude, 4.408 —el
+             94,3 %— tienen una del Dude arrancando dentro de ±5 minutos. Son
+             el mismo evento. Mostrar las dos contaría doble. */
+          <p>
+            Donde The Dude tiene registro propio manda su tabla, y el syslog se recorta:{' '}
+            <strong class="text-tinta">{duracion(descartes.segundos_syslog_solapados)}</strong> de
+            caídas reconstruidas quedaron tapadas para no contar el mismo corte dos veces.
+          </p>
+        )
+      }
+
+      {
+        datos.cobertura.dude_desde != null && ventana.desde < datos.cobertura.dude_desde && (
+          <p>
+            Antes del{' '}
+            <strong class="text-tinta">{cuando(datos.cobertura.dude_desde)}</strong> no hay base de
+            The Dude: la anterior chocó contra el techo de 2 GB y se rearmó de cero. Lo que se ve
+            de más atrás está reconstruido del syslog, con sus huecos.
+          </p>
+        )
+      }
+    </div>
+  </div>
+</figure>
+
+<style>
+  /* La muestra rayada de la leyenda. Es el mismo motivo que el `<pattern>` del
+     SVG y se define aparte porque un `<pattern>` no se puede aplicar a un
+     elemento HTML. */
+  .rayado {
+    background-image: repeating-linear-gradient(
+      45deg,
+      color-mix(in oklch, var(--color-caido) 45%, transparent) 0 2px,
+      transparent 2px 5px
+    );
+  }
+
+  /* El trazo se dibuja de izquierda a derecha al entrar, que es como se lee el
+     tiempo. Media hora de animación sería una molestia; 480 ms es un empujón. */
+  .trazo {
+    stroke-dasharray: 3000;
+    stroke-dashoffset: 3000;
+    animation: trazar 520ms ease-out forwards;
+  }
+  @keyframes trazar {
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+
+  /* 🔴 Con `prefers-reduced-motion` el gráfico tiene que estar COMPLETO desde
+     el primer cuadro, no animarse más rápido.
+
+     Y ojo con el `stroke-dasharray`: si se apaga sólo la animación, el trazo
+     queda con el guion de 3000 puesto y la línea del tráfico —que usa su
+     propio dasharray para el sentido `tx`— se rompería. Por eso se restituye
+     el valor a `none` y el `tx` vuelve a tomar el suyo del atributo. */
+  @media (prefers-reduced-motion: reduce) {
+    .trazo {
+      animation: none;
+      stroke-dasharray: none;
+      stroke-dashoffset: 0;
+    }
+  }
+</style>

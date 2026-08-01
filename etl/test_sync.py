@@ -41,6 +41,26 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def _snapshot_escribible(tmp_path, monkeypatch):
+    """La copia de trabajo va a un temporal, no a `/trabajo`.
+
+    🔴 Sin esto la suite depende de un directorio que sólo existe DENTRO del
+       contenedor. `sync.SNAPSHOT` sale de `DUDE_SNAPSHOT`, que en la imagen es
+       `/trabajo/dude.db`; en una máquina de desarrollo ese directorio no está
+       y la corrida falla con `PermissionError: [Errno 13] /trabajo`.
+
+       Y el fallo NO se ve como lo que es. `sync.corrida` atrapa la excepción y
+       la guarda en `sync_runs.error`, así que las pruebas siguientes —que leen
+       una base que quedó vacía— reportan `assert 0 == 885`. Cinco pruebas en
+       rojo señalando conteos, y ninguna nombrando el directorio.
+
+       Un test que sólo pasa en el entorno del que lo escribió no está
+       probando el código: está probando la máquina.
+    """
+    monkeypatch.setattr(sync, "SNAPSHOT", str(tmp_path / "trabajo" / "dude.db"))
+
+
 def _columnas(tabla: str) -> dict[str, int]:
     """Nombre de columna → posición en la tupla, leído del INSERT de `sync`.
 

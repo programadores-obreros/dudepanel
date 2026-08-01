@@ -5,19 +5,24 @@ import ListaCaidas from '@/components/ListaCaidas.astro';
 import Antiguedad from '@/components/Antiguedad.astro';
 import Accesos from '@/components/Accesos.astro';
 import Grafico from '@/components/Grafico.astro';
+import LineaDeTiempo from '@/components/LineaDeTiempo.astro';
 import FotoEquipo from '@/components/FotoEquipo.astro';
 import {
   cadenaDePadresInferida,
   arrastreDe,
   coberturaTopologia,
   caidasDe,
+  coberturaHistoria,
   datosDeAcceso,
   hijosInferidos,
   historiaDe,
+  lineaDeTiempoDe,
   mapasDeDispositivo,
   obtenerDispositivo,
   serviciosDe,
+  spanMedicionesDe,
 } from '@/lib/consultas';
+import { esOpcionVentana, resolverVentana } from '@/lib/linea-tiempo';
 import { accesos as calcularAccesos, type Acceso } from '@/lib/accesos';
 import { fabricante, macsReales } from '@/lib/oui';
 import { duracion, numero } from '@/lib/formato';
@@ -43,7 +48,23 @@ let caidas: Awaited<ReturnType<typeof caidasDe>> = [];
  */
 let accesos: Acceso[] = [];
 let series: Awaited<ReturnType<typeof historiaDe>> = [];
+let covHistoria: Awaited<ReturnType<typeof coberturaHistoria>> | null = null;
+let linea: Awaited<ReturnType<typeof lineaDeTiempoDe>> | null = null;
 let error: string | null = null;
+
+/**
+ * La ventana de la línea de tiempo va por `?lt=` y NO por el `?h=` de la
+ * historia de arriba. Son dos preguntas distintas: `?h=` elige un rango fijo
+ * («últimas 24 h») y `?lt=medido` se ancla al tramo que tiene mediciones, que
+ * hoy son unas dos horas por equipo. Compartir el parámetro obligaría a que un
+ * gráfico mintiera para que el otro tuviera sentido.
+ */
+const opcionLinea = (() => {
+  const v = Astro.url.searchParams.get('lt');
+  return esOpcionVentana(v) ? v : 'medido';
+})();
+const ahoraS = Math.floor(Date.now() / 1000);
+let ventanaLinea = resolverVentana(opcionLinea, ahoraS, null);
 
 /**
  * Cuántas horas de historia se muestran. Va por la URL para que un enlace a
@@ -62,7 +83,8 @@ try {
   d = await obtenerDispositivo(id);
   if (d) {
     let acc: Awaited<ReturnType<typeof datosDeAcceso>> = null;
-    [servicios, padres, hijos, mapas, caidas, arrastre, cobertura, acc, series] =
+    let span: Awaited<ReturnType<typeof spanMedicionesDe>> = null;
+    [servicios, padres, hijos, mapas, caidas, arrastre, cobertura, acc, series, span] =
       await Promise.all([
         serviciosDe(id),
         cadenaDePadresInferida(id),
@@ -73,8 +95,17 @@ try {
         coberturaTopologia(),
         datosDeAcceso(id),
         historiaDe(id, horas),
+        // Va acá y no adentro de `lineaDeTiempoDe` porque la ventana `medido`
+        // hay que resolverla ANTES de pedir la serie: es lo que decide qué
+        // tramo se pide. Son dos índices, cuesta nada.
+        spanMedicionesDe(id),
       ]);
     if (acc) accesos = calcularAccesos(acc);
+    // Sólo cuando hace falta explicar un vacío. En el camino normal —el equipo
+    // TIENE mediciones— esta consulta no se hace, y son 885 fichas por turno.
+    if (series.length === 0) covHistoria = await coberturaHistoria();
+    ventanaLinea = resolverVentana(opcionLinea, ahoraS, span);
+    linea = await lineaDeTiempoDe(id, ventanaLinea.desde, ventanaLinea.hasta);
   }
 } catch (e) {
   error = reportarError('dispositivos/[id]', e);
@@ -154,6 +185,14 @@ const SNMP = ['v1', 'v2c', 'v3'];
 
         <div class="grid gap-4 lg:grid-cols-[2fr_1fr]">
           <div class="flex flex-col gap-4">
+            {/* ── Línea de tiempo ──────────────────────────────────────────
+                Antes de «Historia medida» a propósito. La pregunta que trae a
+                alguien a esta ficha es «¿la latencia venía subiendo antes de
+                que se cayera?», y eso sólo se contesta con las caídas y la
+                latencia sobre el MISMO eje. Los gráficos sueltos de abajo
+                sirven para mirar una serie; este sirve para entender. */}
+            {linea && <LineaDeTiempo datos={linea} ventana={ventanaLinea} ruta={`/dispositivos/${d!.id}`} ahora={ahoraS} />}
+
             {/* ── Historia medida ─────────────────────────────────────────── */}
             <section class="tarjeta overflow-hidden" aria-labelledby="t-graf">
               <header
@@ -192,8 +231,15 @@ const SNMP = ['v1', 'v2c', 'v3'];
                     <br />
                     <span class="text-xs">
                       The Dude guarda historia sólo de los servicios con gráfico habilitado.
-                      En esta instalación son <strong class="text-texto">428 de 885</strong>{' '}
-                      equipos, casi todos de latencia de ping.
+                      {covHistoria && covHistoria.total > 0 && (
+                        <>
+                          {' '}En esta instalación son{' '}
+                          <strong class="text-texto">
+                            {covHistoria.con} de {covHistoria.total}
+                          </strong>{' '}
+                          equipos, casi todos de latencia de ping.
+                        </>
+                      )}
                     </span>
                   </p>
                 ) : (

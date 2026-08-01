@@ -179,6 +179,67 @@ services:
 
     logging: *logs
 
+  # ── Camino: traceroute + ASN ────────────────────────────────────────────────
+  #
+  # 🔴 ES UN SERVICIO APARTE Y NO UN COMANDO DEL ETL. Por la RED.
+  #
+  #    El `etl` vive sólo en `interna`, que es `internal: true`. Trazar necesita
+  #    mandar paquetes afuera. Medido adentro del `etl`:
+  #    `[Errno 101] Network is unreachable`. No es una preferencia de diseño.
+  #
+  #    Y el `etl` se queda donde está: es el que abre la base con las
+  #    credenciales de todos los routers, y ése no sale a internet ni por
+  #    casualidad.
+  camino:
+    image: ghcr.io/programadores-obreros/dudepanel-etl:${PANEL_VERSION:?falta PANEL_VERSION en .env.prod}@${ETL_DIGEST:?falta ETL_DIGEST en .env.prod — ver deploy/digests.sh}
+    restart: unless-stopped
+    depends_on:
+      db: { condition: service_healthy }
+
+    # El módulo traza y termina; el bucle va acá. `correr` sin destinos
+    # registrados escribe una línea y sale con 0 — o sea que hasta que alguien
+    # registre un destino esto NO MANDA UN SOLO PAQUETE. Arranca callado, y es
+    # a propósito: un servicio nuevo que empieza a sondear solo es una sorpresa.
+    #
+    #   docker compose exec camino python /app/camino.py destino 8.8.8.8 --nota "..."
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while :; do
+          python -u /app/camino.py correr || echo "camino: la corrida falló, sigo"
+          sleep "${CAMINO_INTERVALO_S:-900}"
+        done
+
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-dude}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-dude}
+      # Interruptor general de la consulta externa de ASN. Con `0` traza igual y
+      # deja los saltos sin dueño: sirve para una red que no quiere hablar con
+      # nadie de afuera ni siquiera para preguntar por una IP pública.
+      CAMINO_ASN: ${CAMINO_ASN:-1}
+
+    # 🔴 SIN `cap_add`. La técnica se eligió para esto.
+    #
+    #    Un traceroute clásico pide `CAP_NET_RAW`. Acá se usa UDP con
+    #    `IP_RECVERR`, que lee los ICMP de vuelta por la cola de errores del
+    #    propio socket y no necesita ningún privilegio. Medido con
+    #    `--cap-drop ALL`: `SOCK_RAW` da `Operation not permitted` y esto anda.
+    #
+    #    El socket ICMP `SOCK_DGRAM` también andaba — pero sólo porque Docker
+    #    deja `net.ipv4.ping_group_range` abierto de fábrica. En un anfitrión
+    #    endurecido se rompe. Se descartó por eso.
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+
+    # `interna` para la base, `borde` para poder trazar. Es el único servicio
+    # que necesita las dos por una razón de salida, no de entrada: nadie le
+    # habla a `camino`, `camino` habla hacia afuera.
+    networks: [interna, borde]
+
+    logging: *logs
+
   # ── Panel web ───────────────────────────────────────────────────────────────
   web:
     image: ghcr.io/programadores-obreros/dudepanel-web:${PANEL_VERSION:?falta PANEL_VERSION en .env.prod}@${WEB_DIGEST:?falta WEB_DIGEST en .env.prod — ver deploy/digests.sh}

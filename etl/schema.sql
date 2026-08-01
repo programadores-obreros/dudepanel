@@ -932,3 +932,305 @@ COMMENT ON VIEW v_historia_caidas IS
   'poder distinguirlas. Ojo con `solapado`: ver el comentario en schema.sql.';
 
 COMMIT;
+
+
+-- ════════════════════════════════════════════════════════════════════════════
+--  EL CAMINO DE RED HACIA UN DESTINO, CON DUEÑO DE CADA SALTO
+--
+--  Bloque agregado el 01/08/2026, con su propia transacción — igual que el de
+--  syslog: los de arriba ya cerraron con su COMMIT y así los tres se editan sin
+--  pisarse.
+--
+--  ── Qué pregunta contesta ──────────────────────────────────────────────────
+--
+--  «¿El problema es MÍO o del mayorista?», a las tres de la mañana, sin abrir
+--  una terminal. Hoy eso se resuelve con un `traceroute` a mano y media hora de
+--  `whois`; acá queda trazado, fechado y con el ASN de cada salto público.
+--
+--  ── 🔴 Lo que estas tablas SÍ y NO garantizan ──────────────────────────────
+--
+--  Un salto que no contestó se guarda como una FILA con `direccion IS NULL`, no
+--  se omite. Es la diferencia entre «el salto 7 no contesta» —normal: un router
+--  con `icmp-errors` limitado, no una falla— y «el camino tiene 6 saltos», que
+--  sería mentira. Por eso `camino_saltos` tiene clave primaria (traza_id, ttl):
+--  el TTL es la identidad del salto y nunca se renumera.
+--
+--  `asn`/`asn_org` se copian DENTRO del salto, desnormalizados a propósito. La
+--  caché de abajo sirve para no repetir consultas; el histórico necesita otra
+--  cosa: saber a quién pertenecía esa dirección EL DÍA que se trazó. Un cambio
+--  de dueño de un prefijo es justamente uno de los eventos que hay que ver.
+--
+--  ── 🔴 SIN CLAVE FORÁNEA A `devices` ───────────────────────────────────────
+--
+--  Mismo motivo que `map_element_positions` y `syslog_*`: `sync.py` hace
+--  `DELETE FROM devices` + `INSERT` en CADA corrida, cada 30 s. Un CASCADE
+--  desde acá borraría el histórico de caminos dos veces por minuto; un RESTRICT
+--  reventaría el ETL. `camino_destinos.device_id` es una resolución de mejor
+--  esfuerzo y se puede volver a correr.
+--
+--  Adentro de este bloque sí hay CASCADE —`camino_saltos` → `camino_trazas`—
+--  porque esas dos tablas son nuestras y nadie las borra cada 30 s.
+-- ════════════════════════════════════════════════════════════════════════════
+
+BEGIN;
+
+-- ── A dónde se traza ────────────────────────────────────────────────────────
+-- Una tabla explícita y no «trazá lo que te pidan» por dos razones. La primera
+-- es de operación: un destino registrado tiene nota, dueño y fecha, así que
+-- dentro de seis meses se sabe POR QUÉ se está midiendo eso. La segunda es de
+-- prudencia: acota el trabajo. Trazar es tráfico normal, pero 885 equipos por
+-- 20 saltos son 17.700 paquetes, y eso ya no se parece a «tráfico normal».
+
+CREATE TABLE IF NOT EXISTS camino_destinos (
+    id          bigserial PRIMARY KEY,
+    -- Tal como lo escribió la persona: una IP o un nombre. Se guarda el texto
+    -- original porque si es un nombre, a QUÉ dirección resuelve es un dato que
+    -- cambia — y ver que cambió es parte de lo que buscamos.
+    destino     text NOT NULL UNIQUE,
+    nota        text,
+    -- Mejor esfuerzo, SIN FK. Ver el encabezado.
+    device_id   bigint,
+    activo      boolean NOT NULL DEFAULT true,
+    creado_at   timestamptz NOT NULL DEFAULT now(),
+    creado_por  text
+);
+
+COMMENT ON COLUMN camino_destinos.destino IS
+  'El texto tal como se pidió. Si es un nombre DNS, la dirección a la que '
+  'resuelve queda en camino_trazas.destino_ip, que puede cambiar entre trazas.';
+
+
+-- ── Una corrida del trazado ─────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS camino_trazas (
+    id            bigserial PRIMARY KEY,
+    destino       text NOT NULL,
+    destino_ip    inet,
+    iniciada_at   timestamptz NOT NULL DEFAULT now(),
+    duracion_ms   integer,
+    -- Queda escrito CÓMO se midió. Un RTT de UDP a puerto cerrado y uno de
+    -- TCP a puerto abierto no son comparables, y dentro de un año nadie se
+    -- acuerda de con cuál se tomó esta fila.
+    metodo        text NOT NULL DEFAULT 'udp-recverr',
+    ttl_max       smallint NOT NULL,
+    sondas_por_salto smallint NOT NULL DEFAULT 1,
+    saltos          smallint NOT NULL,
+    saltos_mudos    smallint NOT NULL,
+    saltos_publicos smallint NOT NULL,
+    -- Llegamos o nos quedamos sin TTL. Una traza que NO alcanzó el destino
+    -- puede ser perfectamente informativa —dice hasta dónde llega— pero su
+    -- último salto no es el destino, y confundir las dos cosas lleva a culpar
+    -- al equipo equivocado.
+    alcanzado     boolean NOT NULL,
+    -- 🔴 POR QUÉ se dejó de trazar. Sin esto, una traza cortada a los 8 saltos
+    --    y una de 8 saltos que llegó se ven IGUAL en la tabla, y son cosas
+    --    opuestas: la primera no dice nada del destino.
+    --      destino  · contestó el destino (ICMP 3/x). La única que «llegó».
+    --      ttl_max  · se acabó el presupuesto de saltos
+    --      mudos    · N saltos seguidos sin contestar, se cortó por prudencia
+    --      error    · no se pudo ni empezar (ver `error`)
+    motivo_fin    text NOT NULL DEFAULT 'ttl_max',
+    error         text,
+
+    -- ── Las dos huellas, y por qué son dos ──
+    --
+    -- 🔴 `huella_saltos` es la secuencia EXACTA (ttl → dirección o `*`). Sirve
+    --    para reproducir, pero como señal de «cambió el camino» es RUIDOSA: un
+    --    solo router que esta vez no contestó —lo más normal del mundo— le
+    --    cambia el valor y dispararía una alarma falsa.
+    --
+    -- ✅ `huella_asn` es la secuencia ORDENADA y SIN REPETIR de organizaciones
+    --    atravesadas, del estilo `interna>AS1234>AS5678`. Los saltos mudos no
+    --    aportan nada, así que no la mueven. Ésta es la que contesta la
+    --    pregunta cara: «¿mi tránsito está saliendo por otro lado que ayer?».
+    huella_saltos text NOT NULL,
+    huella_asn    text NOT NULL,
+
+    -- Contra qué traza se comparó. NULL en la primera de cada destino: ahí no
+    -- hay «cambió», hay «es la primera vez», y son cosas distintas — por eso
+    -- `cambio_*` también queda en NULL y no en `false`.
+    previa_id     bigint REFERENCES camino_trazas(id) ON DELETE SET NULL,
+    cambio_saltos boolean,
+    cambio_asn    boolean,
+
+    CONSTRAINT camino_trazas_metodo_chk
+        CHECK (metodo IN ('udp-recverr', 'tcp-recverr')),
+    CONSTRAINT camino_trazas_motivo_chk
+        CHECK (motivo_fin IN ('destino', 'ttl_max', 'mudos', 'error')),
+    -- `alcanzado` y `motivo_fin` son la misma verdad dicha dos veces; que no se
+    -- puedan contradecir.
+    CONSTRAINT camino_trazas_alcanzado_chk
+        CHECK (alcanzado = (motivo_fin = 'destino')),
+    CONSTRAINT camino_trazas_conteos_chk
+        CHECK (saltos >= 0 AND saltos_mudos >= 0 AND saltos_mudos <= saltos)
+);
+
+CREATE INDEX IF NOT EXISTS camino_trazas_destino_idx
+    ON camino_trazas (destino, iniciada_at DESC);
+CREATE INDEX IF NOT EXISTS camino_trazas_cambio_idx
+    ON camino_trazas (iniciada_at DESC) WHERE cambio_asn;
+
+COMMENT ON COLUMN camino_trazas.huella_asn IS
+  'sha256 de la secuencia de organizaciones atravesadas, sin repetir y sin los '
+  'saltos mudos. Es la señal de cambio de camino que NO se ensucia porque un '
+  'router dejó de contestar. La legible está en `camino_trazas_texto.ruta_asn`.';
+
+
+-- ── Los saltos ──────────────────────────────────────────────────────────────
+--
+-- 🔴 UNA FILA POR TTL, SIEMPRE, incluidos los que no contestaron. Omitirlos
+--    renumeraría el camino y convertiría «no sé qué hay en el salto 7» en «no
+--    hay salto 7», que es una afirmación que el dato no respalda.
+
+CREATE TABLE IF NOT EXISTS camino_saltos (
+    traza_id    bigint   NOT NULL REFERENCES camino_trazas(id) ON DELETE CASCADE,
+    ttl         smallint NOT NULL,
+    -- NULL = no contestó. Es el único significado de NULL en esta columna.
+    direccion   inet,
+    rtt_ms      double precision,
+    -- interna  · dirección que NO sale de acá (RFC 1918, CGNAT, loopback…)
+    -- publica  · unicast global: es la única clase que se consulta afuera
+    -- especial · multicast, reservada, broadcast — contestó algo que no es un
+    --            host enrutable. No se consulta afuera y no se disfraza de
+    --            «interna», porque no lo es.
+    -- mudo     · no contestó
+    clase       text NOT NULL,
+    -- Copia del ASN VIGENTE AL MOMENTO DE TRAZAR. Ver el encabezado del bloque.
+    asn         integer,
+    asn_org     text,
+    asn_prefijo cidr,
+    asn_pais    text,
+    -- El ICMP crudo. `11/0` es TTL agotado (un salto intermedio) y `3/3` es
+    -- puerto inalcanzable (llegamos al destino). Guardarlo permite distinguir
+    -- «el destino contestó» de «un intermedio contestó» sin volver a medir, y
+    -- también ver un `3/13` — filtrado administrativamente — que es un dato
+    -- operativo por sí solo.
+    icmp_tipo   smallint,
+    icmp_codigo smallint,
+    PRIMARY KEY (traza_id, ttl),
+    CONSTRAINT camino_saltos_clase_chk
+        CHECK (clase IN ('interna', 'publica', 'especial', 'mudo')),
+    -- Las dos direcciones de la misma verdad: mudo ⟺ sin dirección.
+    CONSTRAINT camino_saltos_mudo_chk
+        CHECK ((clase = 'mudo') = (direccion IS NULL)),
+    -- 🔴 Un ASN sólo puede existir en un salto público. Si alguna vez aparece
+    --    un ASN junto a una dirección interna, eso significa que una dirección
+    --    de la red del ISP se mandó a un servicio externo — que es exactamente
+    --    lo que este diseño existe para impedir. Que lo rechace la BASE y no
+    --    sólo el código: el código se puede reescribir sin leer el comentario.
+    CONSTRAINT camino_saltos_asn_solo_publico_chk
+        CHECK (clase = 'publica' OR (asn IS NULL AND asn_org IS NULL
+                                     AND asn_prefijo IS NULL AND asn_pais IS NULL))
+);
+
+CREATE INDEX IF NOT EXISTS camino_saltos_asn_idx ON camino_saltos (asn);
+CREATE INDEX IF NOT EXISTS camino_saltos_dir_idx ON camino_saltos (direccion);
+
+
+-- ── Caché de ASN ────────────────────────────────────────────────────────────
+--
+-- El ASN de una dirección no cambia todos los días —el prefijo 1.1.1.0/24 está
+-- asignado desde 2011— y cada consulta es tráfico saliente hacia un tercero.
+-- Sin caché, una traza de 20 saltos con 12 públicos son 24 consultas DNS (12 de
+-- origen + 12 de nombre de AS) cada vez que se corre.
+--
+-- 🔴 EL `CHECK` DE ABAJO ES LA GARANTÍA DE PRIVACIDAD, ESCRITA EN LA BASE.
+--
+--    Esta tabla contiene, por definición, las direcciones que SE MANDARON a un
+--    servicio externo. Si una dirección de la red del ISP puede entrar acá, ya
+--    se filtró. La restricción hace que la base rechace la fila: no depende de
+--    que el código esté bien, ni de que el próximo que lo toque lea el
+--    comentario.
+--
+--    Los rangos son las constantes de las RFC (1918 privadas, 6598 CGNAT, 5737
+--    documentación, 2544 pruebas, 3927 link-local…), no direcciones de nadie.
+--    Son EXACTAMENTE los mismos que `camino.es_publica()` en `camino.py`; si
+--    las dos listas se separan, `test_camino.py` lo detecta comparándolas.
+
+CREATE TABLE IF NOT EXISTS camino_asn_cache (
+    direccion     inet PRIMARY KEY,
+    asn           integer,
+    prefijo       cidr,
+    pais          text,
+    registro      text,
+    asignado      date,
+    org           text,
+    -- ok        · el servicio contestó con un ASN
+    -- sin_datos · contestó que no sabe. Pasa de verdad: de los 4 saltos
+    --             públicos de la medición del 01/08/2026, uno no tenía origen
+    --             publicado. Se cachea igual, si no se re-pregunta siempre.
+    -- error     · no se pudo consultar (DNS caído, sin salida). NO se cachea
+    --             largo: es un fallo nuestro, no una respuesta.
+    resultado     text NOT NULL,
+    consultado_at timestamptz NOT NULL DEFAULT now(),
+    expira_at     timestamptz NOT NULL,
+
+    CONSTRAINT camino_asn_cache_resultado_chk
+        CHECK (resultado IN ('ok', 'sin_datos', 'error')),
+    CONSTRAINT camino_asn_cache_publica_chk CHECK (
+        family(direccion) = 4
+        AND NOT (direccion <<= ANY (ARRAY[
+            '0.0.0.0/8',        -- «esta red»
+            '10.0.0.0/8',       -- RFC 1918
+            '100.64.0.0/10',    -- RFC 6598 CGNAT
+            '127.0.0.0/8',      -- loopback
+            '169.254.0.0/16',   -- RFC 3927 link-local
+            '172.16.0.0/12',    -- RFC 1918
+            '192.0.0.0/24',     -- RFC 6890 asignaciones de protocolo
+            '192.0.2.0/24',     -- RFC 5737 documentación
+            '192.168.0.0/16',   -- RFC 1918
+            '198.18.0.0/15',    -- RFC 2544 pruebas
+            '198.51.100.0/24',  -- RFC 5737 documentación
+            '203.0.113.0/24',   -- RFC 5737 documentación
+            '224.0.0.0/4',      -- multicast
+            '240.0.0.0/4'       -- reservada
+        ]::cidr[]))
+    )
+);
+
+CREATE INDEX IF NOT EXISTS camino_asn_cache_expira_idx ON camino_asn_cache (expira_at);
+
+COMMENT ON TABLE camino_asn_cache IS
+  '🔴 Las direcciones que SE CONSULTARON afuera. El CHECK impide que entre una '
+  'dirección no enrutable globalmente: es la garantía de privacidad escrita en '
+  'la base, no sólo en el código. Ver el comentario en schema.sql.';
+
+
+-- ── Vistas ──────────────────────────────────────────────────────────────────
+
+-- La huella legible. Las columnas `huella_*` son sha256 —sirven para comparar,
+-- no para leer— y sin esto nadie puede mirar una traza y entender qué cambió.
+CREATE OR REPLACE VIEW camino_trazas_texto AS
+SELECT t.id,
+       t.destino,
+       -- `AS1234 › AS5678`, sin repetir y sin los mudos. Es la misma secuencia
+       -- sobre la que se calculó `huella_asn`, en versión para humanos.
+       (SELECT string_agg(x.etiqueta, ' › ')
+          FROM (SELECT DISTINCT ON (grupo) grupo,
+                       CASE WHEN s.clase = 'publica' AND s.asn IS NOT NULL
+                            THEN 'AS' || s.asn
+                            WHEN s.clase = 'publica' THEN 'público sin ASN'
+                            ELSE s.clase END AS etiqueta
+                  FROM (SELECT s2.*,
+                               -- Agrupa saltos consecutivos del mismo dueño.
+                               row_number() OVER (ORDER BY s2.ttl)
+                             - row_number() OVER (
+                                 PARTITION BY s2.clase, s2.asn ORDER BY s2.ttl
+                               ) AS grupo
+                          FROM camino_saltos s2
+                         WHERE s2.traza_id = t.id AND s2.clase <> 'mudo') s
+                 ORDER BY grupo, s.ttl) x) AS ruta_asn
+  FROM camino_trazas t;
+
+-- La última traza de cada destino. `DISTINCT ON` y no una subconsulta con
+-- `max(iniciada_at)`: resuelve por el índice (destino, iniciada_at DESC) sin
+-- leer el histórico entero, que es lo que la página carga en cada visita.
+CREATE OR REPLACE VIEW v_camino_ultimo AS
+SELECT DISTINCT ON (t.destino) t.*
+  FROM camino_trazas t
+ ORDER BY t.destino, t.iniciada_at DESC;
+
+COMMENT ON VIEW v_camino_ultimo IS
+  'Una fila por destino: la traza más reciente. Es lo que muestra /camino.';
+
+COMMIT;

@@ -1,0 +1,274 @@
+---
+/**
+ * El camino de red hacia un destino, salto por salto y con dueño.
+ *
+ * 🔴 Existe para contestar UNA pregunta, la más cara de la madrugada:
+ *    **¿el problema es mío o del mayorista?**
+ *
+ *    Hoy eso se resuelve con un `traceroute` a mano y media hora de `whois`, y
+ *    el resultado se lo lleva el que lo corrió. Acá queda trazado, fechado, con
+ *    el ASN de cada salto público y —lo que de verdad importa— comparado contra
+ *    la vez anterior.
+ *
+ * Lo traza `etl/camino.py`, que corre aparte y con salida a internet (el
+ * contenedor del ETL está en una red `internal: true` y no llega a ningún
+ * lado). Esta página SÓLO LEE lo que quedó guardado: si no hay nada, lo dice y
+ * explica cómo trazar, en vez de mostrar una tabla vacía.
+ */
+import Base from '@/layouts/Base.astro';
+import {
+  destinosCamino,
+  trazaCamino,
+  saltosCamino,
+  historialCamino,
+} from '@/lib/consultas';
+import {
+  agruparTramos,
+  etiquetaDueno,
+  frontera,
+  reparto,
+  textoCambio,
+  textoMotivo,
+  textoRtt,
+  type SaltoCamino,
+  type TrazaCamino,
+  type Tramo,
+} from '@/lib/camino';
+import { fechaHora, numero } from '@/lib/formato';
+import { reportarError } from '@/lib/errores';
+
+const p = Astro.url.searchParams;
+const pedido = (p.get('destino') ?? '').trim().slice(0, 253);
+
+let destinos: Awaited<ReturnType<typeof destinosCamino>> = [];
+let traza: TrazaCamino | undefined;
+let saltos: SaltoCamino[] = [];
+let historial: TrazaCamino[] = [];
+let error: string | null = null;
+
+try {
+  destinos = await destinosCamino();
+  // Sin destino en la URL se muestra el primero que tenga traza: entrar a
+  // /camino y ver una lista de nombres sin nada al lado no le sirve a nadie.
+  const elegido = pedido || destinos.find((d) => d.traza_id !== null)?.destino || '';
+  if (elegido) {
+    traza = await trazaCamino({ destino: elegido });
+    if (traza) {
+      saltos = await saltosCamino(traza.id);
+      historial = await historialCamino(elegido, 15);
+    }
+  }
+} catch (e) {
+  error = reportarError('camino', e);
+}
+
+const tramos: Tramo[] = agruparTramos(saltos);
+const ttlFrontera = frontera(saltos);
+const cuentas = reparto(saltos);
+const cambio = traza ? textoCambio(traza) : null;
+
+const COLOR_CAMBIO: Record<string, string> = {
+  alerta: 'text-caido-txt',
+  aviso: 'text-tenue',
+  nuevo: 'text-tenue',
+  estable: 'text-tenue',
+};
+---
+
+<Base
+  titulo="Camino"
+  descripcion="Camino de red hacia un destino, con el operador de cada salto."
+>
+  <header class="mb-4">
+    <h1 class="text-xl font-semibold">Camino de red</h1>
+    <p class="text-tenue mt-1 text-sm">
+      Salto por salto hasta el destino. Para los saltos que salen de la red del
+      ISP se muestra a qué organización pertenecen, así se ve de un golpe dónde
+      termina lo nuestro y empieza lo de otro.
+    </p>
+  </header>
+
+  {error && <p class="tarjeta text-caido-txt p-4 text-sm">{error}</p>}
+
+  {
+    !error && destinos.length === 0 && (
+      <div class="tarjeta p-4 text-sm">
+        <p class="font-medium">Todavía no hay ningún destino registrado.</p>
+        <p class="text-tenue mt-2">
+          El trazado lo hace <code>etl/camino.py</code>, que corre aparte del ETL
+          porque necesita salida a internet. Para registrar un destino y trazarlo:
+        </p>
+        <pre class="bg-panel-2 mt-2 overflow-x-auto rounded p-3 text-xs"><code>python camino.py destino ejemplo.example --nota "salida al mayorista"
+python camino.py correr</code></pre>
+      </div>
+    )
+  }
+
+  {/* ── Elegir destino. Un GET simple: sin JS, y así funciona con la CSP. ── */}
+  {
+    destinos.length > 0 && (
+      <form method="get" class="tarjeta mb-4 flex flex-wrap items-end gap-3 p-3">
+        <div>
+          <label for="destino" class="text-tenue text-2xs mb-1 block font-semibold uppercase">
+            Destino
+          </label>
+          <select
+            id="destino"
+            name="destino"
+            class="border-borde bg-panel-2 focus-visible:outline-acento max-w-96 rounded-lg border px-2 py-2 text-sm focus-visible:outline-2"
+          >
+            {destinos.map((d) => (
+              <option value={d.destino} selected={d.destino === traza?.destino}>
+                {d.destino}
+                {d.nota ? ` — ${d.nota}` : ''}
+                {d.traza_id === null ? ' (sin trazar)' : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+        <button
+          type="submit"
+          class="border-borde bg-panel-2 hover:bg-panel focus-visible:outline-acento cursor-pointer rounded-lg border px-4 py-2 text-sm font-medium transition-colors duration-150 focus-visible:outline-2"
+        >
+          Ver
+        </button>
+      </form>
+    )
+  }
+
+  {
+    traza && (
+      <>
+        {/* ── Resumen ─────────────────────────────────────────────────── */}
+        <section class="tarjeta mb-4 p-4">
+          <div class="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 class="font-semibold">
+              {traza.destino}
+              {traza.destino_ip && traza.destino_ip !== traza.destino && (
+                <span class="text-tenue font-normal"> · {traza.destino_ip}</span>
+              )}
+            </h2>
+            <span class="text-tenue text-xs">
+              {fechaHora(traza.iniciada_at)} · {traza.metodo} ·{' '}
+              {numero(traza.duracion_ms)} ms
+            </span>
+          </div>
+
+          <p class={`mt-2 text-sm ${COLOR_CAMBIO[cambio!.nivel]}`}>
+            {cambio!.nivel === 'alerta' && '🔴 '}
+            {cambio!.texto} · {textoMotivo(traza)}
+          </p>
+
+          {traza.error && (
+            <p class="text-caido-txt mt-2 text-sm">{traza.error}</p>
+          )}
+
+          <dl class="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+            <div>
+              <dt class="text-tenue text-xs">Saltos</dt>
+              <dd class="text-lg">{traza.saltos}</dd>
+            </div>
+            <div>
+              <dt class="text-tenue text-xs">En la red del ISP</dt>
+              <dd class="text-lg">{cuentas.propios}</dd>
+            </div>
+            <div>
+              <dt class="text-tenue text-xs">Fuera</dt>
+              <dd class="text-lg">{cuentas.ajenos}</dd>
+            </div>
+            <div>
+              {/* 🔴 Los mudos se CUENTAN y se muestran. Son lo normal, no un
+                  fallo — y esconderlos haría que el total no cierre. */}
+              <dt class="text-tenue text-xs">Sin respuesta</dt>
+              <dd class="text-lg">{cuentas.mudos}</dd>
+            </div>
+          </dl>
+
+          {traza.ruta_asn && (
+            <p class="text-tenue mt-3 text-xs">
+              Ruta de operadores: <span class="font-mono">{traza.ruta_asn}</span>
+            </p>
+          )}
+        </section>
+
+        {/* ── Los saltos, agrupados por dueño ─────────────────────────── */}
+        <section class="tarjeta overflow-hidden">
+          <table class="w-full text-sm">
+            <thead class="text-tenue border-borde border-b text-left text-xs">
+              <tr>
+                <th class="w-10 p-2">#</th>
+                <th class="p-2">Dirección</th>
+                <th class="w-24 p-2 text-right">Latencia</th>
+                <th class="p-2">Organización</th>
+              </tr>
+            </thead>
+            {tramos.map((tramo) => (
+              <tbody class="border-borde border-b last:border-0">
+                <tr>
+                  <td colspan="4" class="bg-panel-2 px-2 py-1 text-xs">
+                    <span class={tramo.propio ? '' : 'font-semibold'}>
+                      {/* La línea que separa lo nuestro de lo ajeno. */}
+                      {!tramo.propio && ttlFrontera === tramo.saltos[0]!.ttl
+                        ? '⟶ desde acá NO es la red del ISP · '
+                        : ''}
+                      {tramo.titulo}
+                    </span>
+                    {tramo.asn !== null && (
+                      <span class="text-tenue"> · AS{tramo.asn}</span>
+                    )}
+                    {tramo.saltos[0]!.asn_pais && (
+                      <span class="text-tenue"> · {tramo.saltos[0]!.asn_pais}</span>
+                    )}
+                  </td>
+                </tr>
+                {tramo.saltos.map((s) => (
+                  <tr class={s.clase === 'mudo' ? 'text-tenue' : ''}>
+                    <td class="p-2 tabular-nums">{s.ttl}</td>
+                    <td class="p-2 font-mono text-xs">
+                      {/* 🔴 El salto mudo se DIBUJA. Saltearlo renumeraría el
+                          camino y diría que hay menos saltos de los que hay. */}
+                      {s.direccion ?? '*'}
+                    </td>
+                    <td class="p-2 text-right tabular-nums">{textoRtt(s.rtt_ms)}</td>
+                    <td class="p-2">{etiquetaDueno(s)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            ))}
+          </table>
+        </section>
+
+        {/* ── Historial: el punto de todo esto ────────────────────────── */}
+        {historial.length > 1 && (
+          <section class="mt-4">
+            <h2 class="mb-2 font-semibold">Historial</h2>
+            <p class="text-tenue mb-2 text-sm">
+              El valor no está en la foto de hoy sino en ver que el camino
+              cambió. Una fila marcada es una traza en la que el tráfico pasó a
+              salir por otro operador.
+            </p>
+            <ul class="tarjeta divide-borde divide-y text-sm">
+              {historial.map((h) => (
+                <li class="flex flex-wrap items-baseline justify-between gap-2 p-2">
+                  <span class="text-tenue text-xs">{fechaHora(h.iniciada_at)}</span>
+                  <span class="font-mono text-xs">{h.ruta_asn}</span>
+                  <span class={h.cambio_asn ? 'text-caido-txt text-xs' : 'text-tenue text-xs'}>
+                    {textoCambio(h).texto}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+      </>
+    )
+  }
+
+  {
+    !error && destinos.length > 0 && !traza && (
+      <p class="tarjeta text-tenue p-4 text-sm">
+        Ese destino todavía no se trazó. Corré <code>python camino.py correr</code>.
+      </p>
+    )
+  }
+</Base>

@@ -52,7 +52,13 @@ WORKDIR /app
 #    Se descubrió intentando importar seis años de historia en producción:
 #    `ModuleNotFoundError: No module named 'psycopg'` primero, y
 #    `can't open file '/app/syslog.py'` después.
-COPY dudeobj.py sync.py syslog.py respaldo.py schema.sql ./
+#
+#    ⚠️ `camino.py` está en la imagen pero NO puede correr en el servicio `etl`:
+#       ese servicio vive en la red `interna` (`internal: true`) y trazar
+#       necesita salida. Medido: `[Errno 101] Network is unreachable`. Va como
+#       servicio aparte con `networks: [interna, borde]`, o a mano desde un
+#       contenedor con salida. Ver el encabezado de `camino.py`.
+COPY dudeobj.py sync.py syslog.py respaldo.py camino.py schema.sql ./
 COPY salud.py /usr/local/bin/salud.py
 
 ENV PYTHONUNBUFFERED=1 \

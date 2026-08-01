@@ -1281,6 +1281,37 @@ function cajonPara(horas: number): { bucket: string; segundos: number } {
   return { bucket: '1day', segundos: 86400 };
 }
 
+export interface CoberturaHistoria {
+  /** Equipos con al menos una medición guardada. */
+  con: number;
+  /** Equipos en total. */
+  total: number;
+}
+
+/**
+ * Cuántos equipos tienen historia guardada, EN ESTA instalación.
+ *
+ * 🔴 Esto se cuenta, no se escribe a mano.
+ *
+ *    El vacío del gráfico decía «en esta instalación son 428 de 885». Dos
+ *    problemas: el número era de otro momento —hoy son bastantes menos, porque
+ *    `chart_values_raw` es un buffer circular y las fuentes entran y salen— y
+ *    además era el número de UNA red, clavado en una herramienta que se instala
+ *    en cualquier otra.
+ *
+ *    Un dato desactualizado en un mensaje que explica un vacío es peor que no
+ *    ponerlo: el operador lo lee como una medición del panel y no lo es.
+ */
+export async function coberturaHistoria(): Promise<CoberturaHistoria> {
+  const fila = await consultarUna<{ con: number; total: number }>(`
+    SELECT (SELECT count(DISTINCT s.device_id)::int
+              FROM chart_sources s
+             WHERE s.device_id IS NOT NULL
+               AND EXISTS (SELECT 1 FROM chart_values v WHERE v.source_id = s.id)) AS con,
+           (SELECT count(*)::int FROM devices) AS total`);
+  return { con: fila?.con ?? 0, total: fila?.total ?? 0 };
+}
+
 /**
  * Las series de un equipo para el rango pedido.
  *
@@ -1921,4 +1952,485 @@ export async function caidasExplicadasPorArrastre(
       baja: fila?.baja ?? 0,
     },
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Línea de tiempo — latencia, tráfico y caídas sobre un mismo eje
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Todo lo que decide qué se dibuja y qué se descarta vive en `lib/linea-tiempo`,
+// que es puro y está probado con casos exactos. Acá sólo se TRAE el dato.
+
+/** Una serie de la línea de tiempo, ya en epoch de segundos. */
+export interface SerieLinea {
+  fuente_id: number;
+  nombre: string;
+  unidad: string;
+  /** `rx` / `tx` deducidos del sufijo que arma The Dude, para el trazo. */
+  sentido: 'rx' | 'tx' | null;
+  puntos: [number, number][];
+}
+
+/** Una caída cruda, sin interpretar. La interpreta `armarBandas`. */
+export interface CaidaLinea {
+  id: number;
+  fuente: 'dude' | 'syslog';
+  inicio: number | null;
+  fin: number | null;
+  cruza_hueco: boolean;
+}
+
+export interface CoberturaLinea {
+  /** Primera caída conocida por The Dude, y el `source_mtime` del volcado. */
+  dude_desde: number | null;
+  dude_hasta: number | null;
+  /** Extremos de lo reconstruido del syslog, para este equipo. */
+  syslog_desde: number | null;
+  syslog_hasta: number | null;
+  /** Última medición de este equipo, exista o no en la ventana pedida. */
+  ultima_medicion: number | null;
+  /** Primera medición de este equipo. Junto con la anterior, el span real. */
+  primera_medicion: number | null;
+}
+
+export interface DatosLineaTiempo {
+  latencia: SerieLinea[];
+  trafico: SerieLinea[];
+  caidas: CaidaLinea[];
+  cobertura: CoberturaLinea;
+  /** De qué resolución de `chart_values` salieron los puntos. */
+  bucket: string;
+  /** Puntos traídos antes de recortar por ventana. Para la letra chica. */
+  puntos_totales: number;
+  /** Muestras de latencia en cero que se descartaron. Ver `SIN_CEROS`. */
+  ceros_descartados: number;
+}
+
+/**
+ * 🔴 EN LATENCIA, UN CERO NO ES UNA MEDICIÓN.
+ *
+ * Medido el 01/08/2026 sobre las 248.078 muestras con unidad `s` de la base
+ * real: **214.628 valen exactamente 0 — el 86,5 %.** Y el valor no nulo más
+ * chico de toda la tabla es **0,015 s (15 ms)**. No hay UN SOLO valor entre 0
+ * y 15 ms.
+ *
+ * Un ping de exactamente 0,000000 s no existe. Y una distribución con el 86 %
+ * amontonado en cero, nada en los 15 ms siguientes y el resto repartido a
+ * partir de ahí no es una medición: es un centinela. Mirando una serie de
+ * cerca se ve el mecanismo — The Dude guarda una fila cada ~2 s y sólo sondea
+ * cada 10 a 60 s (mediana 14 s), así que rellena con 0 los casilleros que no
+ * midió:
+ *
+ *     23:51:15  0
+ *     23:51:22  0.015   ← la medición
+ *     23:51:24  0
+ *     ...
+ *     23:51:48  0.015   ← la siguiente
+ *
+ * Dibujarlos costaría caro y en la dirección peligrosa:
+ *
+ *   · la línea baja a cero entre medición y medición, así que un enlace sano
+ *     se ve como un serrucho catastrófico;
+ *   · el promedio se hunde. Con los ceros da 58,86 ms en un equipo donde el
+ *     promedio de las mediciones reales es siete veces mayor;
+ *   · y sobre todo: **cero milisegundos se lee como «respuesta instantánea»**,
+ *     que es una afirmación sobre la red, y es falsa.
+ *
+ * 🔴 Y NO se aplica al tráfico. En `bit/s`, cero es un valor perfectamente
+ *    real —el enlace no está pasando nada— y borrarlo taparía justo el
+ *    incidente. Medido: de 1.492 muestras de `bit/s`, **cero valen cero**; la
+ *    más chica es 1,75 Mbit/s. O sea que hoy el filtro no cambiaría nada ahí,
+ *    y aun así no se aplica, porque el día que un enlace se caiga de verdad
+ *    tiene que verse.
+ *
+ * Costo medido de la regla: los equipos con serie dibujable pasan de 167 a
+ * **166** —uno solo tenía puros ceros— y la serie mediana queda en 169 puntos
+ * reales sobre las dos horas, que es de sobra para ver una tendencia.
+ */
+const SIN_CEROS = `(f.unit <> 's' OR cv.value > 0)`;
+
+/**
+ * El cajón de `chart_values` que se usa acá, y por qué es siempre `raw`.
+ *
+ * 🔴 Medido el 01/08/2026 sobre la base real: `chart_values` tiene 250.373
+ *    filas y el 100 % son `raw`. Los cajones `10min`, `2hour` y `1day` tienen
+ *    **cero filas**. No hay nada que elegir.
+ *
+ *    (La medición del 31/07 que está en `cajonPara` describe un volcado más
+ *     gordo, con 935.530 filas `raw` y agregados a medio llenar. Aun ahí `raw`
+ *     ganaba en las dos cosas: mejor resolución y más cobertura. La conclusión
+ *     no cambia; los números sí, y por eso van fechados.)
+ *
+ * 🔴 Y NO se mezclan cajones. Promediar una medición cruda con el promedio de
+ *    un día da un número que no es ninguna de las dos cosas.
+ */
+const CAJON_LINEA = 'raw';
+
+/**
+ * 🔴 Acá NO se agrega con `date_bin`, a diferencia de `historiaDe`.
+ *
+ *    Motivo medido: la serie de un equipo son 746 puntos de mediana sobre un
+ *    span de 2 h 04 m (170 fuentes medidas el 01/08/2026, ninguna llega a 6 h).
+ *    Eso ya es una cantidad razonable para un SVG y promediarlo destruiría
+ *    justamente lo que se vino a buscar: el pico de latencia de treinta
+ *    segundos ANTES de la caída. Un promedio de 10 minutos se lo come.
+ *
+ *    El tope duro está igual, por si algún equipo tuviera una serie larga: si
+ *    pasa de `LIMITE_PUNTOS` se diezma tomando uno de cada N. Diezmar conserva
+ *    los picos —los muestrea— mientras que promediar los borra.
+ */
+const LIMITE_PUNTOS = 2000;
+
+function diezmar(puntos: [number, number][]): [number, number][] {
+  if (puntos.length <= LIMITE_PUNTOS) return puntos;
+  const paso = Math.ceil(puntos.length / LIMITE_PUNTOS);
+  const salida = puntos.filter((_, i) => i % paso === 0);
+  // El último siempre entra: sin él la línea termina antes que el eje y parece
+  // que el equipo dejó de reportar cuando en realidad lo cortó el diezmado.
+  const ultimo = puntos[puntos.length - 1];
+  if (salida[salida.length - 1] !== ultimo) salida.push(ultimo);
+  return salida;
+}
+
+/** `... rx` / `... tx` es el sufijo que le pone The Dude al nombre de la fuente. */
+function sentidoDe(nombre: string): 'rx' | 'tx' | null {
+  if (/\brx$/i.test(nombre)) return 'rx';
+  if (/\btx$/i.test(nombre)) return 'tx';
+  return null;
+}
+
+/**
+ * Todo lo que necesita la línea de tiempo de un equipo, en una sola ida.
+ *
+ * `desde`/`hasta` en epoch de segundos. El llamador los resuelve con
+ * `resolverVentana`, que necesita saber el span de las mediciones — y ese span
+ * sale de acá. Para no encadenar dos consultas, las series se piden por el
+ * `margenS` más ancho de todos los rangos ofrecidos y se recortan después.
+ */
+export async function lineaDeTiempoDe(
+  deviceId: number,
+  desde: number,
+  hasta: number,
+): Promise<DatosLineaTiempo> {
+  const [series, ceros, caidasDude, caidasSyslog, cob] = await Promise.all([
+    consultar<{ fuente_id: number; nombre: string; unidad: string; t: number; v: number }>(
+      `WITH f AS (
+         SELECT cs.id, cs.name, cs.unit
+           FROM chart_sources cs
+          WHERE cs.unit IN ('s', 'bit/s')
+            AND (cs.device_id = $1
+                 OR cs.service_id IN (SELECT id FROM services WHERE device_id = $1))
+       )
+       SELECT f.id AS fuente_id, f.name AS nombre, f.unit AS unidad,
+              extract(epoch FROM cv.ts)::bigint AS t,
+              cv.value AS v
+         FROM f JOIN chart_values cv ON cv.source_id = f.id
+        WHERE cv.bucket = $2
+          -- 🔴 The Dude crea la fila del promedio y la llena después. En bit/s
+          --    casi nunca la llena: 346 de 348 fuentes están así. Sin este
+          --    filtro la serie sale llena de agujeros que parecen cortes.
+          AND cv.value IS NOT NULL
+          -- 🔴 Y en latencia el 86,5 % de las muestras valen 0, que es el
+          --    relleno de los casilleros sin sondeo, no un ping instantáneo.
+          --    Ver la constante SIN_CEROS acá arriba, con la medición.
+          AND ${SIN_CEROS}
+          AND cv.ts >= to_timestamp($3) AND cv.ts <= to_timestamp($4)
+        ORDER BY f.id, cv.ts`,
+      [deviceId, CAJON_LINEA, desde, hasta],
+    ),
+
+    consultarUna<{ n: number }>(
+      `SELECT count(*)::int AS n
+         FROM chart_sources cs
+         JOIN chart_values cv ON cv.source_id = cs.id
+        WHERE cs.unit = 's'
+          AND (cs.device_id = $1
+               OR cs.service_id IN (SELECT id FROM services WHERE device_id = $1))
+          AND cv.bucket = $2 AND cv.value = 0
+          AND cv.ts >= to_timestamp($3) AND cv.ts <= to_timestamp($4)`,
+      [deviceId, CAJON_LINEA, desde, hasta],
+    ),
+
+    consultar<{ id: number; inicio: number | null; fin: number | null }>(
+      `SELECT o.id,
+              extract(epoch FROM o.started_at)::bigint AS inicio,
+              extract(epoch FROM o.ended_at)::bigint   AS fin
+         FROM outages o
+        WHERE o.device_id = $1
+          AND o.started_at <= to_timestamp($3)
+          AND COALESCE(o.ended_at, now()) >= to_timestamp($2)
+        ORDER BY o.started_at`,
+      [deviceId, desde, hasta],
+    ),
+
+    // 🔴 El join va por `device_id`, y eso ya deja afuera lo dudoso: de las
+    //    69.535 caídas del syslog, 8.846 son `ambiguous` y 563 `unknown`, y
+    //    NINGUNA de esas 9.409 tiene `device_id`. Medido el 01/08/2026. Una
+    //    banda atribuida al equipo equivocado es un dato inventado.
+    consultar<{ id: number; inicio: number | null; fin: number | null; cruza: boolean }>(
+      `SELECT s.id,
+              extract(epoch FROM s.started_at)::bigint AS inicio,
+              extract(epoch FROM s.ended_at)::bigint   AS fin,
+              s.spans_gap AS cruza
+         FROM syslog_outages s
+        WHERE s.device_id = $1
+          AND COALESCE(s.started_at, s.ended_at) <= to_timestamp($3)
+          AND COALESCE(s.ended_at, now())        >= to_timestamp($2)
+        ORDER BY COALESCE(s.started_at, s.ended_at)`,
+      [deviceId, desde, hasta],
+    ),
+
+    consultarUna<{
+      dude_desde: number | null; dude_hasta: number | null;
+      syslog_desde: number | null; syslog_hasta: number | null;
+      primera_medicion: number | null; ultima_medicion: number | null;
+    }>(
+      `WITH medidas AS (
+         SELECT cv.ts
+           FROM chart_values cv
+           JOIN chart_sources cs ON cs.id = cv.source_id
+          WHERE cv.bucket = $2
+            AND cv.value IS NOT NULL
+            AND (cs.unit <> 's' OR cv.value > 0)
+            AND (cs.device_id = $1
+                 OR cs.service_id IN (SELECT id FROM services WHERE device_id = $1))
+       )
+       SELECT
+         (SELECT extract(epoch FROM min(started_at))::bigint FROM outages) AS dude_desde,
+         -- 🔴 El fin de la cobertura del Dude es el mtime del VOLCADO, no la
+         --    última caída: que en los últimos tres días no haya habido ninguna
+         --    es información, no falta de cobertura. Es el borde que decide
+         --    dónde manda cada fuente de caídas (ver armarBandas en lib/linea-tiempo).
+         COALESCE(
+           (SELECT extract(epoch FROM max(source_mtime))::bigint FROM sync_runs WHERE ok),
+           (SELECT extract(epoch FROM max(started_at))::bigint FROM outages)
+         ) AS dude_hasta,
+         (SELECT extract(epoch FROM min(COALESCE(started_at, ended_at)))::bigint
+            FROM syslog_outages WHERE device_id = $1) AS syslog_desde,
+         (SELECT extract(epoch FROM max(COALESCE(ended_at, started_at)))::bigint
+            FROM syslog_outages WHERE device_id = $1) AS syslog_hasta,
+         -- 🔴 El MISMO criterio que la serie: sólo mediciones de verdad.
+         --    Sin esto, la ficha decía «la última medición es de las 10:19:45»
+         --    señalando un casillero de relleno en cero. Una fecha cierta que
+         --    describe un dato que no existe es peor que no poner fecha.
+         --
+         -- 🔴 Y va con JOIN, no con IN (...). La primera versión metía el
+         --    filtro del cero DENTRO del subselect de chart_sources, lo que lo
+         --    volvía correlacionado con cv.value: Postgres reevaluaba el
+         --    subselect por cada fila de chart_values y la consulta moría en
+         --    el statement_timeout de 10 s. Medido: la ficha del equipo con
+         --    más historia tardaba 10.243 ms y devolvía el error 57014.
+         (SELECT extract(epoch FROM min(m.ts))::bigint FROM medidas m) AS primera_medicion,
+         (SELECT extract(epoch FROM max(m.ts))::bigint FROM medidas m) AS ultima_medicion`,
+      [deviceId, CAJON_LINEA],
+    ),
+  ]);
+
+  const porFuente = new Map<number, SerieLinea>();
+  for (const f of series) {
+    let s = porFuente.get(f.fuente_id);
+    if (!s) {
+      s = {
+        fuente_id: f.fuente_id,
+        nombre: f.nombre,
+        unidad: f.unidad,
+        sentido: sentidoDe(f.nombre),
+        puntos: [],
+      };
+      porFuente.set(f.fuente_id, s);
+    }
+    s.puntos.push([Number(f.t), Number(f.v)]);
+  }
+
+  // Una serie de un solo punto no dibuja una línea. Se descarta acá y no en la
+  // plantilla, para que el componente no tenga que decidir nada.
+  const todas = [...porFuente.values()].filter((s) => s.puntos.length > 1);
+  for (const s of todas) s.puntos = diezmar(s.puntos);
+
+  const caidas: CaidaLinea[] = [
+    ...caidasDude.map((c) => ({
+      id: Number(c.id),
+      fuente: 'dude' as const,
+      inicio: c.inicio == null ? null : Number(c.inicio),
+      fin: c.fin == null ? null : Number(c.fin),
+      cruza_hueco: false,
+    })),
+    ...caidasSyslog.map((c) => ({
+      id: Number(c.id),
+      fuente: 'syslog' as const,
+      inicio: c.inicio == null ? null : Number(c.inicio),
+      fin: c.fin == null ? null : Number(c.fin),
+      cruza_hueco: Boolean(c.cruza),
+    })),
+  ];
+
+  return {
+    latencia: todas.filter((s) => s.unidad === 's'),
+    trafico: todas.filter((s) => s.unidad === 'bit/s'),
+    caidas,
+    cobertura: {
+      dude_desde: cob?.dude_desde == null ? null : Number(cob.dude_desde),
+      dude_hasta: cob?.dude_hasta == null ? null : Number(cob.dude_hasta),
+      syslog_desde: cob?.syslog_desde == null ? null : Number(cob.syslog_desde),
+      syslog_hasta: cob?.syslog_hasta == null ? null : Number(cob.syslog_hasta),
+      primera_medicion:
+        cob?.primera_medicion == null ? null : Number(cob.primera_medicion),
+      ultima_medicion: cob?.ultima_medicion == null ? null : Number(cob.ultima_medicion),
+    },
+    bucket: CAJON_LINEA,
+    puntos_totales: series.length,
+    ceros_descartados: ceros?.n ?? 0,
+  };
+}
+
+/**
+ * El span de mediciones de un equipo, para poder resolver la ventana `medido`
+ * ANTES de pedir los datos. Es una consulta de dos índices y evita traer la
+ * serie entera dos veces.
+ */
+export async function spanMedicionesDe(
+  deviceId: number,
+): Promise<{ desde: number; hasta: number } | null> {
+  const f = await consultarUna<{ a: number | null; b: number | null }>(
+    `SELECT extract(epoch FROM min(cv.ts))::bigint AS a,
+            extract(epoch FROM max(cv.ts))::bigint AS b
+       FROM chart_values cv
+       JOIN chart_sources cs ON cs.id = cv.source_id
+      WHERE cv.bucket = $2
+        AND cv.value IS NOT NULL
+        AND cs.unit IN ('s', 'bit/s')
+        -- 🔴 El mismo criterio que en la serie: sin esto la ventana "medido"
+        --    se anclaría a un casillero de relleno en cero y arrancaría antes
+        --    de la primera medición de verdad.
+        AND (cs.unit <> 's' OR cv.value > 0)
+        AND (cs.device_id = $1
+             OR cs.service_id IN (SELECT id FROM services WHERE device_id = $1))`,
+    [deviceId, CAJON_LINEA],
+  );
+  if (f?.a == null || f?.b == null) return null;
+  return { desde: Number(f.a), hasta: Number(f.b) };
+}
+
+
+// ── El camino de red hacia un destino ───────────────────────────────────────
+//
+// Agregado el 01/08/2026. Contesta «¿el problema es mío o del mayorista?»:
+// muestra el camino salto por salto y, para los públicos, de qué organización
+// es cada uno. Lo traza y lo guarda `etl/camino.py`; acá sólo se lee.
+//
+// 🔴 Ni una de estas consultas escribe, igual que el resto del archivo. Y
+//    ninguna decide qué es interno y qué es público: eso ya viene resuelto en
+//    `camino_saltos.clase`, porque el lugar que decide qué sale de la máquina
+//    hacia un tercero tiene que ser uno solo, y está en el ETL.
+
+// El `import` va acá abajo y no arriba del todo a propósito: este bloque se
+// agregó al final del archivo y así se lee entero de corrido, sin saltar a la
+// cabecera. Los `import` de ESM se elevan igual, así que el orden no cambia
+// nada en tiempo de ejecución — y `import type` ni siquiera llega al bundle.
+import type { SaltoCamino, TrazaCamino } from './camino';
+
+/** Un destino registrado, con el resumen de su última traza. */
+export interface DestinoCamino {
+  destino: string;
+  nota: string | null;
+  activo: boolean;
+  traza_id: number | null;
+  iniciada_at: string | null;
+  saltos: number | null;
+  saltos_mudos: number | null;
+  alcanzado: boolean | null;
+  cambio_asn: boolean | null;
+  ruta_asn: string | null;
+}
+
+/**
+ * Los destinos registrados y cómo les fue la última vez.
+ *
+ * `LEFT JOIN` contra `v_camino_ultimo` y no `JOIN`: un destino recién
+ * registrado todavía no tiene ninguna traza, y tiene que aparecer igual —si no,
+ * alguien lo da de alta, no lo ve en la lista y lo da de alta de nuevo.
+ */
+export async function destinosCamino(): Promise<DestinoCamino[]> {
+  return consultar<DestinoCamino>(
+    `SELECT d.destino, d.nota, d.activo,
+            u.id            AS traza_id,
+            u.iniciada_at,
+            u.saltos, u.saltos_mudos, u.alcanzado, u.cambio_asn,
+            x.ruta_asn
+       FROM camino_destinos d
+       LEFT JOIN v_camino_ultimo u   ON u.destino = d.destino
+       LEFT JOIN camino_trazas_texto x ON x.id = u.id
+      ORDER BY d.activo DESC, d.destino`,
+  );
+}
+
+/**
+ * La última traza de un destino, o una puntual por id.
+ *
+ * Los dos casos en una sola función porque la página necesita las dos y la SQL
+ * es la misma salvo el filtro: duplicarla dejaría dos consultas que se
+ * desincronizan en cuanto se agregue una columna.
+ */
+export async function trazaCamino(
+  opciones: { destino?: string; id?: number },
+): Promise<TrazaCamino | undefined> {
+  const { destino, id } = opciones;
+  if (id === undefined && destino === undefined) return undefined;
+
+  return consultarUna<TrazaCamino>(
+    `SELECT t.id, t.destino, host(t.destino_ip) AS destino_ip,
+            t.iniciada_at, t.duracion_ms, t.metodo,
+            t.saltos, t.saltos_mudos, t.saltos_publicos,
+            t.alcanzado, t.motivo_fin, t.error,
+            t.cambio_saltos, t.cambio_asn, t.previa_id,
+            x.ruta_asn
+       FROM camino_trazas t
+       JOIN camino_trazas_texto x ON x.id = t.id
+      WHERE ($1::bigint IS NOT NULL AND t.id = $1::bigint)
+         OR ($1::bigint IS NULL AND t.destino = $2)
+      ORDER BY t.iniciada_at DESC
+      LIMIT 1`,
+    [id ?? null, destino ?? null],
+  );
+}
+
+/**
+ * Los saltos de una traza, en orden de TTL.
+ *
+ * 🔴 SIN `WHERE direccion IS NOT NULL`. Los saltos que no contestaron son filas
+ *    de verdad y tienen que llegar a la pantalla: omitirlos renumeraría el
+ *    camino y convertiría «no sé qué hay en el salto 7» en «no hay salto 7».
+ *    `etl/camino.py` los guarda justamente para esto.
+ */
+export async function saltosCamino(trazaId: number): Promise<SaltoCamino[]> {
+  return consultar<SaltoCamino>(
+    `SELECT ttl, host(direccion) AS direccion, rtt_ms, clase,
+            asn, asn_org, asn_prefijo::text AS asn_prefijo, asn_pais,
+            icmp_tipo, icmp_codigo
+       FROM camino_saltos
+      WHERE traza_id = $1
+      ORDER BY ttl`,
+    [trazaId],
+  );
+}
+
+/** El historial de un destino: para ver que el camino CAMBIÓ, que es el punto. */
+export async function historialCamino(
+  destino: string,
+  limite = 30,
+): Promise<TrazaCamino[]> {
+  return consultar<TrazaCamino>(
+    `SELECT t.id, t.destino, host(t.destino_ip) AS destino_ip,
+            t.iniciada_at, t.duracion_ms, t.metodo,
+            t.saltos, t.saltos_mudos, t.saltos_publicos,
+            t.alcanzado, t.motivo_fin, t.error,
+            t.cambio_saltos, t.cambio_asn, t.previa_id,
+            x.ruta_asn
+       FROM camino_trazas t
+       JOIN camino_trazas_texto x ON x.id = t.id
+      WHERE t.destino = $1
+      ORDER BY t.iniciada_at DESC
+      LIMIT $2`,
+    [destino, Math.min(Math.max(limite, 1), 200)],
+  );
 }
