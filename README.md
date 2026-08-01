@@ -7,6 +7,37 @@ Lee su base SQLite **en sólo lectura**, la replica a PostgreSQL con un modelo
 relacional propio, y sirve una interfaz en Astro + Tailwind: mapas de topología,
 búsqueda por nombre o IP, estado en vivo, desde cualquier navegador.
 
+![Mapa de topología](docs/capturas/mapa.jpg)
+
+> 🔴 **Las cuatro capturas de este documento salen del seed de desarrollo, no de
+> una red real.** Es dato sintético: los nombres son inventados, las direcciones
+> están en los rangos que el RFC 5737 reserva para documentación (`192.0.2.0/24`)
+> y las MAC en el de la RFC 7042 (`00:00:5E:00:53:xx`).
+>
+> No es prolijidad: cualquier captura de una instalación de verdad publica el
+> nombre, la dirección y la topología de los equipos de alguien. Y hay un test
+> —`web/test/seed.test.ts`— que falla si una dirección real aparece en el
+> repositorio, incluso dentro de un comentario.
+>
+> Reproducilas con `docker compose up -d` y `psql < web/seed-dev.sql`.
+
+<table>
+<tr>
+<td width="50%"><a href="docs/capturas/panel.jpg"><img src="docs/capturas/panel.jpg" alt="Tablero: equipos por estado y caídas recientes"></a></td>
+<td width="50%"><a href="docs/capturas/equipo.jpg"><img src="docs/capturas/equipo.jpg" alt="Ficha de un equipo: accesos, gráficos de tráfico y servicios"></a></td>
+</tr>
+<tr>
+<td><b>Tablero.</b> Los caídos separados por hace cuánto lo están: «4 caídos» y «3 recientes + 1 residuo de más de un año» describen la misma red y piden cosas distintas.</td>
+<td><b>Ficha del equipo.</b> Accesos por protocolo derivados de los servicios que existen, historia medida, y la imagen del modelo cuando se puede saber cuál es.</td>
+</tr>
+<tr>
+<td colspan="2"><a href="docs/capturas/caidas.jpg"><img src="docs/capturas/caidas.jpg" alt="Historial de caídas, filtrable por rango, duración y equipo"></a></td>
+</tr>
+<tr>
+<td colspan="2"><b>Historial de caídas.</b> Filtrable por rango, duración mínima y equipo. El filtro de duración es el que lo hace usable: sin él, las caídas de treinta segundos —ruido de sondeo— entierran a las de dos horas.</td>
+</tr>
+</table>
+
 ---
 
 ## El problema que resuelve
