@@ -37,7 +37,22 @@ RUN mkdir -p /trabajo && chown dude:dude /trabajo && chmod 700 /trabajo
 COPY --from=build /instalado /usr/local
 
 WORKDIR /app
-COPY dudeobj.py sync.py schema.sql ./
+# 🔴 TODOS los módulos, no sólo los que corren en el bucle del ETL.
+#
+#    `syslog.py` y `respaldo.py` son herramientas de línea de comandos que se
+#    ejecutan a mano, no en cada corrida. Es tentador dejarlas afuera «porque
+#    el servicio no las usa» — y es un error, porque el único lugar desde donde
+#    se pueden correr contra la base de producción es un contenedor con estas
+#    dependencias, en la red `interna`.
+#
+#    Y esa red es `internal: true`: NO tiene salida a internet. Así que un
+#    `pip install` ahí adentro falla, y no hay forma de traer el módulo en el
+#    momento. O está en la imagen, o no se puede correr.
+#
+#    Se descubrió intentando importar seis años de historia en producción:
+#    `ModuleNotFoundError: No module named 'psycopg'` primero, y
+#    `can't open file '/app/syslog.py'` después.
+COPY dudeobj.py sync.py syslog.py respaldo.py schema.sql ./
 COPY salud.py /usr/local/bin/salud.py
 
 ENV PYTHONUNBUFFERED=1 \
