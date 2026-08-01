@@ -671,7 +671,7 @@ export async function leerIcono(rel: string | null | undefined): Promise<IconoSV
 // Line art monocromo en una grilla de 24. Usan `currentColor`, así que se tiñen
 // solos según el tema y el estado.
 
-const REPUESTO: Record<string, string> = {
+const REPUESTO = {
   router: `<circle cx="12" cy="12" r="8"/><path d="M12 4.5v3M12 16.5v3M4.5 12h3M16.5 12h3"/><path d="m9.2 9.2 5.6 5.6M14.8 9.2l-5.6 5.6"/>`,
   ap: `<path d="M12 15.5a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z" fill="currentColor" stroke="none"/><path d="M8.2 9.7a5 5 0 0 0 0 7.1M15.8 9.7a5 5 0 0 1 0 7.1"/><path d="M5.4 6.9a9 9 0 0 0 0 12.7M18.6 6.9a9 9 0 0 1 0 12.7"/>`,
   switch: `<rect x="3" y="7" width="18" height="10" rx="2"/><path d="M7 11.5h3.5M7 14h2M14 10.5l2.5 2.5L14 15.5"/>`,
@@ -683,7 +683,103 @@ const REPUESTO: Record<string, string> = {
   submapa: `<path d="m3 6.5 6-2.5 6 2.5 6-2.5v13l-6 2.5-6-2.5-6 2.5v-13Z"/><path d="M9 4v13M15 6.5v13"/>`,
   red: `<circle cx="12" cy="5" r="2.2"/><circle cx="5" cy="18" r="2.2"/><circle cx="19" cy="18" r="2.2"/><path d="M12 7.2v4.3M10.6 12.6 6.4 16.2M13.4 12.6l4.2 3.6"/>`,
   generico: `<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 12h6"/>`,
-};
+
+  // ── Las cuatro formas de WISP que faltaban ────────────────────────────────
+  //
+  // Los 653 elementos sin icono propio caían en once dibujos, y ninguno decía
+  // «esto irradia un sector», «esto es un plato», «esto es fibra» ni «esto es
+  // un salto punto a punto». Un panel sectorial terminaba con la torrecita de
+  // `antena`, igual que un mástil pelado; los 47 `olt-tplink.png` terminaban
+  // con el icono de router, que es lo que NO son.
+  //
+  // 🔴 El requisito duro de estos cuatro es que se lean a 40 px con cientos de
+  //    nodos encima. No se dibujaron «a ojo de código»: se rasterizaron catorce
+  //    variantes a 40 px REALES con `rsvg-convert` y se miraron ampliadas al
+  //    500 % con vecino más cercano, que es la única forma de ver lo que el
+  //    operador va a ver. Cada nota de abajo dice qué variante se descartó y
+  //    por qué. Si mañana se toca uno de estos, se vuelve a rasterizar.
+
+  // Sectorial: la CUÑA de cobertura —punto de apex, dos lados y el arco que los
+  // cierra—, que es como se dibuja un sector en cualquier plano de RF.
+  //
+  // Se probó primero el panel de perfil (rectángulo alto sobre un mástil con
+  // dos arcos a la derecha) y a 40 px se leía como un MICRÓFONO, no como una
+  // antena. La cuña además se distingue de `ap` sin pensarlo: `ap` son arcos
+  // concéntricos a los dos lados —omnidireccional— y esto abre hacia un lado.
+  sectorial: `<circle cx="5.5" cy="12" r="1.5" fill="currentColor" stroke="none"/><path d="m5.5 12 14-6.5M5.5 12l14 6.5"/><path d="M19.5 5.5a13 13 0 0 1 0 13"/>`,
+
+  // Plato: la parábola INCLINADA y con la boca cerrada por la cuerda del propio
+  // arco (el `Z`), más el brazo del alimentador con el punto en el foco y el
+  // pie. Los tres detalles hacen falta.
+  //
+  // La primera versión era la parábola vertical y abierta: a 40 px se leía como
+  // un corchete con un palito. Cerrarla con `Z` la convierte en una silueta
+  // llena, e inclinarla la saca del parecido con el arco de `bridge`, que es lo
+  // único remotamente similar del juego.
+  plato: `<path d="M4.2 8.8a8.5 8.5 0 0 0 11 11Z"/><path d="m8.6 14.1 5.2-5.2"/><circle cx="15" cy="7.7" r="1.4" fill="currentColor" stroke="none"/><path d="M6.2 17.8 3.5 20.5M1.8 21h5.4"/>`,
+
+  // OLT: el chasis con dos puertos y tres hilos abriéndose a la derecha. El
+  // abanico no es adorno — es literalmente lo que hace una OLT: un puerto PON
+  // que se reparte entre muchos abonados. Contra `switch` (una caja ancha con
+  // marquitas adentro) la diferencia a 40 px es que acá SALE algo de la caja.
+  //
+  // Se probó rematar cada hilo con un punto lleno: a 40 px los tres puntos se
+  // empastaban con las curvas en un glifo tipo «€». Los hilos solos se leen.
+  olt: `<rect x="2" y="7.5" width="10" height="9" rx="1.5"/><path d="M4.5 10.5h3M4.5 13.5h3"/><path d="M12 12h2.5c3 0 3-5 6-5M14.5 12h6M14.5 12c3 0 3 5 6 5"/>`,
+
+  // Radioenlace: dos mástiles y los dos lóbulos mirándose. El hueco del medio
+  // es a propósito: es el vano. Lo que lo separa de `ap` es que acá hay DOS
+  // siluetas verticales — a 40 px eso se ve antes que cualquier arco.
+  radioenlace: `<circle cx="4" cy="8.6" r="1.5" fill="currentColor" stroke="none"/><path d="M4 10.6v9.9M1.8 20.5h4.4"/><circle cx="20" cy="8.6" r="1.5" fill="currentColor" stroke="none"/><path d="M20 10.6v9.9M17.8 20.5h4.4"/><path d="M8 9.2a6.5 6.5 0 0 1 0 7.4M16 9.2a6.5 6.5 0 0 0 0 7.4"/>`,
+} satisfies Record<string, string>;
+
+/**
+ * Las claves de repuesto, para poder recorrerlas desde afuera.
+ *
+ * `satisfies` en vez de anotar `Record<string, string>`: con la anotación,
+ * `keyof typeof REPUESTO` colapsaba a `string` y el tipo de retorno de
+ * `claveRepuesto` no decía nada. Así el compilador conoce las quince claves y
+ * un error de tipeo en una de ellas no llega a producción.
+ */
+export type ClaveRepuesto = keyof typeof REPUESTO;
+
+/**
+ * El juego completo, para poder auditarlo desde afuera.
+ *
+ * No alcanza con `iconoRepuesto(clave)` para recorrerlo: esa función pasa el
+ * argumento por `claveRepuesto`, y ahí `'globo'` no matchea —la regla busca
+ * `globe`, en inglés, que es como se llama el archivo de The Dude—. O sea que
+ * un recorrido por las claves auditaría el pictograma equivocado y no se
+ * enteraría. Acá se entra por la clave y sale su dibujo, sin adivinanzas.
+ */
+export const PICTOGRAMAS: Readonly<Record<ClaveRepuesto, string>> = REPUESTO;
+
+/** Las claves, en orden de declaración. */
+export const CLAVES_REPUESTO = Object.keys(REPUESTO) as ClaveRepuesto[];
+
+/**
+ * Una palabra suelta dentro de una pista.
+ *
+ * 🔴 `\b` NO sirve para estas pistas, y la trampa cuesta un rato encontrarla:
+ *    para una expresión regular **el guión bajo es carácter de palabra**. Así
+ *    que `\bptp\b` no matchea `PTP_Aurora_Bahia`, y con guión bajo se nombra
+ *    media red del ISP (`SW_DC_01`, `Vega_P_Aurora_AC2`, `CPE_Bahia_0031`).
+ *
+ *    El borde hay que escribirlo a mano: cualquier cosa que no sea letra ni
+ *    dígito. Y hace falta de verdad — sin él, `olt[_-]` se lleva puesto
+ *    `Medidor_Volt_3`, que termina en «olt_».
+ *
+ * Se arman una sola vez al cargar el módulo: `claveRepuesto` corre una vez por
+ * elemento y son 1.147 en la base real.
+ */
+const suelta = (alternativas: string) =>
+  new RegExp(`(?:^|[^a-z0-9])(?:${alternativas})(?:[^a-z0-9]|$)`);
+
+const PLATO_MODELO = suelta('nbe|pbe');
+const SECTORIAL_PANEL = suelta('panel');
+const OLT_SUELTA = suelta('olt|ftth');
+const RADIOENLACE_SUELTA = suelta('enlace|ptp|p2p');
+const TPLINK_FIBRA = suelta('olt|pon|ftth');
 
 /**
  * Elige un icono de repuesto.
@@ -694,24 +790,118 @@ const REPUESTO: Record<string, string> = {
  * acierta bastante porque en el ISP se nombra por función
  * (`Vega_P_Aurora_AC2`, `CPE_Bahia_0031`, `SW_DC_01`).
  */
-export function claveRepuesto(pista: string | null | undefined): keyof typeof REPUESTO {
+export function claveRepuesto(pista: string | null | undefined): ClaveRepuesto {
   const t = (pista ?? '').toLowerCase();
   // El orden importa: lo más específico primero. Los nombres de archivo reales
   // del ISP son de catálogo (`nanomder.png`, `rb2011.png`, `crs305.png`),
   // así que los modelos concretos mandan sobre las palabras genéricas.
-  if (/nanobridge|bridge|brdg/.test(t)) return 'bridge';
-  if (/airfiber|dish|panel|basestation|anten|torre|tower|mast|repetidor/.test(t)) return 'antena';
-  if (/nano|rocket|\bap\b|_ac\d|access|wifi|wlan|wireless|sxt|basebox|sector|loco/.test(t))
-    return 'ap';
+
+  // 🔴 `nanobridge` ANTES que `bridge`, y no es un detalle de orden: un
+  //    NanoBridge no es un bridge de red, es un plato — el reflector parabólico
+  //    es el producto. Mientras la regla de `bridge` estuvo primero se lo comía
+  //    entero, porque `bridge` es subcadena de `nanobridge`.
+  //    `nbe`/`pbe` son los prefijos de modelo de NanoBeam y PowerBeam. NO
+  //    aparecen en el catálogo que se midió: son una apuesta, y por eso van
+  //    como palabra suelta y no como subcadena.
+  if (/nanobridge|powerbeam|airfiber|dish|plato|parab/.test(t) || PLATO_MODELO.test(t))
+    return 'plato';
+
+  // Sectorial antes que `antena` y antes que `ap`: `panel` y `basestation`
+  // caían en la torrecita de `antena` —que es un mástil pelado— y `sector`
+  // caía en `ap`, que es el dibujo del omnidireccional. Son las dos cosas que
+  // un sectorial no es.
+  if (/sectorial|sector|basestation|base[_ -]station/.test(t) || SECTORIAL_PANEL.test(t))
+    return 'sectorial';
+
+  // OLT antes que `router`: la regla de router traía `olt` y por eso los 47
+  // equipos con `olt-tplink.png` se dibujaban como routers.
+  // 🔴 Con bordes y no `olt` suelto: sin ellos se come «volt» y «revolt».
+  if (/gpon|epon/.test(t) || OLT_SUELTA.test(t)) return 'olt';
+
+  // 🔴 Acá NO va `link`: la pista real `olt-tplink.png` lo tiene adentro, y
+  //    ni con bordes se salva, porque el guión de «tp-link» ES un borde. La
+  //    regla de OLT corre primero, pero no hay que apoyarse en el orden para
+  //    tapar un patrón que está mal escrito.
+  if (
+    /radioenlace|radio[_-]enlace|punto[_ -]a[_ -]punto|backhaul/.test(t) ||
+    RADIOENLACE_SUELTA.test(t)
+  )
+    return 'radioenlace';
+
+  if (/bridge|brdg/.test(t)) return 'bridge';
+  if (/anten|torre|tower|mast|repetidor/.test(t)) return 'antena';
+  if (/nano|rocket|\bap\b|_ac\d|access|wifi|wlan|wireless|sxt|basebox|loco/.test(t)) return 'ap';
   if (/crs\d|css\d|switch|\bsw[_-]?\d|\bsw[_-]/.test(t)) return 'switch';
-  if (/ccr\d|\brb\d|hex|hap|rout|\brt[_-]|\bbr[_-]|mikro|gateway|\bgw\b|olt/.test(t))
-    return 'router';
+  if (/ccr\d|\brb\d|hex|hap|rout|\brt[_-]|\bbr[_-]|mikro|gateway|\bgw\b/.test(t)) return 'router';
   if (/server|\bsrv\b|srv[_-]|nas|\bvm\b|host\b|\bdns\b/.test(t)) return 'server';
   if (/client|cpe|\bpc\b|prt[_-]|user/.test(t)) return 'cliente';
   if (/globe|internet|\bwan\b|isp|upstream/.test(t)) return 'globo';
   if (/submap|submapa|\bmapa?\b/.test(t)) return 'submapa';
   if (/\bnet\b|network|\blan\b|subnet|\bred\b/.test(t)) return 'red';
   return 'generico';
+}
+
+/**
+ * El pictograma más probable cuando la pista no alcanzó, usando el FABRICANTE.
+ *
+ * De dónde sale la marca: `lib/oui.ts`, que la deduce de la MAC. Cubre 557
+ * equipos, y su valor es una de cuatro cadenas o `null` — nunca adivina.
+ *
+ * Por qué esto existe: de los 1.147 elementos dibujables, 653 caen al repuesto
+ * y la mayoría termina en `generico`, que es una cajita gris con una rayita.
+ * Una cajita gris no dice NADA. La marca no dice el modelo, pero cada una de
+ * estas cuatro tiene un producto masivo, y acertarle a la familia es
+ * infinitamente mejor que la cajita.
+ *
+ * 🔴 Es lo ÚLTIMO que se consulta, y el orden no es negociable: si la pista ya
+ *    dijo `sector`, `dish` o `panel`, eso lo escribió una persona mirando el
+ *    equipo. La marca es una inferencia a partir de tres bytes. El dato de la
+ *    persona le gana siempre al del algoritmo, así que la pista se evalúa
+ *    primero y si resolvió, se devuelve tal cual.
+ *
+ * Devuelve `null` cuando no hay pista útil Y la marca tampoco ayuda: ahí el que
+ * llama se queda con `claveRepuesto`, que cae en `generico`. `null` es «no sé»,
+ * y no sé es una respuesta válida — mejor que una familia inventada.
+ *
+ * ⚠️ Nada de `src/` lo usa todavía: engancharlo exige tocar `mapa.ts` y el
+ *    visor, que no son de este módulo. Queda listo y probado para eso.
+ */
+export function claveRepuestoPorMarca(
+  marca: string | null | undefined,
+  pista: string | null | undefined,
+): ClaveRepuesto | null {
+  const porPista = claveRepuesto(pista);
+  if (porPista !== 'generico') return porPista;
+
+  const t = (pista ?? '').toLowerCase();
+  switch (marca) {
+    // El grueso de Ubiquiti en esta red son radios de abonado y de acceso
+    // (NanoStation, Rocket, Loco): el CPE/AP es su producto masivo. ~300 equipos.
+    case 'Ubiquiti':
+      return 'ap';
+    // MikroTik también vende switches (la línea CRS), pero esos ya se reconocen
+    // por el nombre de archivo del catálogo, así que a esta línea sólo llegan
+    // los que no dijeron nada — y ahí lo más probable es una RouterBOARD. ~150.
+    case 'MikroTik':
+      return 'router';
+    // Cambium es el caso que más gana. Sus 62 equipos tienen CERO iconos
+    // asignados a mano (medido en `oui.ts`), o sea que HOY son todos cajita
+    // gris. Su producto de red fija es la base sectorial de la familia PMP.
+    case 'Cambium Networks':
+      return 'sectorial';
+    // TP-Link acá es fibra: los 21 equipos que confirmaron la marca por icono
+    // llevan todos `olt-tplink`. Pero la marca sola no alcanza —también hace
+    // switches baratos— así que se le exige a la pista que hable de fibra.
+    //
+    // Sí, `olt` y `gpon` ya los habría atrapado `claveRepuesto` más arriba y
+    // nunca llegarían acá. La regla igual los nombra: tiene que poder leerse
+    // sola y seguir siendo correcta si aquel ruteo cambia.
+    case 'TP-Link':
+      return /gpon|epon|fibra|fiber/.test(t) || TPLINK_FIBRA.test(t) ? 'olt' : 'switch';
+    // `null`, `undefined`, o una marca que todavía no sabemos leer.
+    default:
+      return null;
+  }
 }
 
 /**
@@ -748,7 +938,11 @@ export function urlDeIcono(rel: string): string {
  * con el mismo icono comparten clave, que es lo que permite emitir el
  * `<symbol>` una sola vez.
  */
-export async function pincelDeIcono(rel: string | null, nombre: string | null): Promise<Pincel> {
+export async function pincelDeIcono(
+  rel: string | null,
+  nombre: string | null,
+  marca?: string | null,
+): Promise<Pincel> {
   const ext = extension(rel);
 
   // Rasterizado y conocido: va por URL aunque el archivo todavía no esté en
@@ -764,7 +958,12 @@ export async function pincelDeIcono(rel: string | null, nombre: string | null): 
   if (rel && (await leerIcono(rel))) {
     return { tipo: 'simbolo', clave: `f-${basename(rel).replace(/[^a-zA-Z0-9]+/g, '-')}` };
   }
-  return { tipo: 'simbolo', clave: `r-${claveRepuesto(pistaDe(rel, nombre))}` };
+  // 🔴 La marca es el ÚLTIMO recurso, y `claveRepuestoPorMarca` se encarga de
+  //    que así sea: corre la pista primero y sólo mira el fabricante si ésta
+  //    no dijo nada. La pista la escribió una persona mirando el equipo; la
+  //    marca es una inferencia sobre tres bytes de una MAC. Gana la persona.
+  const pista = pistaDe(rel, nombre);
+  return { tipo: 'simbolo', clave: `r-${claveRepuestoPorMarca(marca, pista) ?? claveRepuesto(pista)}` };
 }
 
 export interface JuegoDeIconos {
@@ -781,17 +980,37 @@ export interface JuegoDeIconos {
  * visor necesita para emitir `<symbol>` una vez y `<use>` muchas.
  */
 export async function juegoDeIconos(
-  nodos: readonly { id: number; icono: string | null; pista: string | null }[],
+  nodos: readonly {
+    id: number;
+    icono: string | null;
+    pista: string | null;
+    /**
+     * Fabricante deducido de la MAC, si se pudo. Ver `lib/oui`: cubre 557 de
+     * los 885 equipos. Es la última pista antes del pictograma genérico —
+     * saber que algo es un Ubiquiti no dice el modelo, pero dice bastante más
+     * que una caja gris.
+     */
+    marca?: string | null;
+  }[],
 ): Promise<JuegoDeIconos> {
   const simbolos = new Map<string, IconoSVG>();
   const porNodo = new Map<number, Pincel>();
 
   for (const n of nodos) {
-    const pincel = await pincelDeIcono(n.icono, n.pista);
+    const pincel = await pincelDeIcono(n.icono, n.pista, n.marca);
     if (pincel.tipo === 'simbolo' && !simbolos.has(pincel.clave)) {
+      // 🔴 El símbolo tiene que salir de la MISMA decisión que la clave, o el
+      //    `<use href="#ico-r-plato">` apuntaría a un `<symbol>` dibujado con
+      //    otro pictograma. La clave ya trae la respuesta: se la lee en vez de
+      //    volver a decidir, que es como se desincronizan estas dos mitades.
+      const porArchivo = await leerIcono(n.icono);
       simbolos.set(
         pincel.clave,
-        (await leerIcono(n.icono)) ?? iconoRepuesto(pistaDe(n.icono, n.pista)),
+        porArchivo ??
+          iconoRepuesto(
+            claveRepuestoPorMarca(n.marca, pistaDe(n.icono, n.pista)) ??
+              pistaDe(n.icono, n.pista),
+          ),
       );
     }
     porNodo.set(n.id, pincel);

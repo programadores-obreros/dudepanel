@@ -8,6 +8,7 @@ import {
   medioRecuadro,
 } from '@/lib/mapa';
 import { juegoDeIconos, medidasDeIconos } from '@/lib/iconos';
+import { fabricante } from '@/lib/oui';
 import { metaEstado, ESTADOS } from '@/lib/estado';
 import { ANTIGUEDADES } from '@/lib/antiguedad';
 import { duracion, numero, porcentaje } from '@/lib/formato';
@@ -45,7 +46,14 @@ const {
 // no se puede aplicar `image_scale`, que es un porcentaje sobre ese tamaño. Se
 // leen sólo los encabezados de los archivos distintos del mapa, y quedan en
 // caché para las cargas siguientes.
-const medidas = await medidasDeIconos(elementos.map((e) => e.icon));
+// 🔴 Se miden los DOS escalones de la cadena. Antes se medía sólo `e.icon`, y
+//    ahora que el nodo puede caer al icono de su TIPO, ese archivo también
+//    necesita su tamaño natural: sin la medida, `cajaDeIcono` no puede aplicar
+//    `image_scale` y el dibujo saldría en el cuadro por omisión. Son ~5
+//    archivos distintos más, y quedan en caché.
+const medidas = await medidasDeIconos(
+  elementos.flatMap((e) => [e.icon, e.icon_tipo]),
+);
 
 const lienzo = construirLienzo(elementos, submapas, medidas, { trafico });
 
@@ -53,14 +61,46 @@ const lienzo = construirLienzo(elementos, submapas, medidas, { trafico });
 const residuos = lienzo.nodos.filter((n) => n.antiguedad === 'residuo').length;
 const recientes = lienzo.nodos.filter((n) => n.antiguedad === 'reciente').length;
 
-// Los submapas y las redes casi nunca traen icono asignado en The Dude, así que
-// se le da al buscador de repuestos la palabra que necesita para acertar.
+// 🔴 La pista del pictograma de repuesto, con TODO lo que se sabe del equipo.
+//
+//    Antes iba sólo el nombre del nodo. Alcanza cuando el ISP nombra por
+//    función (`SW_DC_01`, `CPE_Bahia_0031`), pero deja afuera a los cientos
+//    que se llaman por su ubicación (`Dalmata M5.8`, `Oso-e-Bruck`): ésos
+//    caían al genérico, la cajita gris.
+//
+//    Ahora se suman dos cosas que ya están en la base y no se usaban:
+//
+//      · el nombre del TIPO de equipo
+//      · el FABRICANTE deducido de la MAC — 557 equipos, ver `lib/oui`
+//
+//    Con la marca, un Ubiquiti anónimo deja de ser una caja y pasa a dibujarse
+//    como lo que casi siempre es en esta red. No es certeza, es la mejor
+//    conjetura disponible — y por eso va SEPARADA de la pista, no pegada:
+//    `claveRepuestoPorMarca` corre la pista primero y sólo mira el fabricante
+//    si ésta no dijo nada. La pista la escribió una persona mirando el equipo;
+//    la marca es una inferencia sobre tres bytes de MAC. Gana la persona.
+const marcaPorElemento = new Map<number, string>();
+for (const e of elementos) {
+  const f = fabricante(e.macs);
+  if (f) marcaPorElemento.set(e.element_id, f.nombre);
+}
+const tipoPorElemento = new Map<number, string>();
+for (const e of elementos) {
+  if (e.tipo_nombre) tipoPorElemento.set(e.element_id, e.tipo_nombre);
+}
+
 const { simbolos, porNodo } = await juegoDeIconos(
   lienzo.nodos.map((n) => ({
     id: n.id,
     icono: n.icono,
-    pista:
-      n.kind === 'submap' ? `submapa ${n.nombre}` : n.kind === 'network' ? `red ${n.nombre}` : n.nombre,
+    pista: [
+      n.kind === 'submap' ? 'submapa' : n.kind === 'network' ? 'red' : '',
+      n.nombre,
+      tipoPorElemento.get(n.id) ?? '',
+    ]
+      .filter(Boolean)
+      .join(' '),
+    marca: marcaPorElemento.get(n.id) ?? null,
   })),
 );
 

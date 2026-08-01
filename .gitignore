@@ -31,6 +31,22 @@ files/
 !etl/schema.sql
 !web/seed-dev.sql
 
+# Fotos de los equipos que se muestran en la ficha. Ver docs/IMAGENES.md.
+#
+# 🔴 No es por tamaño ni por prolijidad: es por DERECHOS DE AUTOR. Las fotos de
+#    producto de MikroTik, Ubiquiti, TP-Link y Cambium son de ellos, y este
+#    repositorio es público. Que estén publicadas en el sitio del fabricante no
+#    las hace libres: están para que las use quien vende sus productos, no para
+#    redistribuirlas en GitHub. Y el historial de git no se borra: se reescribe.
+#
+#    Las fotos viven en el servidor y en el respaldo del servidor.
+#
+# La excepción es el LEEME que va adentro del directorio: sin él, el directorio
+# no existe en un clon recién hecho y el que lo busca no encuentra ni la carpeta
+# ni la explicación de por qué está vacía.
+web/public/equipos/*
+!web/public/equipos/LEEME.md
+
 # Cifrados. Un .gpg en un repo público es una invitación a fuerza bruta
 # offline sobre una frase que eligió un humano apurado.
 *.gpg

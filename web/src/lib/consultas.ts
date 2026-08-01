@@ -355,6 +355,25 @@ export interface ElementoMapa {
   device_id: number | null;
   submap_id: number | null;
   direcciones: string[] | null;
+  /**
+   * 🔴 El icono del TIPO de equipo, que es el segundo escalón de la cadena.
+   *
+   *    The Dude resuelve el dibujo en dos pasos: el icono del ELEMENTO y, si
+   *    no tiene, el del TIPO. Nosotros hacíamos sólo el primero, y **123
+   *    elementos salían con una cajita gris teniendo su imagen a un JOIN de
+   *    distancia**: el archivo existe y el panel ya lo sirve con HTTP 200.
+   */
+  icon_tipo: string | null;
+  /**
+   * Y su escala, que NO es la del elemento. `device_types.image_scale` es 60
+   * para «Algun dispositivo» —122 de esos 123 equipos—; usar la del elemento
+   * con la imagen del tipo la dibujaría al tamaño equivocado.
+   */
+  image_scale_tipo: number | null;
+  /** Nombre del tipo. Sirve de pista para elegir el pictograma de repuesto. */
+  tipo_nombre: string | null;
+  /** Para deducir el fabricante. Ver `lib/oui`: cubre 557 equipos. */
+  macs: string[] | null;
   /** ¿Alguien acomodó este nodo a mano? Ver `map_element_positions`. */
   movido?: boolean;
   /** Para `[Device.ServicesDown]`. Nulo si el elemento no es un equipo. */
@@ -390,6 +409,8 @@ export async function lienzoMapa(mapId: number): Promise<ElementoMapa[]> {
             d.services_down,
             me.image_scale,
             c.movido,
+            c.icon_tipo, c.image_scale_tipo, c.tipo_nombre,
+            ARRAY(SELECT unnest(c.macs)) AS macs,
             sc.estado_desde
      FROM v_map_canvas c
      JOIN map_elements me ON me.id = c.element_id

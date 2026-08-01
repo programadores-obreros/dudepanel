@@ -405,16 +405,20 @@ describe('claveRepuesto', () => {
       'nanomder.png': 'ap',
       'nanomizq.png': 'ap',
       'nanoloco5m_izq.png': 'ap',
-      'nanobridge5m_der.png': 'bridge',
-      'basestation.png': 'antena',
-      'airfiber-izq.png': 'antena',
-      'dish.png': 'antena',
-      'panel 5m.jpg': 'antena',
+      // 🔴 Estos seis CAMBIARON al agregarse las familias de WISP, y el cambio
+      //    es el punto: un NanoBridge no es un bridge de red —es un plato—, un
+      //    `basestation` no es un mástil pelado y una OLT no es un router.
+      //    Antes caían en `bridge`, `antena` y `router` respectivamente.
+      'nanobridge5m_der.png': 'plato',
+      'basestation.png': 'sectorial',
+      'airfiber-izq.png': 'plato',
+      'dish.png': 'plato',
+      'panel 5m.jpg': 'sectorial',
       'rb2011.png': 'router',
       'rb1100.png': 'router',
       'CCR1036-8G-2Splus.png': 'router',
       'RB3011UiAS-RM.png': 'router',
-      'olt-tplink.png': 'router',
+      'olt-tplink.png': 'olt',
       'crs305.png': 'switch',
       'crs326-24g-2s.png': 'switch',
       'globe.svg': 'globo',
@@ -429,6 +433,188 @@ describe('claveRepuesto', () => {
   it('lo que no reconoce cae en genérico, no en vacío', () => {
     expect(iconos.claveRepuesto('zzz')).toBe('generico');
     expect(iconos.claveRepuesto(null)).toBe('generico');
+  });
+});
+
+describe('claveRepuesto · las cuatro familias de WISP', () => {
+  it('separa el plato del bridge de red', () => {
+    // Un NanoBridge tiene un reflector parabólico: es un plato. Un `bridge` a
+    // secas es un modo de red. Que `bridge` sea subcadena de `nanobridge` es
+    // exactamente la trampa que el orden de las reglas tiene que resolver.
+    expect(iconos.claveRepuesto('nanobridge5m_izq.png')).toBe('plato');
+    expect(iconos.claveRepuesto('powerbeam.png')).toBe('plato');
+    expect(iconos.claveRepuesto('bridge.svg')).toBe('bridge');
+  });
+
+  it('separa el sectorial de la torre y del omnidireccional', () => {
+    expect(iconos.claveRepuesto('sector_5ghz.png')).toBe('sectorial');
+    expect(iconos.claveRepuesto('basestation.png')).toBe('sectorial');
+    // La torre sigue siendo torre: es estructura, no radio.
+    expect(iconos.claveRepuesto('Torre_Aurora')).toBe('antena');
+    // Y un NanoStation sigue en `ap`: irradia parejo, no en cuña.
+    expect(iconos.claveRepuesto('nanomder.png')).toBe('ap');
+  });
+
+  it('reconoce la fibra sin comerse las palabras que TERMINAN en olt', () => {
+    expect(iconos.claveRepuesto('olt-tplink.png')).toBe('olt');
+    expect(iconos.claveRepuesto('GPON_Centro')).toBe('olt');
+    // 🔴 Sin los bordes de palabra, `olt` suelto se lleva puesto esto.
+    expect(iconos.claveRepuesto('Medidor_Volt_3')).not.toBe('olt');
+    expect(iconos.claveRepuesto('revolt.png')).not.toBe('olt');
+  });
+
+  it('reconoce el punto a punto SIN confundirse con «tp-link»', () => {
+    expect(iconos.claveRepuesto('PTP_Aurora_Bahia')).toBe('radioenlace');
+    expect(iconos.claveRepuesto('enlace_troncal')).toBe('radioenlace');
+    expect(iconos.claveRepuesto('backhaul-norte')).toBe('radioenlace');
+    // 🔴 Éste es el motivo por el que la palabra `link` NO está en la regla:
+    //    con `\blink\b` el guión de «tp-link» cuenta como borde y matchea.
+    expect(iconos.claveRepuesto('olt-tplink.png')).toBe('olt');
+    expect(iconos.claveRepuesto('switch-tp-link.png')).not.toBe('radioenlace');
+  });
+});
+
+describe('claveRepuestoPorMarca', () => {
+  it('la pista escrita por una persona le gana a la marca deducida de la MAC', () => {
+    // La marca sale de tres bytes de una MAC; la pista la escribió alguien
+    // mirando el equipo. Si las dos hablan, manda la persona.
+    expect(iconos.claveRepuestoPorMarca('Ubiquiti', 'sector_norte.png')).toBe('sectorial');
+    expect(iconos.claveRepuestoPorMarca('Ubiquiti', 'dish.png')).toBe('plato');
+    expect(iconos.claveRepuestoPorMarca('MikroTik', 'crs305.png')).toBe('switch');
+    expect(iconos.claveRepuestoPorMarca('Cambium Networks', 'panel 5m.jpg')).toBe('sectorial');
+  });
+
+  it('cae en la marca sólo cuando la pista no dijo nada', () => {
+    expect(iconos.claveRepuestoPorMarca('Ubiquiti', 'zzz')).toBe('ap');
+    expect(iconos.claveRepuestoPorMarca('MikroTik', 'zzz')).toBe('router');
+    expect(iconos.claveRepuestoPorMarca('Cambium Networks', 'zzz')).toBe('sectorial');
+    // Sin pista alguna también tiene que resolver: hay elementos sin nombre.
+    expect(iconos.claveRepuestoPorMarca('Ubiquiti', null)).toBe('ap');
+    expect(iconos.claveRepuestoPorMarca('Ubiquiti', '')).toBe('ap');
+  });
+
+  it('a TP-Link le exige que la pista hable de fibra antes de decir OLT', () => {
+    expect(iconos.claveRepuestoPorMarca('TP-Link', 'equipo fibra 3')).toBe('olt');
+    expect(iconos.claveRepuestoPorMarca('TP-Link', 'nodo PON sur')).toBe('olt');
+    // TP-Link también hace switches baratos: sin la palabra, no se asume fibra.
+    expect(iconos.claveRepuestoPorMarca('TP-Link', 'zzz')).toBe('switch');
+  });
+
+  it('devuelve null cuando ni la pista ni la marca ayudan', () => {
+    // 🔴 `null` es «no sé», y es la respuesta correcta. El que llama se queda
+    //    con `generico`. Una familia inventada sería peor que la cajita gris.
+    expect(iconos.claveRepuestoPorMarca(null, 'zzz')).toBeNull();
+    expect(iconos.claveRepuestoPorMarca(undefined, null)).toBeNull();
+    // `oui.ts` devuelve exactamente cuatro nombres o `null`. Cualquier otra
+    // cosa que llegue acá es un dato roto, y no se adivina con datos rotos.
+    expect(iconos.claveRepuestoPorMarca('Cisco', 'zzz')).toBeNull();
+    expect(iconos.claveRepuestoPorMarca('ubiquiti', 'zzz')).toBeNull();
+  });
+
+  it('sólo devuelve claves que existen de verdad en el juego de repuesto', () => {
+    for (const marca of ['Ubiquiti', 'MikroTik', 'TP-Link', 'Cambium Networks', null]) {
+      for (const pista of ['zzz', 'fibra', 'dish.png', null]) {
+        const clave = iconos.claveRepuestoPorMarca(marca, pista);
+        if (clave !== null) expect(iconos.CLAVES_REPUESTO).toContain(clave);
+      }
+    }
+  });
+});
+
+describe('los pictogramas de repuesto', () => {
+  // Un `<symbol>` roto no se ve como un error: se ve como un hueco en el mapa.
+  // Por eso el juego entero se audita como texto, que es lo único que hay sin
+  // DOM — estos tests corren en `node`.
+  const juego = () => Object.entries(iconos.PICTOGRAMAS);
+
+  it('están las cuatro familias nuevas de WISP', () => {
+    for (const clave of ['sectorial', 'plato', 'olt', 'radioenlace']) {
+      expect(iconos.CLAVES_REPUESTO).toContain(clave);
+      expect(iconos.PICTOGRAMAS[clave as keyof typeof iconos.PICTOGRAMAS]).toBeTruthy();
+    }
+    // Y no se perdió ninguna de las once que ya estaban.
+    expect(iconos.CLAVES_REPUESTO).toHaveLength(15);
+  });
+
+  it('cada uno usa sólo path, circle y rect, y todos autocerrados', () => {
+    // Autocerrado o nada: el cuerpo se concatena dentro de un `<g>` sin pasar
+    // por ningún parser. Una etiqueta sin cerrar se lleva puesto el resto del
+    // mapa, no sólo su propio icono.
+    for (const [clave, cuerpo] of juego()) {
+      const etiquetas = [...cuerpo.matchAll(/<([a-zA-Z]+)\b[^>]*?(\/?)>/g)];
+      expect(etiquetas.length, `${clave} no dibuja nada`).toBeGreaterThan(0);
+      for (const [, nombre, cierre] of etiquetas) {
+        expect(['path', 'circle', 'rect'], `${clave} usa <${nombre}>`).toContain(nombre);
+        expect(cierre, `${clave}: <${nombre}> quedó sin autocerrar`).toBe('/');
+      }
+      // Nada fuera de las etiquetas: ni texto suelto ni `<` huérfano.
+      expect(cuerpo.replace(/<[^>]*>/g, '').trim(), `${clave} tiene texto suelto`).toBe('');
+    }
+  });
+
+  it('todo cae en la grilla de 24, que es el viewBox que se emite', () => {
+    // Un número fuera de rango dibuja por afuera del `<symbol>` y el navegador
+    // lo recorta: el icono aparece cortado y nadie sabe por qué. Los negativos
+    // son legítimos —son desplazamientos relativos de los comandos de `path`—,
+    // pero tampoco pueden salirse de la grilla.
+    for (const [clave, cuerpo] of juego()) {
+      for (const n of cuerpo.match(/-?\d*\.?\d+/g) ?? []) {
+        expect(Number(n), `${clave} tiene el número ${n} fuera de la grilla`).toBeLessThanOrEqual(
+          24,
+        );
+        expect(Number(n), `${clave} tiene el número ${n} fuera de la grilla`).toBeGreaterThanOrEqual(
+          -24,
+        );
+      }
+    }
+  });
+
+  it('se tiñen con el estado: nada de color propio', () => {
+    // El `<g>` de `iconoRepuesto` pone `stroke="currentColor"` para todos, así
+    // que en el cuerpo el único color admitido es también `currentColor`. Un
+    // `#888` acá adentro es un icono que ignora el estado del equipo.
+    for (const [clave, cuerpo] of juego()) {
+      expect(/#[0-9a-f]{3}|rgb\(|hsl\(/i.test(cuerpo), `${clave} trae color propio`).toBe(false);
+      for (const attr of cuerpo.matchAll(/(fill|stroke)="([^"]*)"/g)) {
+        expect(['currentColor', 'none'], `${clave}: ${attr[0]}`).toContain(attr[2]);
+      }
+      // Relleno sin `stroke="none"`: la forma llena se dibujaría ADEMÁS con su
+      // contorno, y a 40 px eso la engorda hasta convertirla en una mancha.
+      for (const el of cuerpo.matchAll(/<[^>]*fill="currentColor"[^>]*>/g)) {
+        expect(el[0], `${clave} rellena sin apagar el trazo`).toContain('stroke="none"');
+      }
+    }
+  });
+
+  it('el juego armado sí sale con currentColor en el trazo', () => {
+    for (const clave of iconos.CLAVES_REPUESTO) {
+      expect(iconos.iconoRepuesto(clave).cuerpo).toContain('stroke="currentColor"');
+    }
+  });
+
+  it('ninguno tiene detalle que se pierda a 40 px', () => {
+    // 🔴 Éste es el requisito duro: se dibujan en un mapa con cientos de nodos.
+    //    No hay forma de medir legibilidad sin ojos, así que se fijan las dos
+    //    cosas que SÍ son numéricas y que la arruinan: un radio minúsculo y un
+    //    exceso de trazos. A 40 px cada unidad de la grilla son 1,67 px, o sea
+    //    que un `r=1` es un punto de 3,3 px de diámetro. Ése es el piso.
+    for (const [clave, cuerpo] of juego()) {
+      for (const r of cuerpo.matchAll(/\br="([\d.]+)"/g)) {
+        expect(Number(r[1]), `${clave} tiene un círculo de r=${r[1]}`).toBeGreaterThanOrEqual(1);
+      }
+      const trazos = (cuerpo.match(/<(path|circle|rect)\b/g) ?? []).length;
+      expect(trazos, `${clave} tiene ${trazos} trazos`).toBeLessThanOrEqual(8);
+    }
+  });
+
+  it('no hay dos pictogramas iguales', () => {
+    // Dos claves distintas con el mismo dibujo son una clave de más: el
+    // operador no puede distinguir dos cosas que se ven idénticas.
+    const vistos = new Map<string, string>();
+    for (const [clave, cuerpo] of juego()) {
+      expect(vistos.get(cuerpo), `${clave} dibuja lo mismo que otro`).toBeUndefined();
+      vistos.set(cuerpo, clave);
+    }
   });
 });
 

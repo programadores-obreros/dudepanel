@@ -477,11 +477,32 @@ SELECT
     e.y             AS y_origen,
     (p.element_id IS NOT NULL) AS movido,
     p.moved_by,
-    p.moved_at
+    p.moved_at,
+
+    -- 🔴 EL ICONO DEL TIPO DE EQUIPO, que estaba en la base y nadie pedía.
+    --
+    --    The Dude resuelve el dibujo de un nodo en dos pasos: primero el
+    --    icono del ELEMENTO y, si no tiene, el del TIPO al que pertenece el
+    --    equipo. Nosotros hacíamos sólo el primero, así que **123 elementos
+    --    se dibujaban con una cajita gris teniendo su imagen a un JOIN de
+    --    distancia** — el archivo existe, el panel ya lo sirve con HTTP 200 y
+    --    la columna estaba acá desde el primer día.
+    --
+    --    Va la escala del tipo también: `device_types.image_scale` es 60 para
+    --    «Algun dispositivo», que son 122 de esos 123. Usar la escala del
+    --    elemento con la imagen del tipo dibujaría al tamaño equivocado.
+    ft.rel_path     AS icon_tipo,
+    t.image_scale   AS image_scale_tipo,
+    t.name          AS tipo_nombre,
+    -- Las MAC del equipo, para deducir el fabricante. Ver `web/src/lib/oui.ts`:
+    -- da la marca de 557 equipos sin preguntarle nada a la red.
+    d.macs          AS macs
 FROM map_elements e
 LEFT JOIN devices d  ON d.id  = e.device_id
 LEFT JOIN maps    sm ON sm.id = e.submap_id
 LEFT JOIN links   l  ON l.id  = e.link_id
+LEFT JOIN device_types t ON t.id = d.type_id
+LEFT JOIN files       ft ON ft.id = t.image_id
 LEFT JOIN files   f  ON f.id  = e.image_id
 LEFT JOIN map_element_positions p ON p.element_id = e.id;
 

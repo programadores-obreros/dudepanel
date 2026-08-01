@@ -1,0 +1,197 @@
+---
+/**
+ * La imagen del equipo, en grande, arriba de la barra lateral de la ficha.
+ *
+ * En el mapa los iconos se dibujan a 40 px y ahí una foto es una mancha. Acá
+ * hay lugar y sirve: el que abre esta ficha suele ser alguien que está por ir
+ * al sitio, y ver si lo que le espera es una caja de rack, un plato o una
+ * NanoStation en un mástil cambia qué se lleva en la camioneta.
+ *
+ * Toda la decisión —qué imagen, de dónde y por qué— vive en `lib/foto-equipo`.
+ * Acá sólo se dibuja.
+ *
+ * 🔴 Sin una línea de JavaScript, a propósito. La CSP del panel es
+ *    `default-src 'none'` con `script-src 'self' <hash>`, y un script en línea
+ *    lo bloquea el navegador EN SILENCIO: la página compila, se sirve, se ve
+ *    bien y no hace nada. Ya pasó en este proyecto con la página de salida.
+ *    Este panel no necesita nada interactivo, así que no hay nada que romper.
+ */
+import { fotoDeDispositivo, type Foto } from '@/lib/foto-equipo';
+import { iconoRepuesto, pistaDe } from '@/lib/iconos';
+import { reportarError } from '@/lib/errores';
+
+interface Props {
+  id: number;
+  nombre: string;
+  /** El tipo de equipo de The Dude. Sólo para poder nombrarlo en el aviso. */
+  tipo?: string | null;
+  /**
+   * La imagen ya resuelta. Si no viene, se resuelve acá contra la base.
+   *
+   * Existe para que las pruebas puedan dibujar los cuatro estados sin
+   * PostgreSQL, y eso no es un lujo: lo que este componente puede hacer mal es
+   * lo que SALE A LA PANTALLA —un aviso que no dice cuál archivo falta, un
+   * script en línea que la CSP tira en silencio— y eso no se ve auditando
+   * estructuras de datos. Ver la nota de `test/legibilidad.test.ts`.
+   */
+  foto?: Foto;
+}
+
+const { id, nombre, tipo = null, foto: fotoDada } = Astro.props;
+
+let foto: Foto | null = fotoDada ?? null;
+let error: string | null = null;
+if (!foto) {
+  try {
+    foto = await fotoDeDispositivo(id);
+  } catch (e) {
+    // Que no se pueda resolver la imagen no puede tumbar la ficha entera: el
+    // resto de la página es lo que alguien necesita a las tres de la mañana.
+    error = reportarError('FotoEquipo', e);
+  }
+}
+
+/**
+ * El pictograma de repuesto, para el hueco.
+ *
+ * Es el mismo que usa el mapa, y se incrusta en vez de pedirlo por URL porque
+ * usa `currentColor`: así se tiñe con el tema en vez de salir negro sobre
+ * fondo oscuro. Ver el comentario largo de `lib/iconos`.
+ */
+const repuesto = iconoRepuesto(pistaDe(foto?.archivo ?? null, nombre));
+
+const AVISOS: Record<string, { titulo: string; detalle: string }> = {
+  'sin-icono': {
+    titulo: 'No hay ninguna imagen de este equipo',
+    detalle: tipo
+      ? `The Dude no le asignó icono a este equipo ni a su tipo («${tipo}»), así que no hay de dónde sacar una imagen.`
+      : 'The Dude no le asignó icono a este equipo ni a su tipo, así que no hay de dónde sacar una imagen.',
+  },
+  pictograma: {
+    titulo: 'Hay un pictograma, no una imagen del equipo',
+    detalle:
+      'El icono que The Dude tiene asignado es un dibujo genérico en formato vectorial, pensado para 24 píxeles. Ampliarlo no muestra el equipo: muestra el dibujo.',
+  },
+  'archivo-ausente': {
+    titulo: 'La imagen está asignada pero el archivo no aparece',
+    detalle:
+      'The Dude apunta a un archivo que no está en el directorio files/ del servidor. Casi siempre es que el directorio no se montó: revisá DUDE_FILES_DIR en el entorno del panel.',
+  },
+};
+
+const aviso = foto?.motivo ? AVISOS[foto.motivo]! : null;
+
+const alt =
+  foto?.clase === 'propia'
+    ? `Foto de ${nombre}${foto.modelo ? ` (${foto.modelo.codigo})` : ''}`
+    : `Imagen de catálogo que The Dude tiene asignada a ${nombre}${
+        foto?.modelo ? ` (${foto.modelo.codigo})` : ''
+      }`;
+---
+
+<section class="tarjeta overflow-hidden" aria-labelledby="t-foto">
+  <h2 id="t-foto" class="border-borde border-b px-3 py-2 text-sm font-semibold">El equipo</h2>
+
+  {
+    error ? (
+      <p class="text-caido-txt p-3 text-xs">
+        No se pudo resolver la imagen del equipo.
+        <span class="mt-1 block font-mono break-all">{error}</span>
+      </p>
+    ) : (
+      <figure class="m-0">
+        {/*
+          El hueco se reserva SIEMPRE con la misma proporción, haya imagen o no.
+          Sin esto la ficha pega un salto cuando la foto termina de bajar, y el
+          salto se lo come justo la sección de acceso que está arriba.
+
+          La placa es CLARA en los dos temas. Las fotos de catálogo de MikroTik
+          y Ubiquiti son cuerpos oscuros, y las que traen transparencia
+          desaparecerían sobre el panel del tema oscuro. En oscuro se baja la
+          luminancia para que no encandile, pero se mantiene clara: es mejor un
+          rectángulo gris claro que un equipo invisible.
+        */}
+        <div class="relative aspect-[4/3] w-full bg-[oklch(0.99_0_0)] dark:bg-[oklch(0.84_0.005_258)]">
+          {/*
+            `loading="lazy"`: en pantalla angosta la columna lateral queda abajo
+            de todo, después del gráfico y de la tabla de servicios. Lo que
+            importa arriba es el estado y cómo entrar al equipo, no la foto.
+          */}
+          {foto?.url ? (
+            <img
+              src={foto.url}
+              alt={alt}
+              width={foto.medida?.ancho}
+              height={foto.medida?.alto}
+              loading="lazy"
+              decoding="async"
+              class="absolute inset-0 h-full w-full object-contain p-3"
+            />
+          ) : (
+            <div class="absolute inset-0 grid place-items-center p-3">
+              {/* Gris en los dos temas: la placa es clara siempre, así que el
+                  trazo no puede seguir a `--color-tenue`, que en oscuro aclara. */}
+              <svg
+                viewBox={repuesto.viewBox}
+                width="72"
+                height="72"
+                aria-hidden="true"
+                focusable="false"
+                fill="none"
+                stroke="oklch(0.62 0.015 258)"
+                set:html={repuesto.cuerpo}
+              />
+            </div>
+          )}
+        </div>
+
+        <figcaption class="border-borde border-t px-3 py-2">
+          {foto?.modelo && (
+            <p class="text-sm font-semibold">
+              {foto.modelo.codigo}
+              <span
+                class="text-tenue ml-1 text-2xs font-normal"
+                title={`Deducido del nombre del archivo del icono («${foto.modelo.archivo}»). Es un ${foto.modelo.familia}. No se le preguntó nada al equipo.`}
+              >
+                · por el nombre del icono
+              </span>
+            </p>
+          )}
+
+          {foto && foto.clase !== 'sin-imagen' && (
+            /* De dónde salió lo que se está mirando. Nunca se deja a la
+               imaginación: «foto propia» y «lo que venía en The Dude» son dos
+               niveles de confianza distintos. */
+            <p class="text-tenue text-2xs mt-0.5 break-all">
+              {foto.clase === 'propia' ? 'Foto cargada por el ISP' : 'Imagen que The Dude tiene asignada'}
+              {' · '}
+              <span class="font-mono">{foto.archivo}</span>
+            </p>
+          )}
+
+          {/*
+            🔴 El estado vacío dice QUÉ falta y POR QUÉ, y no es cortesía.
+               Un cuadro gris mudo se lee como «este equipo es así»: gris. Y
+               peor, no distingue «no hay icono cargado» de «el directorio de
+               iconos no está montado», que son un trabajo de carga y una falla
+               de despliegue. Las tres causas piden acciones distintas.
+          */}
+          {aviso && (
+            <>
+              <p class="text-sm font-semibold">{aviso.titulo}</p>
+              <p class="text-tenue mt-1 text-xs leading-relaxed">{aviso.detalle}</p>
+              <p class="text-tenue mt-2 text-2xs leading-relaxed">
+                Se puede cargar una imagen propia dejándola en{' '}
+                <span class="text-tinta font-mono break-all">
+                  web/public/equipos/{foto?.nombreSugerido}
+                </span>
+                . Las condiciones —y por qué NO se bajan del sitio del fabricante— están en{' '}
+                <span class="font-mono">docs/IMAGENES.md</span>.
+              </p>
+            </>
+          )}
+        </figcaption>
+      </figure>
+    )
+  }
+</section>

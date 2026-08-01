@@ -467,6 +467,14 @@ export function elemento(p: Partial<ElementoMapa>): ElementoMapa {
     device_id: 1,
     submap_id: null,
     direcciones: [],
+    // El segundo escalón de la cadena de iconos y el fabricante. Van en el
+    // fixture con valor nulo a propósito y no como campos opcionales del tipo:
+    // así, el día que alguien agregue otra columna, el compilador obliga a
+    // decidir qué vale acá en vez de dejarla `undefined` en silencio.
+    icon_tipo: null,
+    image_scale_tipo: null,
+    tipo_nombre: null,
+    macs: [],
     services_down: 0,
     image_scale: 100,
     estado_desde: null,

@@ -5,6 +5,7 @@ import ListaCaidas from '@/components/ListaCaidas.astro';
 import Antiguedad from '@/components/Antiguedad.astro';
 import Accesos from '@/components/Accesos.astro';
 import Grafico from '@/components/Grafico.astro';
+import FotoEquipo from '@/components/FotoEquipo.astro';
 import {
   cadenaDePadres,
   caidasDe,
@@ -300,6 +301,10 @@ const SNMP = ['v1', 'v2c', 'v3'];
 
           {/* ── Barra lateral ─────────────────────────────────────────────── */}
           <aside class="flex flex-col gap-4">
+            {/* Arriba de todo: es lo primero que se mira, y para el que está
+                por salir a un sitio es lo que le dice qué se va a encontrar. */}
+            <FotoEquipo id={d!.id} nombre={d!.nombre} tipo={d!.tipo} />
+
             <section class="tarjeta p-3" aria-labelledby="t-ficha">
               <h2 id="t-ficha" class="text-tenue text-2xs mb-2 font-semibold tracking-wide uppercase">
                 Ficha

@@ -165,6 +165,18 @@ services:
       DUDE_FILES: /origen/files
       DUDE_FILES_DIR: /origen/files
 
+      # 🔴 Dónde deja el ISP sus propias fotos de equipo, y por qué NO puede
+      #    ser el directorio que viene adentro de la imagen.
+      #
+      #    Por omisión el panel las busca en `./dist/client/equipos`, que se
+      #    hornea en tiempo de compilación. Ahí, dejar una foto obligaría a
+      #    reconstruir y volver a publicar la imagen — o sea, el mecanismo de
+      #    reemplazo no serviría para nada en el único lugar donde importa.
+      #
+      #    Con esta variable apuntando a un volumen, se copia el archivo, se
+      #    espera hasta un minuto a que el índice se relea, y listo.
+      FOTOS_EQUIPOS_DIR: /fotos
+
       # 🔴 Quién puede acomodar los mapas. Sin esta línea la variable queda en
       #    `.env.prod` y NUNCA llega al proceso: Compose sólo pasa al
       #    contenedor lo que está declarado acá.
@@ -186,6 +198,16 @@ services:
       #    de seguridad que no se cumple es peor que no hacerla: la próxima
       #    decisión se toma creyéndola.
       - ${DUDE_DATA:?falta DUDE_DATA en .env.prod}/files:/origen/files:ro
+
+      # Las fotos propias del ISP. Volumen y no un directorio de la imagen: si
+      # viviera adentro, dejar una foto exigiría reconstruir y republicar.
+      #
+      # `:ro` porque el panel sólo las LEE. Para cargar una:
+      #   docker cp foto.webp dudepanel-web-1:/fotos/     ← no, es de sólo lectura
+      #   docker run --rm -v dudepanel_fotos-equipos:/d -v "$PWD":/o alpine \
+      #     cp /o/rb2011.webp /d/
+      # Ver `docs/IMAGENES.md`.
+      - fotos-equipos:/fotos:ro
 
     # 🔴 NO HAY `ports:` — y ésa es la diferencia central con el compose de
     #    desarrollo, donde el panel se publicaba en `127.0.0.1:4321`.
@@ -294,6 +316,10 @@ networks:
 
 volumes:
   db-data:
+  # Fotos de equipo cargadas por el ISP. Sobrevive a los despliegues: el
+  # trabajo de conseguir y recortar una foto no se puede perder porque salió
+  # una versión nueva del panel.
+  fotos-equipos:
   # Copia de trabajo del ETL. Se borra al final de cada corrida, así que en
   # reposo está vacío — pero el volumen tiene que existir igual.
   etl-trabajo:

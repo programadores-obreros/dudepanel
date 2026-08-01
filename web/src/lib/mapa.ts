@@ -407,7 +407,21 @@ export function construirLienzo(
     const lineas = partirTexto(texto, MAX_LINEAS_NODO, MAX_CARACTERES_NODO);
     const nombre = nombreDe(texto, e);
 
-    const caja = cajaDeIcono(e.icon, e.image_scale, e.icon ? medidas.get(e.icon) : null);
+    // 🔴 LA CADENA DE ICONOS, y el segundo escalón estaba sin usar.
+    //
+    //    The Dude resuelve el dibujo de un nodo en dos pasos: primero el icono
+    //    del ELEMENTO y, si no tiene, el del TIPO al que pertenece el equipo.
+    //    Nosotros hacíamos sólo el primero, así que **123 elementos salían con
+    //    la cajita gris de repuesto teniendo su imagen a un JOIN de
+    //    distancia** — el archivo existe en `files/`, el panel ya lo sirve con
+    //    HTTP 200, y la columna estaba en la base desde el primer día.
+    //
+    //    Va con la escala del TIPO, no la del elemento: `image_scale` del tipo
+    //    «Algun dispositivo» es 60, y son 122 de esos 123 equipos. Usar la del
+    //    elemento con la imagen del tipo la dibujaría al tamaño equivocado.
+    const icono = e.icon ?? e.icon_tipo ?? null;
+    const escala = e.icon ? e.image_scale : e.image_scale_tipo;
+    const caja = cajaDeIcono(icono, escala, icono ? medidas.get(icono) : null);
 
     // 🔴 Sólo los equipos tienen «desde cuándo»: sale de sus servicios. Un
     //    submapa agrega decenas de equipos con fechas distintas y una sola
@@ -432,7 +446,7 @@ export function construirLienzo(
       // mapa. Si el rótulo se quedó sin líneas —`[Network.SubnetsColumn]` a
       // secas, por ejemplo— al menos se dibuja de qué elemento se trata.
       lineas: lineas.length ? lineas : [recortar(nombre, MAX_CARACTERES_NODO)],
-      icono: e.icon,
+      icono,
       href: hrefDe(e),
       direcciones: e.direcciones ?? [],
       reubicado: !tieneXY,
