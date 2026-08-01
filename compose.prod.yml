@@ -15,13 +15,44 @@
 #  El runbook completo está en `docs/PRODUCCION.md`. Leerlo antes.
 # ═════════════════════════════════════════════════════════════════════════════
 
+# ═════════════════════════════════════════════════════════════════════════════
+#  🔴 POR QUÉ CADA IMAGEN VA FIJADA POR DIGEST Y NO POR ETIQUETA
+#
+#  Una etiqueta es un puntero mutable. Quien pueda publicar en el registro
+#  reemplaza el contenido de `:2362d0e` y el próximo `docker compose pull` se
+#  lo lleva EN SILENCIO: nada en la VM puede notar la diferencia.
+#
+#  Eso no es un riesgo teórico, es exactamente cómo pasó lo de SolarWinds en
+#  2020: entraron al sistema de compilación, inyectaron código en Orion, y la
+#  actualización salió FIRMADA, por el canal legítimo, a 18.000 organizaciones.
+#  No hackearon 18.000 redes: hackearon al que las monitoreaba.
+#
+#  Y una herramienta de monitoreo es el blanco perfecto justamente porque
+#  tiene credenciales de todo y acceso legítimo a todos lados. Este panel lee
+#  la base de un ISP con 885 equipos y su topología completa.
+#
+#  Un digest es el hash del contenido. Si alguien reemplaza la imagen, el
+#  `pull` FALLA en vez de obedecer — comprobado: con un digest que no coincide
+#  Docker contesta `manifest unknown` y no arranca nada.
+#
+#  Va `nombre:etiqueta@digest` a propósito: la etiqueta queda legible para el
+#  humano que lee este archivo, y el digest es el que manda.
+#
+#  🔴 Las de TERCEROS también. `postgres:16-alpine` y `caddy:2.11-alpine` son
+#     etiquetas móviles que apuntan a una imagen nueva cada dos semanas. Fijar
+#     sólo las nuestras sería cerrar la puerta y dejar la ventana.
+#
+#  Para actualizar: `./deploy/digests.sh`, que los lee del registro y escribe
+#  las líneas. A mano se equivoca uno, y un digest mal copiado no arranca.
+# ═════════════════════════════════════════════════════════════════════════════
+
 name: dudepanel
 
 services:
 
   # ── Base de datos ───────────────────────────────────────────────────────────
   db:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@${POSTGRES_DIGEST:?falta POSTGRES_DIGEST en .env.prod — ver deploy/digests.sh}
     restart: unless-stopped
 
     # 🔴 SIN `ports:`. Y además está en una red `internal: true`, así que ni
@@ -75,7 +106,7 @@ services:
     #    El día que haya que volver atrás, la pregunta "¿cuál andaba?" no tiene
     #    respuesta. Con el commit, el rollback es cambiar UN valor en
     #    `.env.prod` y `up -d`. Y el valor dice exactamente qué código es.
-    image: ghcr.io/programadores-obreros/dudepanel-etl:${PANEL_VERSION:?falta PANEL_VERSION en .env.prod}
+    image: ghcr.io/programadores-obreros/dudepanel-etl:${PANEL_VERSION:?falta PANEL_VERSION en .env.prod}@${ETL_DIGEST:?falta ETL_DIGEST en .env.prod — ver deploy/digests.sh}
     restart: unless-stopped
     depends_on:
       db: { condition: service_healthy }
@@ -150,7 +181,7 @@ services:
 
   # ── Panel web ───────────────────────────────────────────────────────────────
   web:
-    image: ghcr.io/programadores-obreros/dudepanel-web:${PANEL_VERSION:?falta PANEL_VERSION en .env.prod}
+    image: ghcr.io/programadores-obreros/dudepanel-web:${PANEL_VERSION:?falta PANEL_VERSION en .env.prod}@${WEB_DIGEST:?falta WEB_DIGEST en .env.prod — ver deploy/digests.sh}
     restart: unless-stopped
     depends_on:
       db: { condition: service_healthy }
@@ -237,7 +268,7 @@ services:
   caddy:
     # Menor fijado a mano. `caddy:2-alpine` seguiría a la 2.12, y una puerta de
     # internet no cambia de versión mayor sola un martes a la madrugada.
-    image: caddy:2.11-alpine
+    image: caddy:2.11-alpine@${CADDY_DIGEST:?falta CADDY_DIGEST en .env.prod — ver deploy/digests.sh}
     restart: unless-stopped
 
     # `service_started` y no `service_healthy`: si el panel está caído queremos
