@@ -38,9 +38,10 @@ const NAV = [
   { href: '/', texto: 'Panel', glifo: '▚' },
   { href: '/mapas', texto: 'Mapas', glifo: '◈' },
   { href: '/dispositivos', texto: 'Equipos', glifo: '▤' },
-  // Cuatro y no más: la guía de navegación pone el tope en cinco para la barra
+  // Cinco y no más: la guía de navegación pone el tope en cinco para la barra
   // inferior del teléfono, y acá la misma lista sirve arriba y abajo.
   { href: '/caidas', texto: 'Caídas', glifo: '▼' },
+  { href: '/disponibilidad', texto: 'Disponib.', glifo: '◆' },
 ] as const;
 ---
 
@@ -223,10 +224,15 @@ const NAV = [
     </main>
 
     {/* Barra inferior: en un celular, durante una guardia, el pulgar no llega
-        arriba. Se oculta en escritorio, donde ya está la nav del header. */}
+        arriba. Se oculta en escritorio, donde ya está la nav del header.
+
+        Las columnas se cuentan solas —`grid-flow-col` + `auto-cols-fr`— y no
+        van clavadas: estaba en `grid-cols-4` con CINCO hijos adentro, así que
+        «Buscar» caía solo en una segunda fila. Con esto no vuelve a pasar la
+        próxima vez que `NAV` cambie de tamaño. */}
     <nav
       aria-label="Secciones"
-      class="border-borde bg-panel/95 fixed inset-x-0 bottom-0 z-30 grid grid-cols-4 border-t pb-[env(safe-area-inset-bottom)] backdrop-blur-md md:hidden"
+      class="border-borde bg-panel/95 fixed inset-x-0 bottom-0 z-30 grid auto-cols-fr grid-flow-col border-t pb-[env(safe-area-inset-bottom)] backdrop-blur-md md:hidden"
     >
       {
         NAV.map((n) => (

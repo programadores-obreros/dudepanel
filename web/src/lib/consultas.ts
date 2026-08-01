@@ -1432,3 +1432,493 @@ export async function historialCaidas(f: FiltrosCaidas = {}): Promise<PaginaCaid
     tiempo_total_s: Math.round(Number(resumen?.tiempo ?? 0)),
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Disponibilidad — el reporte facturable
+//
+// Acá está SÓLO la SQL. Toda la aritmética (porcentaje, MTBF, MTTR), la
+// clasificación de cobertura y el armado del CSV viven en `lib/disponibilidad.ts`,
+// donde se prueban sin base de datos. La regla es una sola: esta capa extrae
+// contadores crudos y no interpreta nada.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * El primer instante del que hay registro. `null` si la base está vacía.
+ *
+ * 🔴 Se MIDE, no se escribe a mano. Hoy da `2026-06-12 14:54:07`, que es cuando
+ *    se rearmó la base de The Dude tras chocar contra el techo de 2 GB, pero
+ *    clavar esa fecha en el código sería garantizar que el reporte mienta la
+ *    próxima vez que la base se rehaga —y ya pasó una vez, en junio de 2026.
+ *
+ * Se usa `min(started_at)` de `outages` y no la primera corrida del ETL:
+ * `sync_runs` se trunca al reinstalar el panel y hoy tiene una sola fila, del
+ * 01/08/2026. Tomar eso como horizonte tiraría siete semanas de historia real.
+ */
+export async function horizonteDatos(): Promise<Date | null> {
+  const fila = await consultarUna<{ desde: Date | null }>(
+    'SELECT min(started_at) AS desde FROM outages',
+  );
+  return fila?.desde ?? null;
+}
+
+/**
+ * Contadores por equipo dentro de una ventana. Una fila por equipo, TODOS los
+ * equipos —incluidos los que no se monitorean— porque su ausencia también es
+ * información y la página tiene que poder decir «de estos 168 no sé nada».
+ *
+ * 🔴 `range_agg` y no `sum(duration_s)`. Ese es el corazón de la consulta.
+ *
+ *    Un equipo con tres servicios puede tener tres caídas simultáneas: sumar
+ *    duraciones cuenta el mismo minuto tres veces y llega a dar más de 100 % de
+ *    indisponibilidad. `range_agg` fusiona los intervalos que se pisan y
+ *    `unnest` los devuelve ya unidos, así que `count(*)` es el número de
+ *    EPISODIOS reales del equipo y la suma es tiempo de reloj.
+ *
+ *    Medido el 01/08/2026 sobre la ventana completa: 11.908 filas de `outages`
+ *    colapsan a 11.905 episodios —3 solapamientos, entre los 6 equipos que
+ *    tienen más de un servicio—. Es el 0,03 %: demasiado poco para notarlo
+ *    mirando, más que suficiente para que un cliente encuentre la diferencia.
+ *    Se devuelven las dos cifras (`eventos` y `caidas_servicio`) porque no son
+ *    lo mismo y el reporte tiene que poder mostrar las dos.
+ *
+ * 🔴 Las caídas RECONOCIDAS (`services.acked`, 495 de 859) cuentan igual.
+ *
+ *    No es un olvido, es la única opción defendible: `acked` es el estado de
+ *    HOY del servicio, y `outages` no tiene columna de reconocimiento. Filtrar
+ *    por ahí borraría siete semanas de historia según lo que alguien haya
+ *    tildado esta mañana, y además «el operador vio la alarma» no es «el enlace
+ *    estaba andando» — el cliente estuvo sin servicio igual. Lo que sí se
+ *    devuelve es `reconocidos`, para que la columna exista y se pueda auditar.
+ *
+ * El recorte a la ventana se hace en la SQL —`GREATEST`/`LEAST`— y no después:
+ * una caída de junio que sigue en julio tiene que aportarle a julio sólo su
+ * parte de julio. Las abiertas (`ended_at IS NULL`) se cierran contra `now()`.
+ */
+export interface CrudoDisponibilidad {
+  device_id: number;
+  equipo: string;
+  mapa_id: number | null;
+  mapa: string | null;
+  /** Servicios habilitados HOY. Cero significa «no se monitorea». */
+  servicios: number;
+  /** De esos, cuántos están reconocidos (silenciados) hoy. */
+  reconocidos: number;
+  /** Desde cuándo hay constancia de monitoreo. Ver `clasificarCobertura`. */
+  visto_desde: Date | null;
+  /** Episodios del EQUIPO: intervalos ya unidos. */
+  eventos: number;
+  /** Filas de `outages`, sin unir. Difiere de `eventos` cuando hubo solapamiento. */
+  caidas_servicio: number;
+  /** Cuántas de esas siguen abiertas. */
+  abiertas: number;
+  /** Segundos caídos, ya recortados a la ventana y sin contar dos veces. */
+  caido_s: number;
+  primera: Date | null;
+  ultima: Date | null;
+}
+
+export interface FiltrosDisponibilidad {
+  desde: Date;
+  hasta: Date;
+  /** Texto contra el nombre del equipo. */
+  q?: string;
+  /** Un solo mapa, o `null` para todos. */
+  mapa?: number | null;
+}
+
+export async function crudoDisponibilidad(
+  f: FiltrosDisponibilidad,
+): Promise<CrudoDisponibilidad[]> {
+  const q = (f.q ?? '').trim();
+  const mapa = Number.isFinite(f.mapa) && f.mapa != null ? Math.trunc(f.mapa) : null;
+
+  return consultar<CrudoDisponibilidad>(
+    `WITH v AS (SELECT $1::timestamptz AS ini, $2::timestamptz AS fin),
+     -- Un equipo puede estar dibujado en varios mapas. Medido el 01/08/2026:
+     -- hoy ninguno lo está (884 equipos repartidos en 36 mapas, cero
+     -- repetidos). Igual se elige UNO y de forma determinística, para que la
+     -- suma por mapa cierre contra el total general en vez de contar de más.
+     mapa_de AS (
+       SELECT DISTINCT ON (me.device_id) me.device_id, me.map_id, m.name AS mapa
+         FROM map_elements me JOIN maps m ON m.id = me.map_id
+        WHERE me.kind = 'device' AND me.device_id IS NOT NULL
+        ORDER BY me.device_id, me.map_id),
+     serv AS (
+       SELECT device_id,
+              count(*) FILTER (WHERE enabled) AS habilitados,
+              count(*) FILTER (WHERE enabled AND acked) AS reconocidos,
+              -- status_changed_at es el ÚNICO instante real de esta tabla:
+              -- time_last_up y time_last_down son duraciones en segundos
+              -- (medido: el máximo es 4.294.967.284 = 2^32-12, un centinela de
+              -- «nunca»). Leerlas como epoch daba equipos vistos en 1890.
+              min(status_changed_at) FILTER (WHERE enabled) AS visto_desde
+         FROM services GROUP BY device_id),
+     rec AS (
+       SELECT o.device_id,
+              tstzrange(GREATEST(o.started_at, v.ini),
+                        LEAST(COALESCE(o.ended_at, now()), v.fin)) AS r,
+              (o.ended_at IS NULL) AS abierta
+         FROM outages o CROSS JOIN v
+        WHERE o.device_id IS NOT NULL
+          AND o.started_at < v.fin
+          AND COALESCE(o.ended_at, now()) > v.ini),
+     uni AS (
+       SELECT device_id, range_agg(r) AS mr, count(*) AS filas,
+              count(*) FILTER (WHERE abierta) AS abiertas
+         FROM rec WHERE NOT isempty(r) GROUP BY device_id),
+     epi AS (
+       SELECT u.device_id, u.filas, u.abiertas, count(*) AS eventos,
+              sum(EXTRACT(epoch FROM (upper(x) - lower(x))))::bigint AS caido_s,
+              min(lower(x)) AS primera, max(upper(x)) AS ultima
+         FROM uni u, unnest(u.mr) AS x
+        GROUP BY u.device_id, u.filas, u.abiertas)
+     SELECT d.id AS device_id, d.name AS equipo,
+            md.map_id AS mapa_id, md.mapa,
+            COALESCE(s.habilitados, 0)::int AS servicios,
+            COALESCE(s.reconocidos, 0)::int AS reconocidos,
+            s.visto_desde,
+            COALESCE(e.eventos, 0)::int   AS eventos,
+            COALESCE(e.filas, 0)::int     AS caidas_servicio,
+            COALESCE(e.abiertas, 0)::int  AS abiertas,
+            COALESCE(e.caido_s, 0)::bigint AS caido_s,
+            e.primera, e.ultima
+       FROM devices d
+       CROSS JOIN v
+       LEFT JOIN mapa_de md ON md.device_id = d.id
+       LEFT JOIN serv s     ON s.device_id  = d.id
+       LEFT JOIN epi e      ON e.device_id  = d.id
+      WHERE ($3 = '' OR d.name ILIKE '%' || $3 || '%')
+        AND ($4::bigint IS NULL OR md.map_id = $4::bigint)`,
+    [f.desde, f.hasta, q, mapa],
+  );
+}
+
+/**
+ * Los mapas que tienen equipos, para el desplegable del filtro.
+ *
+ * No se reusa `listarMapas()`: ese trae contadores de estado en vivo y una
+ * consulta de más por mapa, y acá alcanza con el nombre y cuántos equipos hay.
+ */
+export async function mapasConEquipos(): Promise<{ id: number; nombre: string; n: number }[]> {
+  return consultar<{ id: number; nombre: string; n: number }>(
+    `SELECT m.id, m.name AS nombre, count(DISTINCT me.device_id)::int AS n
+       FROM maps m
+       JOIN map_elements me ON me.map_id = m.id AND me.kind = 'device'
+                           AND me.device_id IS NOT NULL
+      GROUP BY m.id, m.name
+      HAVING count(DISTINCT me.device_id) > 0
+      ORDER BY m.name`,
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  Topología INFERIDA del grafo de enlaces
+//
+//  🔴 `device_parents` está vacía y no va a llenarse sola: The Dude nunca
+//     guardó `parentIDs`. Todo lo de acá abajo reemplaza esa tabla leyendo la
+//     topología de donde SÍ está — los enlaces dibujados en los mapas — y
+//     arrastra un nivel de confianza en cada respuesta.
+//
+//  El porqué del algoritmo, y sobre todo los tres métodos que se midieron y NO
+//  funcionaron, está en `topologia.ts`. Acá sólo está el acceso a datos.
+//
+//  El `import` va acá y no arriba a propósito: las declaraciones de import se
+//  izan, así que es legal en cualquier punto del módulo, y de este modo todo lo
+//  nuevo entra como un bloque al final sin tocar una línea de lo que ya andaba.
+// ════════════════════════════════════════════════════════════════════════════
+
+import {
+  cadenaAscendente,
+  coberturaDe,
+  dependenciaDe,
+  hijosDirectos,
+  inferirTopologia,
+  TOPE_CADENA,
+  type Arista,
+  type Cobertura,
+  type Confianza,
+  type Dependencia,
+  type Motivo,
+  type Topologia,
+} from './topologia';
+
+/**
+ * Cuánto vale el grafo cacheado antes de volver a leerlo.
+ *
+ * El ETL corre cada 30 s, pero lo que reescribe son estados y mediciones: los
+ * enlaces del mapa cambian cuando alguien dibuja algo, o sea casi nunca. Leer y
+ * recalcular 1.076 aristas en cada carga de ficha sería pagar por nada.
+ *
+ * El costo de estar desactualizado es acotado y barato: un enlace nuevo tarda
+ * hasta un minuto en verse. El costo de NO cachear lo paga cada visita.
+ */
+export const TOPOLOGIA_TTL_MS = entero('TOPOLOGIA_TTL_MS', 60_000);
+
+let topoCache: { valor: Topologia; vence: number } | undefined;
+
+/** Tira el cache. Para los tests y para cuando el ETL avise que cambió el mapa. */
+export function olvidarTopologia(): void {
+  topoCache = undefined;
+}
+
+/**
+ * El grafo, ya con dirección inferida y cacheado por proceso.
+ *
+ * Medido en la base real: la vista sale en ~2 ms y la inferencia sobre 792
+ * nodos es despreciable. El cache no está por lentitud sino para no repetir el
+ * mismo trabajo 885 veces por recorrida de mapa.
+ */
+export async function topologiaInferida(): Promise<Topologia> {
+  const ahora = Date.now();
+  if (topoCache && topoCache.vence > ahora) return topoCache.valor;
+
+  const aristas = await consultar<Arista>(
+    'SELECT nodo_a, nodo_b, tipo_a, tipo_b FROM v_topologia_aristas',
+  );
+  const valor = inferirTopologia(aristas);
+  topoCache = { valor, vence: ahora + TOPOLOGIA_TTL_MS };
+  return valor;
+}
+
+/**
+ * Un `Vecino` con el sello de cuánto se le puede creer.
+ *
+ * 🔴 `confianza` y `motivo` NO son opcionales de mostrar. Este vecino no salió
+ *    de una tabla: salió de deducir la dirección de un grafo no dirigido.
+ *    Pintarlo igual que un dato cargado sería exactamente la mentira que
+ *    `hayTopologia()` se puso a evitar, un nivel más arriba.
+ */
+export interface VecinoInferido extends Vecino {
+  confianza: Confianza;
+  motivo: Motivo;
+}
+
+/** Nombre y estado de un puñado de equipos, en una sola consulta. */
+async function datosDe(ids: readonly number[]): Promise<Map<number, Vecino>> {
+  if (ids.length === 0) return new Map();
+  const filas = await consultar<{ id: number; nombre: string | null; status: number | null }>(
+    'SELECT id, name AS nombre, status FROM devices WHERE id = ANY($1::bigint[])',
+    [ids],
+  );
+  return new Map(filas.map((f) => [f.id, { ...f, nivel: 0 }]));
+}
+
+/**
+ * La cadena de dependencia hacia arriba, inferida.
+ *
+ * Mismo contrato de salida que `cadenaDePadres` —`nivel` 1 es el padre
+ * directo— más `confianza` y `motivo`, así que la ficha puede cambiar de una a
+ * la otra sin tocar el resto de la plantilla.
+ *
+ * Un equipo fuera del grafo devuelve `[]`, igual que uno que es cabecera. Para
+ * distinguirlos hay que mirar `dependenciaInferida`: son dos afirmaciones
+ * distintas sobre la red y el arreglo vacío las dice igual.
+ */
+export async function cadenaDePadresInferida(
+  deviceId: number,
+  tope: number = TOPE_CADENA,
+): Promise<VecinoInferido[]> {
+  const topo = await topologiaInferida();
+  const cadena = cadenaAscendente(topo, deviceId, tope);
+  const datos = await datosDe(cadena.map((e) => e.id));
+
+  return cadena.map((e) => ({
+    id: e.id,
+    nombre: datos.get(e.id)?.nombre ?? null,
+    status: datos.get(e.id)?.status ?? null,
+    nivel: e.nivel,
+    confianza: e.confianza,
+    motivo: e.motivo,
+  }));
+}
+
+/** Los equipos que dependen de éste, según la inferencia. */
+export async function hijosInferidos(deviceId: number): Promise<VecinoInferido[]> {
+  const topo = await topologiaInferida();
+  const ids = hijosDirectos(topo, deviceId);
+  const datos = await datosDe(ids);
+
+  return ids.map((id) => {
+    const d = dependenciaDe(topo, id);
+    return {
+      id,
+      nombre: datos.get(id)?.nombre ?? null,
+      status: datos.get(id)?.status ?? null,
+      nivel: 1,
+      // El hijo existe en el mapa `hijos` porque se le infirió este padre, así
+      // que la confianza está: el `?? 'baja'` es sólo para el compilador.
+      confianza: d.confianza ?? 'baja',
+      motivo: d.motivo,
+    };
+  });
+}
+
+/** Qué se sabe de la dependencia de un equipo, sin resolver nombres. */
+export async function dependenciaInferida(deviceId: number): Promise<Dependencia> {
+  return dependenciaDe(await topologiaInferida(), deviceId);
+}
+
+/**
+ * El primer equipo caído hacia arriba. **Esto es la advertencia de arrastre.**
+ *
+ * Devuelve `null` cuando no hay ninguno, que puede significar dos cosas muy
+ * distintas —«todos los de arriba están bien» y «no sé quiénes son los de
+ * arriba»—. Por eso viene `motivo_sin_padre`: la ficha tiene que poder decir
+ * «no cuelga de nadie conocido» en vez de dar a entender que revisó y estaba
+ * todo bien.
+ */
+export interface Arrastre {
+  /** El ancestro caído más cercano, o `null` si no hay ninguno. */
+  culpable: VecinoInferido | null;
+  /** Qué impidió encontrarlo, cuando no hay cadena. `null` si sí la había. */
+  motivo_sin_padre: Motivo | null;
+}
+
+export async function arrastreDe(deviceId: number): Promise<Arrastre> {
+  const cadena = await cadenaDePadresInferida(deviceId);
+  if (cadena.length === 0) {
+    const d = await dependenciaInferida(deviceId);
+    return { culpable: null, motivo_sin_padre: d.motivo };
+  }
+  // 3 es `down`. Un `partial` no explica una caída entera del hijo.
+  return { culpable: cadena.find((p) => p.status === 3) ?? null, motivo_sin_padre: null };
+}
+
+/**
+ * Cuánta red queda explicada y con qué certeza. Para mostrarlo sin exagerar.
+ */
+export async function coberturaTopologia(): Promise<Cobertura> {
+  const [topo, fila] = await Promise.all([
+    topologiaInferida(),
+    consultarUna<{ n: number }>('SELECT count(*)::int AS n FROM devices'),
+  ]);
+  return coberturaDe(topo, fila?.n ?? 0);
+}
+
+/**
+ * Cuántas caídas se explican como consecuencia de otra.
+ *
+ * Una caída es **arrastre** si en el instante en que empezó había un equipo de
+ * su cadena hacia arriba ya caído. Es la pregunta que resuelve la guardia:
+ * cuántas de las 11.988 alarmas del histórico eran ruido de otra alarma.
+ *
+ * 🔴 Esto mide COINCIDENCIA, no causa. Un corte de luz que se lleva puesto un
+ *    sitio entero produce exactamente el mismo patrón, y no es que un equipo
+ *    tiró abajo al otro. Sirve para priorizar —«mirá primero al de arriba»—,
+ *    no para cerrar un incidente.
+ *
+ * La cadena se calcula en memoria y se baja a la consulta como tres arreglos
+ * paralelos; el cruce con `outages` lo hace PostgreSQL, que para eso tiene el
+ * índice `outages_device_idx (device_id, started_at DESC)`.
+ */
+export interface ArrastreHistorico {
+  total: number;
+  explicadas: number;
+  /** De las explicadas, cuántas por el padre DIRECTO y no por un abuelo. */
+  por_padre_directo: number;
+  /** Equipos distintos con al menos una caída explicada. */
+  equipos_explicados: number;
+  /** Caídas de equipos a los que no se les pudo inferir ninguna cadena. */
+  sin_cadena: number;
+  /** Reparto de las explicadas según cuánto se le cree al padre. */
+  por_confianza: Record<Confianza, number>;
+}
+
+export async function caidasExplicadasPorArrastre(
+  horas?: number,
+): Promise<ArrastreHistorico> {
+  const topo = await topologiaInferida();
+
+  const hijo: number[] = [];
+  const ancestro: number[] = [];
+  const nivel: number[] = [];
+  const conf: string[] = [];
+
+  // 🔴 La confianza de llegar a un ancestro es la del ESLABÓN MÁS DÉBIL del
+  //    camino, no la del último paso. Una cadena firme-firme-dudosa no vale
+  //    «dudosa» ni «firme»: vale lo que valga el peor tramo, porque basta que
+  //    ese tramo esté mal para que el abuelo no sea el abuelo.
+  const PESO: Record<Confianza, number> = { alta: 2, media: 1, baja: 0 };
+
+  for (const id of topo.dependencias.keys()) {
+    let peor: Confianza = 'alta';
+    for (const e of cadenaAscendente(topo, id)) {
+      if (PESO[e.confianza] < PESO[peor]) peor = e.confianza;
+      hijo.push(id);
+      ancestro.push(e.id);
+      nivel.push(e.nivel);
+      conf.push(peor);
+    }
+  }
+
+  // `horas` sin valor = todo el histórico. `null` en vez de un número enorme
+  // para que el plan no tenga que comparar contra una fecha inventada.
+  const ventana = horas === undefined ? null : Math.max(Math.round(horas), 1);
+
+  const fila = await consultarUna<{
+    total: number;
+    explicadas: number;
+    directas: number;
+    equipos: number;
+    sin_cadena: number;
+    alta: number;
+    media: number;
+    baja: number;
+  }>(
+    `WITH cadena(hijo, ancestro, nivel, confianza) AS (
+       SELECT * FROM unnest($1::bigint[], $2::bigint[], $3::int[], $4::text[])
+     ),
+     con_cadena AS (SELECT DISTINCT hijo FROM cadena),
+     -- Un LATERAL y no dos subconsultas correlacionadas: la búsqueda del
+     -- ancestro caído se hace UNA vez por caída y devuelve nivel y confianza
+     -- juntos. Con dos subconsultas el histórico completo tardaba 4,6 s, y el
+     -- statement_timeout está en 10 s: a un mal plan de distancia.
+     marcadas AS (
+       SELECT o.device_id, culpa.nivel AS nivel_culpable, culpa.confianza AS conf_culpable,
+              (o.device_id IN (SELECT hijo FROM con_cadena)) AS tiene_cadena
+         FROM outages o
+         LEFT JOIN LATERAL (
+              SELECT c.nivel, c.confianza
+                FROM cadena c
+                JOIN outages p
+                  ON p.device_id = c.ancestro
+                 AND p.started_at <= o.started_at
+                 -- Una caída abierta sigue vigente: sin el COALESCE el
+                 -- ancestro que TODAVÍA está caído no explicaría nada.
+                 AND COALESCE(p.ended_at, now()) >= o.started_at
+               WHERE c.hijo = o.device_id
+               -- El más cercano gana: si el padre y el abuelo están los dos
+               -- caídos, lo que hay que ir a mirar es el padre.
+               ORDER BY c.nivel
+               LIMIT 1
+         ) culpa ON true
+        WHERE o.device_id IS NOT NULL
+          AND ($5::int IS NULL
+               OR o.started_at >= now() - make_interval(hours => $5::int))
+     )
+     SELECT count(*)::int                                                AS total,
+            count(*) FILTER (WHERE nivel_culpable IS NOT NULL)::int      AS explicadas,
+            count(*) FILTER (WHERE nivel_culpable = 1)::int              AS directas,
+            count(DISTINCT device_id)
+              FILTER (WHERE nivel_culpable IS NOT NULL)::int             AS equipos,
+            count(*) FILTER (WHERE NOT tiene_cadena)::int                AS sin_cadena,
+            count(*) FILTER (WHERE conf_culpable = 'alta')::int          AS alta,
+            count(*) FILTER (WHERE conf_culpable = 'media')::int         AS media,
+            count(*) FILTER (WHERE conf_culpable = 'baja')::int          AS baja
+       FROM marcadas`,
+    [hijo, ancestro, nivel, conf, ventana],
+  );
+
+  return {
+    total: fila?.total ?? 0,
+    explicadas: fila?.explicadas ?? 0,
+    por_padre_directo: fila?.directas ?? 0,
+    equipos_explicados: fila?.equipos ?? 0,
+    sin_cadena: fila?.sin_cadena ?? 0,
+    por_confianza: {
+      alta: fila?.alta ?? 0,
+      media: fila?.media ?? 0,
+      baja: fila?.baja ?? 0,
+    },
+  };
+}

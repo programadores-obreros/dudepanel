@@ -7,11 +7,12 @@ import Accesos from '@/components/Accesos.astro';
 import Grafico from '@/components/Grafico.astro';
 import FotoEquipo from '@/components/FotoEquipo.astro';
 import {
-  cadenaDePadres,
+  cadenaDePadresInferida,
+  arrastreDe,
+  coberturaTopologia,
   caidasDe,
   datosDeAcceso,
-  hayTopologia,
-  hijosDe,
+  hijosInferidos,
   historiaDe,
   mapasDeDispositivo,
   obtenerDispositivo,
@@ -27,8 +28,10 @@ if (!Number.isInteger(id) || id <= 0) return Astro.redirect('/dispositivos', 302
 
 let d = null;
 let servicios: Awaited<ReturnType<typeof serviciosDe>> = [];
-let padres: Awaited<ReturnType<typeof cadenaDePadres>> = [];
-let hijos: Awaited<ReturnType<typeof hijosDe>> = [];
+let padres: Awaited<ReturnType<typeof cadenaDePadresInferida>> = [];
+let hijos: Awaited<ReturnType<typeof hijosInferidos>> = [];
+let arrastre: Awaited<ReturnType<typeof arrastreDe>> | null = null;
+let cobertura: Awaited<ReturnType<typeof coberturaTopologia>> | null = null;
 let mapas: Awaited<ReturnType<typeof mapasDeDispositivo>> = [];
 let caidas: Awaited<ReturnType<typeof caidasDe>> = [];
 /**
@@ -38,7 +41,6 @@ let caidas: Awaited<ReturnType<typeof caidasDe>> = [];
  *    instalación The Dude nunca guardó `parentIDs` en ninguno de sus 885
  *    equipos, así que lo cierto es que el dato no existe.
  */
-let topologiaCargada = false;
 let accesos: Acceso[] = [];
 let series: Awaited<ReturnType<typeof historiaDe>> = [];
 let error: string | null = null;
@@ -60,14 +62,15 @@ try {
   d = await obtenerDispositivo(id);
   if (d) {
     let acc: Awaited<ReturnType<typeof datosDeAcceso>> = null;
-    [servicios, padres, hijos, mapas, caidas, topologiaCargada, acc, series] =
+    [servicios, padres, hijos, mapas, caidas, arrastre, cobertura, acc, series] =
       await Promise.all([
         serviciosDe(id),
-        cadenaDePadres(id),
-        hijosDe(id),
+        cadenaDePadresInferida(id),
+        hijosInferidos(id),
         mapasDeDispositivo(id),
         caidasDe(id, 20),
-        hayTopologia(),
+        arrastreDe(id),
+        coberturaTopologia(),
         datosDeAcceso(id),
         historiaDe(id, horas),
       ]);
@@ -85,7 +88,7 @@ const marca = fabricante(macs);
 
 // El padre caído es el dato que resuelve la guardia: si el troncal está abajo,
 // que este equipo esté abajo no es una falla propia, es una consecuencia.
-const padreCaido = padres.find((p) => p.status === 3);
+const padreCaido = arrastre?.culpable ?? null;
 
 const SNMP = ['v1', 'v2c', 'v3'];
 ---
@@ -411,20 +414,51 @@ const SNMP = ['v1', 'v2c', 'v3'];
               <h2 id="t-dep" class="border-borde border-b px-3 py-2 text-sm font-semibold">
                 Depende de
               </h2>
-              {!topologiaCargada ? (
-                /* 🔴 Ver el comentario de `topologiaCargada`. Esto NO dice
-                   «no depende de nadie»: dice que el dato no existe, que es
-                   otra cosa y es la verdad. */
-                <p class="text-tenue px-3 py-4 text-xs">
-                  <strong class="text-tinta block font-semibold">
-                    La topología no está cargada.
-                  </strong>
-                  The Dude no tiene padres cargados en ningún equipo de esta instalación, así que
-                  el panel no puede decir de qué depende este. No es que no dependa de nada.
-                </p>
-              ) : padres.length === 0 ? (
-                <p class="text-tenue px-3 py-4 text-xs">
-                  No cuelga de ningún equipo. Es raíz de la topología.
+              {padres.length === 0 ? (
+                /* 🔴 «No depende de nadie» y «no sé de quién depende» son
+                   afirmaciones distintas, y confundirlas es mentir sobre la
+                   red. `motivo_sin_padre` dice CUÁL de las dos es.
+
+                   Y ninguna sale ya de `device_parents`: esa tabla está VACÍA
+                   —The Dude nunca guardó `parentIDs` en ninguno de los 885
+                   equipos— y por eso esta sección no servía. Ahora la
+                   topología se INFIERE del grafo de 1.092 enlaces dibujados
+                   en los mapas. Ver `lib/topologia.ts`. */
+                <p class="text-tenue px-3 py-4 text-xs leading-relaxed">
+                  {arrastre?.motivo_sin_padre === 'fuera-del-grafo' ? (
+                    <>
+                      <strong class="text-tinta block font-semibold">
+                        No se sabe de qué depende.
+                      </strong>
+                      Este equipo no aparece en ningún enlace dibujado, así que no hay de dónde
+                      deducirlo. No es que no dependa de nada.
+                    </>
+                  ) : arrastre?.motivo_sin_padre === 'raiz-del-grafo' ? (
+                    <>
+                      <strong class="text-tinta block font-semibold">Parece ser cabecera.</strong>
+                      Es el nodo con más enlaces de su parte de la red, así que la inferencia lo
+                      toma como origen. Deducido del dibujo, no declarado por nadie.
+                    </>
+                  ) : arrastre?.motivo_sin_padre === 'sin-padre-resoluble' ? (
+                    <>
+                      <strong class="text-tinta block font-semibold">
+                        Cuelga de un sitio, pero arriba no hay equipo.
+                      </strong>
+                      El enlace sube a la caja de otro mapa y ahí no hay ningún equipo dibujado del
+                      que colgar. El lugar se sabe; el equipo, no.
+                    </>
+                  ) : (
+                    'No se pudo deducir de qué depende.'
+                  )}
+                  {cobertura && (
+                    <span class="mt-1.5 block">
+                      La topología está deducida para{' '}
+                      <strong class="text-tinta">
+                        {numero(cobertura.con_padre)} de {numero(cobertura.total)}
+                      </strong>{' '}
+                      equipos.
+                    </span>
+                  )}
                 </p>
               ) : (
                 <ul class="divide-borde divide-y">
@@ -442,6 +476,25 @@ const SNMP = ['v1', 'v2c', 'v3'];
                         )}
                         <Pildora estado={v.status} compacta />
                         <span class="truncate text-xs">{v.nombre ?? `#${v.id}`}</span>
+                        {/* 🔴 La confianza NO es decorativa. Esto es una
+                            INFERENCIA sobre un grafo NO DIRIGIDO: «A está
+                            unido con B» no dice cuál cuelga de cuál. Un
+                            eslabón «dudoso» puede estar al revés, y quien mire
+                            esto a las tres de la mañana tiene que poder
+                            distinguirlo de uno seguro antes de mandar a
+                            alguien a una torre. */}
+                        {v.confianza !== 'alta' && (
+                          <span
+                            class="border-borde text-tenue text-2xs ml-auto shrink-0 rounded border px-1 py-px"
+                            title={
+                              v.confianza === 'media'
+                                ? 'Camino único en el grafo de enlaces, pero el padre no es claramente más central. Probable, no seguro.'
+                                : 'Hay más de un camino posible, o el enlace cruza de sitio. Puede estar invertido.'
+                            }
+                          >
+                            {v.confianza === 'media' ? 'probable' : 'dudoso'}
+                          </span>
+                        )}
                       </a>
                     </li>
                   ))}
@@ -463,6 +516,25 @@ const SNMP = ['v1', 'v2c', 'v3'];
                       >
                         <Pildora estado={v.status} compacta />
                         <span class="truncate text-xs">{v.nombre ?? `#${v.id}`}</span>
+                        {/* 🔴 La confianza NO es decorativa. Esto es una
+                            INFERENCIA sobre un grafo NO DIRIGIDO: «A está
+                            unido con B» no dice cuál cuelga de cuál. Un
+                            eslabón «dudoso» puede estar al revés, y quien mire
+                            esto a las tres de la mañana tiene que poder
+                            distinguirlo de uno seguro antes de mandar a
+                            alguien a una torre. */}
+                        {v.confianza !== 'alta' && (
+                          <span
+                            class="border-borde text-tenue text-2xs ml-auto shrink-0 rounded border px-1 py-px"
+                            title={
+                              v.confianza === 'media'
+                                ? 'Camino único en el grafo de enlaces, pero el padre no es claramente más central. Probable, no seguro.'
+                                : 'Hay más de un camino posible, o el enlace cruza de sitio. Puede estar invertido.'
+                            }
+                          >
+                            {v.confianza === 'media' ? 'probable' : 'dudoso'}
+                          </span>
+                        )}
                       </a>
                     </li>
                   ))}

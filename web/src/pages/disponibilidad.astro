@@ -1,0 +1,701 @@
+---
+/**
+ * Disponibilidad: el reporte que se le manda a un cliente.
+ *
+ * 🔴 `/caidas` LISTA. Esto MIDE, que es otra cosa. Un ISP con contratos de
+ *    servicio no necesita saber que hubo 11.988 caídas: necesita poder decir
+ *    «su enlace estuvo arriba el 99,4 % de julio», y hasta acá nadie en la
+ *    empresa podía contestar eso sin abrir una planilla a mano.
+ *
+ * Las cuatro métricas van juntas y ninguna sobra:
+ *
+ *   · **Disponibilidad %** es la cifra del contrato.
+ *   · **Eventos** la desambigua. Medido acá: `OLT 20 - Peniel - SRouter1` tiene
+ *     98,9 % con **2.777 caídas**, y `C_MG_P_Libertad` tiene 75,6 % con **2**.
+ *     El primero aprueba cualquier SLA del 98 % y es el que tiene al operador
+ *     levantándose de noche; el segundo dejó a un cliente doce días sin
+ *     servicio en dos tandas. El porcentaje solo no distingue esos dos mundos.
+ *   · **MTTR** dice cuánto tarda en volver. Es la que se negocia en el contrato
+ *     de soporte, no en el de disponibilidad.
+ *   · **MTBF** dice cada cuánto se rompe. Es la que dice si hay que cambiar el
+ *     equipo o mejorar la guardia.
+ *
+ * Los filtros viajan en la URL, igual que en `/caidas`: el destino de esta
+ * página es un enlace pegado en un chat con «mirá el mes de Fulano».
+ */
+import Base from '@/layouts/Base.astro';
+import Icono from '@/components/Icono.astro';
+import { crudoDisponibilidad, horizonteDatos, mapasConEquipos } from '@/lib/consultas';
+import {
+  COBERTURAS,
+  ORDENES,
+  PERIODOS,
+  aFechaISP,
+  aOrden,
+  construirFilas,
+  agruparPorMapa,
+  formatearDisponibilidad,
+  nombreArchivoCsv,
+  ordenar,
+  recortarAlHorizonte,
+  resolverPeriodo,
+  resumir,
+  type Cobertura,
+  type FilaDisponibilidad,
+} from '@/lib/disponibilidad';
+import { duracion, fechaHora, fechaLarga, numero } from '@/lib/formato';
+import { reportarError } from '@/lib/errores';
+
+const p = Astro.url.searchParams;
+
+/**
+ * Cuántas filas se muestran. La tabla completa son 885 y no se lee de un
+ * tirón; el CSV, en cambio, siempre las lleva todas. `TODAS` es un tope y no
+ * el conteo real a propósito: si mañana hay mil equipos, «todos» sigue siendo
+ * todos en vez de cortar en el número de hoy.
+ */
+const TODAS = 100_000;
+const TOPES = [25, 50, 100, TODAS] as const;
+const tope = TOPES.find((t) => t === Number(p.get('n'))) ?? 25;
+
+const orden = aOrden(p.get('orden')) ?? 'peor';
+const q = (p.get('q') ?? '').trim().slice(0, 80);
+const mapaPedido = Number(p.get('mapa'));
+const mapa = Number.isSafeInteger(mapaPedido) && mapaPedido > 0 ? mapaPedido : null;
+
+const ahora = new Date();
+const pedidoCrudo = { periodo: p.get('periodo'), desde: p.get('desde'), hasta: p.get('hasta') };
+
+// Se resuelve dos veces: esta primera vez sin horizonte, para que la clave del
+// atajo y las fechas del formulario existan aunque la base no conteste. Con el
+// horizonte a mano se vuelve a resolver adentro del `try`, y ahí «Todo» arranca
+// en el primer dato real en vez de en una fecha inventada.
+let pedido = resolverPeriodo(pedidoCrudo, ahora);
+
+type Datos = {
+  filas: FilaDisponibilidad[];
+  ventana: ReturnType<typeof recortarAlHorizonte>;
+  resumen: ReturnType<typeof resumir>;
+  porMapa: ReturnType<typeof agruparPorMapa>;
+  mapas: { id: number; nombre: string; n: number }[];
+};
+
+let datos: Datos | null = null;
+let error: string | null = null;
+
+try {
+  const [horizonte, mapas] = await Promise.all([horizonteDatos(), mapasConEquipos()]);
+  pedido = resolverPeriodo(pedidoCrudo, ahora, horizonte);
+  const ventana = recortarAlHorizonte(pedido, horizonte, ahora);
+
+  // Con la ventana vacía no se consulta: 885 filas de ceros para dividirlas por
+  // cero después. Se muestra el aviso y se termina.
+  const crudas = ventana.vacia
+    ? []
+    : await crudoDisponibilidad({ desde: ventana.desde, hasta: ventana.hasta, q, mapa });
+
+  const filas = construirFilas(crudas, ventana);
+  datos = { filas, ventana, resumen: resumir(filas), porMapa: agruparPorMapa(filas), mapas };
+} catch (e) {
+  error = reportarError('disponibilidad', e);
+}
+
+/** Arma una URL conservando el resto de los filtros. */
+function con(cambios: Record<string, string | number | null>): string {
+  const u = new URLSearchParams();
+  const base: Record<string, string> = {
+    periodo: pedido.clave === 'custom' ? '' : pedido.clave,
+    desde: pedido.clave === 'custom' ? aFechaISP(pedido.desde) : '',
+    hasta: pedido.clave === 'custom' ? aFechaISP(pedido.hasta) : '',
+    orden,
+    q,
+    mapa: mapa ? String(mapa) : '',
+    n: String(tope),
+  };
+  for (const [k, v] of Object.entries({ ...base, ...cambios })) {
+    if (v != null && String(v) !== '') u.set(k, String(v));
+  }
+  return `?${u}`;
+}
+
+const visibles = datos ? ordenar(datos.filas, orden).slice(0, tope) : [];
+const metaOrden = ORDENES.find((o) => o.clave === orden)!;
+/** El CSV se pide con los MISMOS filtros que están en pantalla. */
+const csv = `/api/disponibilidad.csv${con({})}`;
+
+/** Tono de la fila según el nivel. Mismo vocabulario de color que el resto. */
+const TONO = {
+  excelente: 'text-up-txt',
+  bueno: 'text-tinta',
+  flojo: 'text-parcial-txt',
+  malo: 'text-caido-txt font-semibold',
+  'sin-dato': 'text-tenue',
+} as const;
+
+const PILDORA: Record<Cobertura, string> = {
+  confirmada: 'border-up/40 bg-up-bg/50 text-up-txt',
+  supuesta: 'border-parcial/40 bg-parcial-bg/50 text-parcial-txt',
+  historica: 'border-desconocido/40 bg-desconocido-bg/60 text-desconocido-txt',
+  'sin-monitoreo': 'border-borde bg-panel-2 text-tenue',
+};
+
+const diasVentana = datos ? datos.ventana.segundos / 86_400 : 0;
+---
+
+<Base
+  titulo="Disponibilidad"
+  descripcion="Disponibilidad, MTBF y MTTR por equipo y por mapa, para un período."
+>
+  <header class="mb-4">
+    <h1 class="text-xl font-semibold">Disponibilidad</h1>
+    <p class="text-tenue mt-1 max-w-3xl text-sm">
+      Cuánto tiempo estuvo arriba cada equipo, cada cuánto se cayó y cuánto tardó
+      en volver. Es el reporte que se le manda a un cliente o a una gerencia —
+      por eso cada fila dice también <strong class="text-tinta">sobre qué</strong>
+      se calculó.
+    </p>
+  </header>
+
+  {
+    error ? (
+      <p class="tarjeta text-caido-txt p-4 text-sm">{error}</p>
+    ) : (
+      <>
+        {/* ── Filtros ────────────────────────────────────────────────────── */}
+        <form class="tarjeta mb-4 flex flex-wrap items-end gap-x-4 gap-y-3 p-3" method="get">
+          <fieldset class="flex flex-col gap-1">
+            <legend class="text-tenue text-2xs mb-1 font-semibold uppercase">Período</legend>
+            <div class="flex flex-wrap gap-1" role="group">
+              {PERIODOS.map((r) => (
+                <a
+                  href={con({ periodo: r.clave, desde: null, hasta: null })}
+                  class:list={[
+                    'text-2xs rounded px-2.5 py-2 transition-colors duration-150',
+                    r.clave === pedido.clave
+                      ? 'bg-acento text-fondo font-semibold'
+                      : 'text-tenue hover:bg-panel-2 hover:text-tinta border-borde border',
+                  ]}
+                  aria-current={r.clave === pedido.clave ? 'true' : undefined}
+                >
+                  {r.etiqueta}
+                </a>
+              ))}
+            </div>
+          </fieldset>
+
+          {/* Fechas exactas: es lo que hace falta para un mes de facturación
+              que no coincide con el calendario. Nativas y sin JavaScript. */}
+          <div class="flex items-end gap-2">
+            <div>
+              <label for="desde" class="text-tenue text-2xs mb-1 block font-semibold uppercase">
+                Desde
+              </label>
+              <input
+                id="desde"
+                name="desde"
+                type="date"
+                value={pedido.clave === 'custom' ? aFechaISP(pedido.desde) : ''}
+                max={aFechaISP(ahora)}
+                class="border-borde bg-panel-2 focus-visible:outline-acento rounded-lg border px-2 py-2 text-sm focus-visible:outline-2"
+              />
+            </div>
+            <div>
+              <label for="hasta" class="text-tenue text-2xs mb-1 block font-semibold uppercase">
+                Hasta
+              </label>
+              <input
+                id="hasta"
+                name="hasta"
+                type="date"
+                value={pedido.clave === 'custom' ? aFechaISP(pedido.hasta) : ''}
+                max={aFechaISP(ahora)}
+                class="border-borde bg-panel-2 focus-visible:outline-acento rounded-lg border px-2 py-2 text-sm focus-visible:outline-2"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label for="mapa" class="text-tenue text-2xs mb-1 block font-semibold uppercase">
+              Mapa
+            </label>
+            <select
+              id="mapa"
+              name="mapa"
+              class="border-borde bg-panel-2 focus-visible:outline-acento max-w-56 rounded-lg border px-2 py-2 text-sm focus-visible:outline-2"
+            >
+              <option value="">Todos</option>
+              {datos!.mapas.map((m) => (
+                <option value={m.id} selected={m.id === mapa}>
+                  {m.nombre} ({m.n})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div class="min-w-40 flex-1">
+            <label for="q" class="text-tenue text-2xs mb-1 block font-semibold uppercase">
+              Equipo
+            </label>
+            <input
+              id="q"
+              name="q"
+              type="search"
+              value={q}
+              placeholder="nombre o parte del nombre"
+              autocomplete="off"
+              class="border-borde bg-panel-2 focus-visible:outline-acento w-full rounded-lg border px-3 py-2 text-sm focus-visible:outline-2"
+            />
+          </div>
+
+          <input type="hidden" name="orden" value={orden} />
+          <input type="hidden" name="n" value={tope} />
+          <button
+            type="submit"
+            class="border-borde bg-panel-2 hover:bg-panel focus-visible:outline-acento cursor-pointer rounded-lg border px-4 py-2 text-sm font-medium transition-colors duration-150 focus-visible:outline-2"
+          >
+            Aplicar
+          </button>
+        </form>
+
+        {/* ── El aviso que hace que el número no mienta ───────────────────── */}
+        {datos!.ventana.vacia ? (
+          <p class="tarjeta text-caido-txt flex items-start gap-2 p-4 text-sm">
+            <Icono nombre="alerta" tam={16} clase="mt-0.5" />
+            <span>
+              El período pedido no se solapa con ningún dato.
+              {datos!.ventana.horizonte && (
+                <>
+                  {' '}
+                  La base arranca el{' '}
+                  <strong>{fechaHora(datos!.ventana.horizonte, ahora)}</strong> y no hay nada
+                  anterior. No se puede calcular disponibilidad de un período sin registros —
+                  y suponer que estuvo todo arriba sería inventarlo.
+                </>
+              )}
+            </span>
+          </p>
+        ) : (
+          <>
+            {datos!.ventana.dias_recortados > 0 && (
+              <p class="border-parcial/40 bg-parcial-bg/50 text-parcial-txt mb-4 flex items-start gap-2 rounded-lg border px-3 py-2 text-xs leading-relaxed">
+                <Icono nombre="alerta" tam={14} clase="mt-0.5" />
+                <span>
+                  Se pidió desde el{' '}
+                  <strong>{fechaHora(datos!.ventana.pedido_desde, ahora)}</strong>, pero la base
+                  de The Dude se rearmó desde cero y el primer registro es del{' '}
+                  <strong>{fechaHora(datos!.ventana.horizonte, ahora)}</strong>.{' '}
+                  <strong>
+                    Se recortaron {numero(datos!.ventana.dias_recortados)}{' '}
+                    {datos!.ventana.dias_recortados === 1 ? 'día' : 'días'}
+                  </strong>{' '}
+                  del período: no hay registros ahí, y contarlos como tiempo arriba habría
+                  inflado todos los porcentajes de esta página.
+                </span>
+              </p>
+            )}
+
+            {/* ── Lo que se mira primero ──────────────────────────────────── */}
+            <div class="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+              {[
+                {
+                  t: 'Disponibilidad de la red',
+                  v: formatearDisponibilidad(datos!.resumen.disponibilidad),
+                  n: `${numero(datos!.resumen.medibles)} equipos medidos`,
+                },
+                {
+                  t: 'Ventana observada',
+                  v: `${numero(Math.round(diasVentana * 10) / 10)} d`,
+                  n: `${aFechaISP(datos!.ventana.desde)} → ${aFechaISP(datos!.ventana.hasta)}`,
+                },
+                {
+                  t: 'Eventos',
+                  v: numero(datos!.resumen.eventos),
+                  n:
+                    datos!.resumen.caidas_servicio > datos!.resumen.eventos
+                      ? `${numero(datos!.resumen.caidas_servicio)} caídas de servicio unidas`
+                      : 'caídas de equipo',
+                },
+                {
+                  t: 'Tiempo fuera',
+                  v: duracion(datos!.resumen.caido_s),
+                  n: 'sin contar dos veces',
+                  alerta: true,
+                },
+              ].map((k) => (
+                <div class="tarjeta p-3">
+                  <p class="text-tenue text-2xs font-semibold tracking-wide uppercase">{k.t}</p>
+                  <p
+                    class:list={[
+                      'cifra mt-1 text-2xl font-semibold tabular-nums',
+                      k.alerta && datos!.resumen.caido_s > 0 && 'text-caido-txt',
+                    ]}
+                  >
+                    {k.v}
+                  </p>
+                  <p class="text-tenue text-2xs mt-0.5">{k.n}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* ── Sobre qué se calculó. Va ARRIBA de la tabla, no al pie ──── */}
+            <details class="tarjeta mb-4 p-3" open={datos!.resumen.medibles === 0}>
+              <summary class="cursor-pointer text-sm font-semibold">
+                De {numero(datos!.resumen.equipos)} equipos, {numero(datos!.resumen.medibles)}{' '}
+                tienen porcentaje
+                <span class="text-tenue ml-1 font-normal">— por qué los otros no</span>
+              </summary>
+              <ul class="mt-3 space-y-2">
+                {(
+                  [
+                    ['confirmada', datos!.resumen.confirmados],
+                    ['supuesta', datos!.resumen.supuestos],
+                    ['historica', datos!.resumen.historicos],
+                    ['sin-monitoreo', datos!.resumen.sinMonitoreo],
+                  ] as [Cobertura, number][]
+                ).map(([clave, n]) => (
+                  <li class="flex items-start gap-2 text-xs leading-relaxed">
+                    <span
+                      class:list={[
+                        'text-2xs mt-0.5 shrink-0 rounded border px-1.5 py-0.5 font-semibold',
+                        PILDORA[clave],
+                      ]}
+                    >
+                      {numero(n)}
+                    </span>
+                    <span>
+                      <strong class="text-tinta">{COBERTURAS[clave].etiqueta}.</strong>{' '}
+                      <span class="text-tenue">{COBERTURAS[clave].explica}</span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <p class="text-tenue mt-3 border-t border-borde pt-2 text-xs leading-relaxed">
+                Las caídas <strong class="text-tinta">reconocidas</strong> cuentan igual. No es
+                un descuido: <code>acked</code> es el estado de hoy del servicio y{' '}
+                <code>outages</code> no guarda si el incidente estaba reconocido, así que
+                filtrarlas silenciaría historia vieja según lo que alguien tildó esta mañana. Y
+                además, que el operador haya visto la alarma no le devolvió el servicio al
+                cliente.
+              </p>
+            </details>
+
+            {/* ── Ranking ─────────────────────────────────────────────────── */}
+            <section aria-labelledby="ranking">
+              <div class="mb-2 flex flex-wrap items-end justify-between gap-2">
+                <div>
+                  <h2 id="ranking" class="text-base font-semibold">
+                    {metaOrden.etiqueta}
+                  </h2>
+                  <p class="text-tenue text-xs">{metaOrden.explica}</p>
+                </div>
+                <a
+                  href={csv}
+                  download={nombreArchivoCsv(datos!.ventana)}
+                  class="border-borde bg-panel-2 hover:bg-panel focus-visible:outline-acento inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium no-underline transition-colors duration-150 focus-visible:outline-2"
+                >
+                  <Icono nombre="grafico" tam={14} />
+                  Exportar CSV
+                </a>
+              </div>
+
+              <div class="mb-3 flex flex-wrap gap-1" role="group" aria-label="Criterio de orden">
+                {ORDENES.map((o) => (
+                  <a
+                    href={con({ orden: o.clave })}
+                    class:list={[
+                      'text-2xs rounded px-2.5 py-1.5 transition-colors duration-150',
+                      o.clave === orden
+                        ? 'bg-acento text-fondo font-semibold'
+                        : 'text-tenue hover:bg-panel-2 hover:text-tinta border-borde border',
+                    ]}
+                    aria-current={o.clave === orden ? 'true' : undefined}
+                  >
+                    {o.etiqueta}
+                  </a>
+                ))}
+              </div>
+
+              <div class="tarjeta overflow-hidden">
+                <div class="overflow-x-auto">
+                  <table class="w-full border-collapse text-left">
+                    <caption class="sr-only">
+                      Equipos ordenados por {metaOrden.etiqueta.toLowerCase()}, sobre la ventana{' '}
+                      {aFechaISP(datos!.ventana.desde)} a {aFechaISP(datos!.ventana.hasta)}.
+                    </caption>
+                    <thead>
+                      <tr class="border-borde bg-panel-2 border-b">
+                        <th scope="col" class="text-2xs px-2.5 py-2 font-semibold uppercase">
+                          Equipo
+                        </th>
+                        <th
+                          scope="col"
+                          class="text-2xs px-2.5 py-2 text-right font-semibold uppercase"
+                        >
+                          Disponib.
+                        </th>
+                        <th
+                          scope="col"
+                          class="text-2xs px-2.5 py-2 text-right font-semibold uppercase"
+                        >
+                          Caídas
+                        </th>
+                        <th
+                          scope="col"
+                          class="text-2xs px-2.5 py-2 text-right font-semibold uppercase"
+                        >
+                          Fuera
+                        </th>
+                        <th
+                          scope="col"
+                          class="text-2xs hidden px-2.5 py-2 text-right font-semibold uppercase sm:table-cell"
+                        >
+                          MTTR
+                        </th>
+                        <th
+                          scope="col"
+                          class="text-2xs hidden px-2.5 py-2 text-right font-semibold uppercase md:table-cell"
+                        >
+                          MTBF
+                        </th>
+                        <th
+                          scope="col"
+                          class="text-2xs hidden px-2.5 py-2 font-semibold uppercase lg:table-cell"
+                        >
+                          Cobertura
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody class="divide-borde divide-y">
+                      {visibles.map((f) => (
+                        <tr class="hover:bg-panel-2/70">
+                          <td class="px-2.5 py-1.5">
+                            <a
+                              href={`/dispositivos/${f.device_id}`}
+                              class="enlace text-sm font-medium"
+                            >
+                              {f.equipo}
+                            </a>
+                            <span class="text-tenue text-2xs block">
+                              {f.mapa ?? 'sin mapa'}
+                              {f.abiertas > 0 && (
+                                <span class="text-caido-txt font-semibold">
+                                  {' '}
+                                  · {numero(f.abiertas)} sin cerrar
+                                </span>
+                              )}
+                              <span class="lg:hidden"> · {COBERTURAS[f.cobertura].etiqueta}</span>
+                            </span>
+                          </td>
+                          <td
+                            class:list={[
+                              'cifra px-2.5 py-1.5 text-right text-sm tabular-nums',
+                              TONO[f.nivel],
+                            ]}
+                          >
+                            {f.disponibilidad == null ? (
+                              <span class="text-tenue text-xs">
+                                {COBERTURAS[f.cobertura].enLugarDelNumero}
+                              </span>
+                            ) : (
+                              formatearDisponibilidad(f.disponibilidad)
+                            )}
+                          </td>
+                          <td class="px-2.5 py-1.5 text-right text-xs tabular-nums">
+                            {f.cobertura === 'sin-monitoreo' ? (
+                              <span class="text-tenue">—</span>
+                            ) : (
+                              <>
+                                {numero(f.eventos)}
+                                {f.caidas_servicio !== f.eventos && (
+                                  <span
+                                    class="text-tenue text-2xs"
+                                    title={`${numero(f.caidas_servicio)} caídas de servicio, unidas en ${numero(f.eventos)} episodios porque se solapan`}
+                                  >
+                                    {' '}
+                                    /{numero(f.caidas_servicio)}
+                                  </span>
+                                )}
+                              </>
+                            )}
+                          </td>
+                          <td class="text-tenue px-2.5 py-1.5 text-right text-xs tabular-nums">
+                            {f.cobertura === 'sin-monitoreo' ? '—' : duracion(f.caido_s)}
+                          </td>
+                          <td class="text-tenue hidden px-2.5 py-1.5 text-right text-xs tabular-nums sm:table-cell">
+                            {f.mttr_s == null ? (
+                              <span title="No hubo ninguna falla en el período: no hay tiempo medio de reparación que promediar.">
+                                {f.eventos === 0 && f.cobertura !== 'sin-monitoreo'
+                                  ? 'sin fallas'
+                                  : '—'}
+                              </span>
+                            ) : (
+                              duracion(f.mttr_s)
+                            )}
+                          </td>
+                          <td class="text-tenue hidden px-2.5 py-1.5 text-right text-xs tabular-nums md:table-cell">
+                            {f.mtbf_s == null ? '—' : duracion(f.mtbf_s)}
+                          </td>
+                          <td class="hidden px-2.5 py-1.5 lg:table-cell">
+                            <span
+                              class:list={[
+                                'text-2xs rounded border px-1.5 py-0.5 font-medium',
+                                PILDORA[f.cobertura],
+                              ]}
+                              title={COBERTURAS[f.cobertura].explica}
+                            >
+                              {COBERTURAS[f.cobertura].etiqueta}
+                            </span>
+                            {f.primera && (
+                              <span
+                                class="text-tenue text-2xs block"
+                                title={fechaLarga(f.primera)}
+                              >
+                                1ª caída {fechaHora(f.primera, ahora)}
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                      {visibles.length === 0 && (
+                        <tr>
+                          <td colspan="7" class="text-tenue px-3 py-6 text-center text-xs">
+                            Ningún equipo coincide con el filtro.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <nav class="mt-3 flex flex-wrap items-center gap-2 text-xs" aria-label="Cuántas filas">
+                <span class="text-tenue">
+                  Mostrando {numero(visibles.length)} de {numero(datos!.filas.length)}
+                </span>
+                {TOPES.map((t) => (
+                  <a
+                    href={con({ n: t })}
+                    class:list={[
+                      'rounded px-2 py-1 transition-colors duration-150',
+                      t === tope
+                        ? 'bg-acento text-fondo font-semibold'
+                        : 'text-tenue hover:bg-panel-2 hover:text-tinta border-borde border',
+                    ]}
+                    aria-current={t === tope ? 'true' : undefined}
+                  >
+                    {t === TODAS ? 'todos' : t}
+                  </a>
+                ))}
+              </nav>
+            </section>
+
+            {/* ── Por mapa ────────────────────────────────────────────────── */}
+            <section class="mt-6" aria-labelledby="mapas">
+              <h2 id="mapas" class="text-base font-semibold">
+                Por mapa
+              </h2>
+              <p class="text-tenue mb-2 text-xs">
+                Tiempo arriba sobre tiempo observado, sumado sobre los equipos medibles del
+                mapa. Los que no llevan porcentaje no entran en la cuenta ni para bien ni para
+                mal.
+              </p>
+
+              <div class="tarjeta overflow-hidden">
+                <div class="overflow-x-auto">
+                  <table class="w-full border-collapse text-left">
+                    <caption class="sr-only">Disponibilidad agregada por mapa.</caption>
+                    <thead>
+                      <tr class="border-borde bg-panel-2 border-b">
+                        <th scope="col" class="text-2xs px-2.5 py-2 font-semibold uppercase">
+                          Mapa
+                        </th>
+                        <th
+                          scope="col"
+                          class="text-2xs px-2.5 py-2 text-right font-semibold uppercase"
+                        >
+                          Disponib.
+                        </th>
+                        <th
+                          scope="col"
+                          class="text-2xs px-2.5 py-2 text-right font-semibold uppercase"
+                        >
+                          Equipos
+                        </th>
+                        <th
+                          scope="col"
+                          class="text-2xs px-2.5 py-2 text-right font-semibold uppercase"
+                        >
+                          Caídas
+                        </th>
+                        <th
+                          scope="col"
+                          class="text-2xs hidden px-2.5 py-2 text-right font-semibold uppercase sm:table-cell"
+                        >
+                          Fuera
+                        </th>
+                        <th
+                          scope="col"
+                          class="text-2xs hidden px-2.5 py-2 text-right font-semibold uppercase md:table-cell"
+                        >
+                          Bajo 99 %
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody class="divide-borde divide-y">
+                      {datos!.porMapa.map((m) => (
+                        <tr class="hover:bg-panel-2/70">
+                          <td class="px-2.5 py-1.5 text-sm">
+                            {m.mapa_id == null ? (
+                              <span class="text-tenue">{m.mapa}</span>
+                            ) : (
+                              <a href={`/mapas/${m.mapa_id}`} class="enlace font-medium">
+                                {m.mapa}
+                              </a>
+                            )}
+                          </td>
+                          <td class="cifra px-2.5 py-1.5 text-right text-sm tabular-nums">
+                            {m.disponibilidad == null ? (
+                              <span class="text-tenue text-xs">sin equipos medibles</span>
+                            ) : (
+                              formatearDisponibilidad(m.disponibilidad)
+                            )}
+                          </td>
+                          <td class="text-tenue px-2.5 py-1.5 text-right text-xs tabular-nums">
+                            {numero(m.medibles)}
+                            {m.medibles !== m.equipos && (
+                              <span
+                                class="text-2xs"
+                                title={`${numero(m.equipos - m.medibles)} sin porcentaje posible`}
+                              >
+                                {' '}
+                                /{numero(m.equipos)}
+                              </span>
+                            )}
+                          </td>
+                          <td class="text-tenue px-2.5 py-1.5 text-right text-xs tabular-nums">
+                            {numero(m.eventos)}
+                          </td>
+                          <td class="text-tenue hidden px-2.5 py-1.5 text-right text-xs tabular-nums sm:table-cell">
+                            {duracion(m.caido_s)}
+                          </td>
+                          <td
+                            class:list={[
+                              'hidden px-2.5 py-1.5 text-right text-xs tabular-nums md:table-cell',
+                              m.bajo_99 > 0 ? 'text-caido-txt font-semibold' : 'text-tenue',
+                            ]}
+                          >
+                            {numero(m.bajo_99)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </section>
+          </>
+        )}
+      </>
+    )
+  }
+</Base>

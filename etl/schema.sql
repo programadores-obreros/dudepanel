@@ -517,4 +517,418 @@ SELECT 'map', m.id, m.name, NULL, NULL,
        m.devices_total || ' equipos'
 FROM maps m;
 
+
+-- ── El grafo de enlaces, que es la topología que SÍ existe ──────────────────
+--
+-- 🔴 `device_parents` está VACÍA: The Dude no guardó `parentIDs` en ninguno de
+--    los 885 equipos. Pero la topología está dibujada en los mapas —1.092
+--    enlaces con las dos puntas resueltas— y de ahí se puede sacar.
+--
+-- Esta vista expone ese grafo **sin dirección**, que es todo lo que el dato
+-- dice con certeza: «A está conectado con B». Quién es el padre es una
+-- INFERENCIA y vive en `web/src/lib/topologia.ts`, donde se puede probar con
+-- casos armados a mano y donde cada equipo sale con un nivel de confianza.
+--
+-- ¿Por qué la dirección no se calcula acá? Porque necesita componentes conexas
+-- y un BFS por componente, y en SQL eso es cierre transitivo: 713 nodos en la
+-- componente mayor son ~500.000 filas intermedias en CADA carga de ficha, con
+-- `statement_timeout` en 10 s. Una vista devuelve el grafo (1.100 filas, dos
+-- índices) y el algoritmo corre una vez en memoria y queda cacheado.
+--
+--
+-- ── Los tres tipos de nodo, y por qué hay tres ──
+--
+-- Un enlace del mapa no siempre une dos equipos. Medido sobre los 1.170
+-- elementos `link`:
+--
+--   device ↔ device   704   el caso limpio
+--   device ↔ static   139   el otro extremo es un RÓTULO de texto libre
+--   static ↔ static    77   los dos son rótulos
+--   device ↔ submap   129   el otro extremo es la CAJA de otro mapa
+--   submap ↔ submap    31
+--   con una punta rota  78   apunta a un elemento que ya no existe
+--
+-- Si sólo se toma `device ↔ device` el grafo queda en **37 pedazos sueltos**.
+-- Metiendo las cajas de submapa como nodos propios quedan **15**, y el mayor
+-- pasa de 131 a 591 equipos. Medido, no supuesto.
+--
+-- Y tiene sentido físico: la caja «Ponte» está dibujada en 16 mapas distintos,
+-- y en cada uno la une un enlace al equipo local que sube a Ponte —los que se
+-- llaman `Hospital-e-Ponte`, `Fatsa_E_Ponte`, `AViveroBT`—. La caja ES el
+-- sitio. Por eso `tipo = 'sitio'`: atravesarla dice «esto sube a ese lugar»,
+-- que es verdad, pero NO dice a qué equipo de ahí. La inferencia baja la
+-- confianza cuando el camino cruza una.
+--
+-- Los rótulos (`static`, 100 en la base, y `network`, 2) son puntos de dibujo:
+-- el más grande, «sfp2», tiene 48 enlaces colgando. No representan a ningún
+-- objeto, así que van como `'union'` — sirven para no cortar el camino y nada
+-- más.
+--
+--
+-- ── Un solo `bigint` para los tres tipos, y por qué se puede ──
+--
+-- Los ids de The Dude salen todos de la misma `objs.id`, así que son únicos
+-- entre tipos de objeto. Verificado en la base real: los cruces
+-- devices×maps, devices×map_elements, maps×map_elements y devices×links dan
+-- **0 colisiones**. Sin eso haría falta una clave compuesta y todo el
+-- algoritmo se ensuciaría.
+CREATE OR REPLACE VIEW v_topologia_aristas AS
+WITH nodo AS (
+    SELECT e.id AS element_id,
+           CASE e.kind
+               WHEN 'device' THEN e.device_id   -- el equipo
+               WHEN 'submap' THEN e.submap_id   -- el mapa de destino
+               ELSE e.id                        -- el rótulo, que es él mismo
+           END AS nodo_id,
+           CASE e.kind
+               WHEN 'device' THEN 'equipo'
+               WHEN 'submap' THEN 'sitio'
+               ELSE 'union'
+           END AS tipo
+    FROM map_elements e
+    WHERE e.kind IN ('device', 'submap', 'static', 'network')
+),
+cruda AS (
+    -- El JOIN descarta solo las puntas colgadas: 78 de los 1.170 enlaces
+    -- apuntan a elementos borrados en The Dude. Se pierde el enlace, no la
+    -- corrida. Ver el comentario de `map_elements.link_from`.
+    SELECT nf.nodo_id AS a, nt.nodo_id AS b, nf.tipo AS ta, nt.tipo AS tb
+    FROM map_elements l
+    JOIN nodo nf ON nf.element_id = l.link_from
+    JOIN nodo nt ON nt.element_id = l.link_to
+    WHERE l.kind = 'link'
+      AND nf.nodo_id IS NOT NULL
+      AND nt.nodo_id IS NOT NULL
+      -- Un enlace de un nodo a sí mismo: pasa cuando dos elementos distintos
+      -- dibujan el MISMO equipo en dos mapas. No aporta dirección.
+      AND nf.nodo_id <> nt.nodo_id
+)
+-- Normalizado y sin repetir: el grafo es no dirigido, así que (a,b) y (b,a)
+-- son la misma arista, y dos mapas pueden dibujar el mismo enlace dos veces.
+SELECT DISTINCT
+       least(a, b)                       AS nodo_a,
+       greatest(a, b)                    AS nodo_b,
+       CASE WHEN a < b THEN ta ELSE tb END AS tipo_a,
+       CASE WHEN a < b THEN tb ELSE ta END AS tipo_b
+FROM cruda;
+
+COMMENT ON VIEW v_topologia_aristas IS
+  'El grafo de enlaces, NO DIRIGIDO. Es el reemplazo de device_parents, que en '
+  'esta instalación está vacía. La dirección (quién es el padre) NO está acá '
+  'porque no está en el dato: se infiere en web/src/lib/topologia.ts y sale '
+  'con nivel de confianza. tipo_* es equipo | sitio | union.';
+
+COMMIT;
+
+
+-- ════════════════════════════════════════════════════════════════════════════
+--  HISTORIA IMPORTADA DEL SYSLOG DE THE DUDE
+--
+--  Bloque agregado el 01/08/2026, con su propia transacción: todo lo de arriba
+--  ya cerró con el COMMIT anterior y así los dos bloques se pueden editar sin
+--  pisarse.
+--
+--  ── Por qué existe ─────────────────────────────────────────────────────────
+--
+--  `outages` arranca el 2026-06-12: ese día dude.db chocó contra los 2 GiB y la
+--  rearmaron de cero. Pero la regla «log to syslog» venía escribiendo cada
+--  subida y bajada a archivos de texto en `files/`, y ésos sobrevivieron:
+--  44 archivos, 141.678 líneas, hasta 2020. Este bloque los aterriza.
+--
+--  ── 🔴 Lo que estas tablas NO son ──────────────────────────────────────────
+--
+--  Una historia continua. Medido sobre los 44 archivos:
+--
+--      2020  2.928  ·  2021  936  ·  2022  0  ·  2023  0
+--      2024  2.584  ·  2025  29.331  ·  2026  105.899
+--
+--  Dos años enteros vacíos. Quien muestre esto tiene que mostrar también los
+--  huecos: para eso están `v_syslog_cobertura` (una fila por mes, con
+--  `hueco = true` donde no hay nada) y `syslog_outages.spans_gap`.
+--
+--  ── 🔴 Y NO tienen clave foránea a `devices` ni a `services` ───────────────
+--
+--  `sync.py` hace `DELETE FROM services` + `INSERT` en CADA corrida, cada 30
+--  segundos, porque el origen no sabe decir qué cambió. Una FK con CASCADE
+--  desde acá vaciaría seis años de historia dos veces por minuto; con RESTRICT
+--  reventaría el ETL entero. Es el mismo motivo, y el mismo precio, que ya está
+--  documentado en `map_element_positions` más arriba.
+--
+--  La diferencia con aquel caso es que acá el hueco es MAYOR: los ids de The
+--  Dude son estables, pero el nombre de un equipo no es una clave y el 25 % de
+--  los nombres del histórico ya no existe en el inventario. Por eso el dato
+--  autoritativo de estas tablas es el NOMBRE en texto, y los ids son una
+--  resolución de mejor esfuerzo que se puede volver a correr.
+-- ════════════════════════════════════════════════════════════════════════════
+
+BEGIN;
+
+-- ── Un renglón por archivo importado ────────────────────────────────────────
+-- Es la trazabilidad y, de paso, el atajo: si el sha256 no cambió, el archivo
+-- ni se abre. Con 44 archivos y 141.678 líneas eso convierte una reimportación
+-- en cuestión de milisegundos.
+
+CREATE TABLE IF NOT EXISTS syslog_files (
+    name            text PRIMARY KEY,      -- basename; es la identidad
+    path            text NOT NULL,
+    sha256          text NOT NULL,
+    bytes           bigint NOT NULL,
+    -- 🔴 La zona horaria con la que se interpretó ESTE archivo. El formato no
+    --    la trae —`2025.11.23-14:53:39` y nada más— así que es un supuesto, y
+    --    un supuesto que no queda escrito es un supuesto que dentro de un año
+    --    nadie puede auditar ni corregir.
+    tz              text NOT NULL,
+    lines           integer NOT NULL,
+    service_lines   integer NOT NULL,      -- `Service ... is now ...`
+    other_lines     integer NOT NULL,      -- syslog de un MikroTik, ver abajo
+    ignored_lines   integer NOT NULL,      -- ni el sobre se pudo leer
+    blank_lines     integer NOT NULL DEFAULT 0,
+    duplicate_lines integer NOT NULL DEFAULT 0,
+    -- Hasta 20 muestras de las líneas no entendidas, una por FORMA distinta
+    -- (los números se aplastan antes de comparar). Las primeras veinte de un
+    -- archivo de 30.000 líneas suelen ser la misma cosa repetida.
+    ignored_samples text[] NOT NULL DEFAULT '{}',
+    first_event     timestamptz,
+    last_event      timestamptz,
+    imported_at     timestamptz NOT NULL DEFAULT now()
+);
+COMMENT ON COLUMN syslog_files.ignored_samples IS
+  'Texto verbatim de una fuente externa: pasa por un redactor que enmascara '
+  'password/pwd/community/secret/token antes de guardarse. Es una de las dos '
+  'únicas columnas del esquema con texto libre ajeno, y la regla del proyecto '
+  'es que ninguna tabla guarde credenciales.';
+
+
+-- ── Los eventos, tal como los dice el texto ─────────────────────────────────
+-- Es la materia prima y la única fuente autoritativa: `syslog_outages` se
+-- deriva de acá y se puede tirar y rehacer cuantas veces haga falta.
+
+CREATE TABLE IF NOT EXISTS syslog_events (
+    id              bigserial PRIMARY KEY,
+    occurred_at     timestamptz NOT NULL,
+    -- La hora local cruda, sin interpretar. Guardarla cuesta 8 bytes y permite
+    -- cambiar de zona horaria con un UPDATE (`syslog.py reinterpretar`) en vez
+    -- de volver a leer 44 archivos que capaz ya no están.
+    occurred_local  timestamp   NOT NULL,
+    device_name     text NOT NULL,
+    probe_name      text NOT NULL,
+    -- Sin CHECK a propósito. En el histórico sólo hay 'down' y 'up', pero The
+    -- Dude también sabe decir 'unknown' y 'partially down'. Una restricción acá
+    -- convertiría una línea inesperada en una corrida abortada, cuando lo
+    -- correcto es guardarla y contarla.
+    state           text NOT NULL,
+    -- (timeout) 69.446 · (local problem) 79. La diferencia importa: un
+    -- 'local problem' es un problema del SERVIDOR de monitoreo y no dice nada
+    -- del equipo. Sumarlo a la indisponibilidad del equipo sería mentir.
+    reason          text,
+    source_host     text,
+    source_file     text NOT NULL,
+    source_line     integer NOT NULL,
+    -- Cuántas veces apareció antes esta MISMA línea en el mismo archivo. Sin
+    -- esto, dos equipos que se llaman igual —hay 80 nombres repetidos en el
+    -- inventario— cayendo en el mismo segundo producen dos líneas idénticas y
+    -- una se perdería contra la clave única.
+    ordinal         smallint NOT NULL DEFAULT 0,
+    -- 🔴 La clave de la idempotencia. Reimportar el mismo archivo, o un archivo
+    --    que creció, o dos archivos que se solapan por una rotación, no puede
+    --    duplicar un evento. No incluye `source_file`: justamente para que la
+    --    misma línea presente en dos archivos entre UNA vez.
+    UNIQUE (occurred_at, device_name, probe_name, state, ordinal)
+);
+
+CREATE INDEX IF NOT EXISTS syslog_events_servicio_idx
+    ON syslog_events (device_name, probe_name, occurred_at);
+CREATE INDEX IF NOT EXISTS syslog_events_ts_idx ON syslog_events (occurred_at);
+CREATE INDEX IF NOT EXISTS syslog_events_file_idx ON syslog_events (source_file);
+
+
+-- ── Lo que llegó al mismo archivo y NO es un evento de servicio ─────────────
+-- 2.642 líneas de las 141.678: alguien apuntó un MikroTik al mismo destino de
+-- syslog. Se guardan enteras en vez de descartarse porque son información
+-- operativa que hoy no mira nadie — 438 de ellas dicen «failed to authenticate».
+
+CREATE TABLE IF NOT EXISTS syslog_other (
+    id              bigserial PRIMARY KEY,
+    occurred_at     timestamptz NOT NULL,
+    occurred_local  timestamp   NOT NULL,
+    source_host     text,
+    kind            text NOT NULL,   -- 'mikrotik' | 'desconocida'
+    -- La propia clasificación de MikroTik: 'pptp,ppp,info', 'ipsec,info'. Es
+    -- mejor taxonomía que cualquiera que inventáramos nosotros por palabras
+    -- clave, y viene gratis en la línea.
+    topics          text,
+    message         text NOT NULL,   -- redactado, ver syslog_files.ignored_samples
+    source_file     text NOT NULL,
+    source_line     integer NOT NULL,
+    CONSTRAINT syslog_other_kind_chk CHECK (kind IN ('mikrotik', 'desconocida')),
+    UNIQUE (source_file, source_line)
+);
+CREATE INDEX IF NOT EXISTS syslog_other_ts_idx ON syslog_other (occurred_at);
+CREATE INDEX IF NOT EXISTS syslog_other_topics_idx ON syslog_other (topics);
+
+
+-- ── Las caídas reconstruidas ────────────────────────────────────────────────
+--
+-- 🔴 ESTA TABLA ES DERIVADA. Es una función pura de `syslog_events`: el
+--    importador la vacía y la vuelve a calcular entera en cada pasada. Por eso
+--    correr el importador dos veces no duplica nada, y por eso mejorar el
+--    algoritmo de reconstrucción no necesita ninguna migración.
+--
+--    Consecuencia: los `id` NO son estables entre reconstrucciones. Nadie los
+--    referencia. Si alguna vez hace falta anotar una caída a mano, la anotación
+--    va en otra tabla y se ata por (device_name, probe_name, started_at).
+
+CREATE TABLE IF NOT EXISTS syslog_outages (
+    id            bigserial PRIMARY KEY,
+    -- 🔴 EL DATO AUTORITATIVO ES EL NOMBRE, no el id. Ver el encabezado.
+    device_name   text NOT NULL,
+    probe_name    text NOT NULL,
+    started_at    timestamptz,
+    ended_at      timestamptz,
+    -- NULL cuando no se puede saber: caída sin cerrar, `up` sin `down`, o el
+    -- reloj del servidor saltó para atrás entre las dos líneas. Un NULL no se
+    -- suma, así que ninguna de esas tres cosas puede contaminar un promedio de
+    -- disponibilidad. Un 0 sí lo haría, y en silencio.
+    duration_s    bigint,
+    closure       text NOT NULL,
+    -- Cuántos `down` se plegaron en esta caída. >1 significa que The Dude avisó
+    -- de vuelta sin haber avisado del `up` del medio: o el equipo flapeó y se
+    -- perdió el `up`, o el registro tuvo un corte.
+    down_events   integer NOT NULL DEFAULT 1,
+    -- El ÚLTIMO `down` de la serie. Con down_events > 1, la caída pesimista es
+    -- [started_at, ended_at] y la optimista [last_down_at, ended_at]. Se guardan
+    -- las dos puntas y no se elige por el consumidor.
+    last_down_at  timestamptz,
+    down_reason   text,
+    up_reason     text,
+    -- 🔴 La caída cruza un tramo en que el corpus ENTERO no tiene ni una línea
+    --    (2022 y 2023 están vacíos). Un `down` de 2021 emparejado con el `up` de
+    --    2024 da una caída de dos años que nunca existió: lo que se cortó fue el
+    --    registro, no el enlace. No creerle la duración a estas filas.
+    spans_gap     boolean NOT NULL DEFAULT false,
+    -- Resolución de mejor esfuerzo. SIN CLAVE FORÁNEA — ver el encabezado.
+    device_id     bigint,
+    service_id    bigint,
+    match_kind    text NOT NULL DEFAULT 'unknown',
+    rebuilt_at    timestamptz NOT NULL DEFAULT now(),
+
+    CONSTRAINT syslog_outages_closure_chk
+        CHECK (closure IN ('closed', 'open', 'no_start')),
+    CONSTRAINT syslog_outages_match_chk
+        CHECK (match_kind IN ('service', 'device', 'ambiguous', 'unknown')),
+    -- Una caída sin ninguna de las dos puntas no es nada.
+    CONSTRAINT syslog_outages_bordes_chk
+        CHECK (started_at IS NOT NULL OR ended_at IS NOT NULL),
+    CONSTRAINT syslog_outages_duracion_chk
+        CHECK (duration_s IS NULL OR duration_s >= 0),
+    -- `NULLS NOT DISTINCT` (PostgreSQL 15+) no es un detalle: sin eso, una
+    -- caída abierta (ended_at NULL) o una sin inicio (started_at NULL) se
+    -- podrían insertar mil veces, porque el UNIQUE clásico considera que dos
+    -- NULL son distintos. Justo las dos clases que más nos importa no duplicar.
+    UNIQUE NULLS NOT DISTINCT (device_name, probe_name, started_at, ended_at)
+);
+
+CREATE INDEX IF NOT EXISTS syslog_outages_inicio_idx
+    ON syslog_outages (started_at DESC);
+CREATE INDEX IF NOT EXISTS syslog_outages_device_idx
+    ON syslog_outages (device_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS syslog_outages_service_idx
+    ON syslog_outages (service_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS syslog_outages_nombre_idx
+    ON syslog_outages (device_name, started_at DESC);
+
+COMMENT ON COLUMN syslog_outages.closure IS
+  'closed: down → up, la caída completa. '
+  'open: down sin up posterior en TODO el corpus — o sigue caído, o el up se '
+  'perdió; no se inventa un final. '
+  'no_start: up sin down previo — recuperó sin que viéramos la caída. '
+  '⚠️ Los no_start pueden venir en manada: cuando The Dude arranca, todos los '
+  'servicios pasan de unknown a up y eso dispara la notificación. Doscientos '
+  'no_start en el mismo minuto son un arranque del servidor, no doscientas '
+  'caídas. Por eso nunca tienen duración.';
+
+COMMENT ON COLUMN syslog_outages.match_kind IS
+  'Cómo se resolvió el nombre contra el inventario vivo. '
+  'service: el par (equipo, sonda) da exactamente un servicio. '
+  'device: el nombre da un equipo solo, pero sin esa sonda. '
+  'ambiguous: el nombre lo comparten varios equipos — 80 de los 798 nombres de '
+  'devices están repetidos, y ahí el nombre no alcanza. '
+  'unknown: el nombre no está en el inventario. Son 114 de los 452 nombres del '
+  'histórico (25 %): equipos renombrados o dados de baja. Se guardan igual. '
+  '🔴 NO hay emparejamiento por parecido, y es a propósito: uno de los nombres '
+  'es "Peniel_E_Ponte 24GHZ ex 10 Ghz" — el nombre ya trae adentro su propia '
+  'historia de renombres, y un similarity() contra eso devuelve coincidencias '
+  'plausibles y falsas. Una caída atribuida al equipo equivocado miente; una '
+  'caída sin atribuir se nota.';
+
+
+-- ── Vistas ──────────────────────────────────────────────────────────────────
+
+-- La cobertura mes a mes, CON los huecos como filas. Un GROUP BY común no
+-- devuelve fila para un mes vacío, y así 2022 y 2023 simplemente no aparecerían
+-- — que es exactamente cómo se cuenta una historia falsa sin mentir en ningún
+-- número. Acá el mes vacío existe y dice `hueco = true`.
+CREATE OR REPLACE VIEW v_syslog_cobertura AS
+WITH rango AS (
+    SELECT date_trunc('month', min(occurred_at)) AS desde,
+           date_trunc('month', max(occurred_at)) AS hasta
+      FROM syslog_events
+), meses AS (
+    SELECT generate_series(desde, hasta, interval '1 month') AS mes FROM rango
+)
+SELECT m.mes,
+       count(e.id)                                        AS eventos,
+       count(e.id) FILTER (WHERE e.state = 'down')        AS downs,
+       count(e.id) FILTER (WHERE e.state = 'up')          AS ups,
+       (count(e.id) = 0)                                  AS hueco
+  FROM meses m
+  LEFT JOIN syslog_events e
+         ON e.occurred_at >= m.mes AND e.occurred_at < m.mes + interval '1 month'
+ GROUP BY m.mes;
+
+COMMENT ON VIEW v_syslog_cobertura IS
+  'Una fila por mes entre el primer y el último evento, incluidos los meses sin '
+  'nada. Es el antídoto contra decir "historia desde 2020" cuando 2022 y 2023 '
+  'están vacíos.';
+
+-- Las dos historias juntas, con el origen a la vista.
+--
+-- 🔴 NO SUMAR SIN FILTRAR. Del 2026-06-12 en adelante las dos fuentes cubren el
+--    mismo período y la misma caída puede estar dos veces: una registrada por
+--    The Dude con su reloj, otra reconstruida desde texto. La columna
+--    `solapado` marca las filas de syslog que caen dentro del rango que ya
+--    cubre `outages`; para un total sin doble conteo, filtrar
+--    `WHERE NOT solapado` y quedarse con la versión 'dude', que es la de mayor
+--    confianza: viene con epoch unix, no con una zona horaria supuesta.
+CREATE OR REPLACE VIEW v_historia_caidas AS
+SELECT 'dude'::text        AS origen,
+       o.device_id, o.service_id,
+       d.name              AS device_name,
+       p.name              AS probe_name,
+       o.started_at, o.ended_at, o.duration_s,
+       'closed'::text      AS closure,
+       'service'::text     AS match_kind,
+       false               AS spans_gap,
+       false               AS solapado,
+       NULL::text          AS down_reason
+  FROM outages o
+  LEFT JOIN devices  d ON d.id = o.device_id
+  LEFT JOIN services s ON s.id = o.service_id
+  LEFT JOIN probes   p ON p.id = s.probe_id
+UNION ALL
+SELECT 'syslog',
+       so.device_id, so.service_id, so.device_name, so.probe_name,
+       so.started_at, so.ended_at, so.duration_s, so.closure, so.match_kind,
+       so.spans_gap,
+       COALESCE(so.started_at >= (SELECT min(started_at) FROM outages), false),
+       so.down_reason
+  FROM syslog_outages so;
+
+COMMENT ON VIEW v_historia_caidas IS
+  'Las caídas de las dos fuentes con `origen` a la vista. Una fila "dude" la '
+  'registró The Dude con su propio reloj; una "syslog" se reconstruyó de dos '
+  'líneas de texto con una zona horaria supuesta, y puede tener started_at o '
+  'ended_at en NULL. No tienen la misma confianza y por eso no se mezclan sin '
+  'poder distinguirlas. Ojo con `solapado`: ver el comentario en schema.sql.';
+
 COMMIT;
