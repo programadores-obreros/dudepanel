@@ -50,17 +50,35 @@
 	# Cubre TODO el sitio, incluidos `/_astro/*` y `/api/*`. Un panel donde el
 	# HTML pide contraseña y el JSON no, no pide contraseña.
 	#
-	# Las contraseñas en claro no están acá ni en ningún archivo del
-	# repositorio: sólo el hash bcrypt con coste 14 (~1 s por intento, también
-	# para quien lo ataque). Se rotan como dice el runbook.
+	# Para agregar o sacar gente: una línea `usuario hash` en `usuarios.caddy`
+	# y `up -d --force-recreate caddy`. Ojo con el `--force-recreate`: el
+	# montaje de un ARCHIVO se ata al inodo, así que un `reload` a secas puede
+	# seguir leyendo la versión vieja. Ya pasó.
 	#
-	# Para agregar o sacar gente: una línea `usuario hash` por persona, y
-	# `docker compose -f compose.prod.yml up -d caddy` para recargar.
-	basic_auth {
-		astorfernandez@gmail.com $2a$14$tUPG1pGsg62wNimWZwVZDuBM0M7.JH5Ws9bn02HdfVk3RlUsKPL3q
-		admin $2a$14$KoMdWqsxwe81kyIwD2MT4e8CM7biehAG5olIhIuOkDisgF1CRGBd.
-		soporte@telwinet.com.ar $2a$14$ss28HI1OjdGfCAtv38El2eHzcVHJWpQOds7M9eDLF6mvqAqEBgba2
-	}
+	# 🔴 LOS USUARIOS NO VIVEN ACÁ, Y ES POR SEGURIDAD.
+	#
+	#    Este repositorio es PÚBLICO. Hasta el 01/08/2026 el bloque estaba
+	#    escrito derecho en este archivo, con las casillas reales del ISP y sus
+	#    hashes. El hash es bcrypt coste 14 —no es la contraseña, y romperlo por
+	#    fuerza bruta cuesta un segundo por intento— pero **el nombre de usuario
+	#    sí queda publicado**: dos casillas de correo reales, en GitHub, con el
+	#    cartel de «acá hay un panel al que estas direcciones tienen acceso».
+	#
+	#    Eso es media credencial regalada y un objetivo de phishing servido.
+	#
+	#    Ahora los usuarios están en `usuarios.caddy`, que NO va al repositorio
+	#    (ver `.gitignore`) y vive sólo en el servidor. La plantilla con el
+	#    formato está en `usuarios.caddy.example`.
+	#
+	#    ⚠️ SI EL ARCHIVO NO EXISTE, CADDY NO ARRANCA Y EL SITIO SE CAE.
+	#       No es un descuido del diseño: es lo correcto. La alternativa sería
+	#       levantar un panel con la red de un ISP adentro y sin contraseña.
+	#       Fallar cerrado y ruidoso es lo que se quiere acá.
+	#
+	#       Crearlo ANTES del primer despliegue:
+	#         cp usuarios.caddy.example usuarios.caddy
+	#         docker run --rm caddy:2.11-alpine caddy hash-password --plaintext '…'
+	import usuarios.caddy
 
 	# ── Cabeceras ────────────────────────────────────────────────────────────
 	header {

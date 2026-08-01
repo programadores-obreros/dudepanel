@@ -103,3 +103,8 @@ venv/
 .idea/
 .vscode/
 .claude/
+
+# Los usuarios del panel. Nombres reales y hashes: NO van al repositorio.
+# Ver el bloque `import usuarios.caddy` del Caddyfile.
+usuarios.caddy
+!usuarios.caddy.example

@@ -1,0 +1,21 @@
+# Quién puede entrar al panel.
+#
+# Copiar a `usuarios.caddy` —que NO va al repositorio— y poner los usuarios de
+# verdad. Este archivo se importa desde el `Caddyfile` dentro del bloque del
+# sitio, así que va SOLO el contenido de `basic_auth`, sin las llaves.
+#
+# El hash se genera con:
+#
+#   docker run --rm caddy:2.11-alpine caddy hash-password --plaintext 'la clave'
+#
+# 🔴 Coste 14 a propósito: cada intento cuesta ~1 segundo, también para quien
+#    ataque. Ese segundo es lo que convierte una lista de contraseñas comunes
+#    en algo que tarda meses. No bajarlo «porque el login va lento».
+#
+# 🔴 Y el nombre de usuario también importa. Una casilla de correo real acá
+#    dice, a quien la vea, que esa persona tiene acceso a un panel con la red
+#    de un ISP adentro. Preferir nombres cortos que no sean una dirección.
+
+basic_auth {
+	admin $2a$14$REEMPLAZAR.ESTO.POR.UN.HASH.DE.VERDAD.xxxxxxxxxxxxxxxxxxxxxx
+}
