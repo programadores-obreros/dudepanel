@@ -41,6 +41,29 @@ export interface Interfaz {
    */
   administrativa: string | null;
   velocidad_bps: number | null;
+  /** Lo que escribió una persona. En esta red hay puertos «ether2-L2-OLT8». */
+  alias: string | null;
+  /** Bytes acumulados desde el último arranque del equipo, entrada + salida. */
+  trafico_bytes: number;
+  /**
+   * 🔴 Hace cuánto que está en este estado. El dato que desarma la falsa alarma.
+   *
+   *    Medido: 20 puertos «caídos con tráfico» que parecían una emergencia. Con
+   *    la fecha, el más NUEVO llevaba 26 días y el más viejo 423. Cero
+   *    incidentes activos. Sin esto, la lista mandaba un técnico a arreglar
+   *    enlaces dados de baja hace catorce meses.
+   */
+  cambio_hace_s: number | null;
+  /** Está así desde que arrancó el equipo: nunca cambió, no «cambió recién». */
+  desde_el_arranque: boolean;
+  /** `ok` · `apagado` · `libre` · `caido`. Sólo el último pide acción. */
+  veredicto: 'ok' | 'apagado' | 'libre' | 'caido';
+  explica: string;
+  /**
+   * Marca de agrupación: dos puertos con el MISMO valor cayeron en el mismo
+   * instante, y eso es UN evento, no dos. Tres coincidencias no existen.
+   */
+  evento: number | null;
 }
 
 export interface Snmp {

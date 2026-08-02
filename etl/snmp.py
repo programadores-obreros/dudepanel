@@ -315,9 +315,54 @@ IF_NOMBRE = "1.3.6.1.2.1.2.2.1.2"
 IF_OPER = "1.3.6.1.2.1.2.2.1.8"
 IF_ADMIN = "1.3.6.1.2.1.2.2.1.7"
 IF_VELOCIDAD = "1.3.6.1.2.1.2.2.1.5"
+#: 🔴 El OID que convierte una lista de alarmas en una lista de trabajo.
+#:
+#:    `ifLastChange` es el valor que tenía `sysUpTime` cuando la interfaz entró
+#:    en su estado actual. Restándolo del uptime de ahora sale HACE CUÁNTO que
+#:    está así — y esa fecha desarma la mitad de los sustos.
+#:
+#:    Medido sobre la red real: 20 puertos «caídos con tráfico» que parecían una
+#:    emergencia. Con la fecha, el más NUEVO llevaba 26 días y el más viejo 423.
+#:    Cero incidentes activos. Sin este dato, la lista mandaba a un técnico a
+#:    arreglar enlaces dados de baja hace catorce meses.
+IF_ULTIMO_CAMBIO = "1.3.6.1.2.1.2.2.1.9"
+IF_IN = "1.3.6.1.2.1.2.2.1.10"
+IF_OUT = "1.3.6.1.2.1.2.2.1.16"
+#: La descripción que escribió una persona. Vale oro: en esta red hay puertos
+#: llamados `ether2-L2-OLT8`, que dicen a quién alimentan sin preguntarle a nadie.
+IF_ALIAS = "1.3.6.1.2.1.31.1.1.1.18"
 
 OPER = {1: "arriba", 2: "abajo", 3: "prueba", 4: "desconocido", 5: "dormido",
         6: "sin componente", 7: "sin señal"}
+
+#: Debajo de esto, la interfaz nunca llevó nada útil: es un puerto libre, no una
+#: falla. Un megabyte es ruido de negociación y descubrimiento, no servicio.
+TRAFICO_MINIMO = 1_000_000
+
+
+def veredicto(oper, admin, bytes_totales) -> tuple[str, str]:
+    """Qué hacer con esta interfaz. Devuelve (clave, explicación).
+
+    🔴 Las cuatro respuestas posibles, y sólo UNA pide acción:
+
+       · `ok`        anda
+       · `apagado`   alguien la deshabilitó a propósito — nada que arreglar
+       · `libre`     habilitada, sin enlace, y NUNCA movió nada: puerto vacante
+       · `caido`     habilitada, sin enlace, y SÍ movió tráfico: acá hay algo
+
+       Un panel que sólo mira el estado operativo mete las tres últimas en la
+       misma bolsa. Medido en esta red: 180 puertos «abajo», de los cuales 153
+       eran simplemente libres. Sin separarlos, la señal se ahoga en el ruido.
+    """
+    if admin == "abajo":
+        return "apagado", "Deshabilitada a propósito. No hay nada que arreglar."
+    if oper == "arriba":
+        return "ok", ""
+    if oper != "abajo":
+        return "ok", ""
+    if (bytes_totales or 0) < TRAFICO_MINIMO:
+        return "libre", "Habilitada pero nunca movió tráfico: es un puerto vacante."
+    return "caido", "Movió tráfico y hoy no tiene enlace. Debería andar y no anda."
 
 
 def interrogar(
@@ -327,14 +372,21 @@ def interrogar(
     """Lo que vale la pena saber de un equipo, en una sola llamada.
 
     Devuelve `{"responde": False, ...}` en vez de levantar cuando el equipo no
-    contesta: no contestar SNMP es un RESULTADO —muchísimos equipos de acceso no
-    lo tienen habilitado— y no un fallo del panel.
+    contesta: no contestar SNMP es un RESULTADO —en esta instalación lo hace el
+    93,6 % de los equipos, medido sobre los 885— y no un fallo del panel.
+
+    🔴 Un WALK por atributo sería carísimo: siete atributos × una vuelta por
+       interfaz son cientos de idas y vueltas por un clic. Acá se hace UN walk
+       para descubrir los índices y después un GET por interfaz con los seis
+       OID juntos. Para 32 interfaces: 33 viajes en vez de ~250.
     """
     t0 = time.perf_counter()
     comun = {"destino": destino, "version": "v2c" if version == 1 else "v1"}
+    def pedir(oids):
+        return get(destino, oids, comunidad=comunidad, version=version,
+                   puerto=puerto, timeout=timeout)
     try:
-        sis = get(destino, list(SISTEMA), comunidad=comunidad, version=version,
-                  puerto=puerto, timeout=timeout)
+        sis = pedir(list(SISTEMA))
     except (socket.timeout, TimeoutError):
         return {**comun, "responde": False,
                 "motivo": "No contestó SNMP. Puede no tenerlo habilitado, "
@@ -344,33 +396,57 @@ def interrogar(
 
     datos = {SISTEMA[o]: v for o, v in sis.items() if o in SISTEMA}
     cs = datos.get("uptime_centisegundos")
-    datos["uptime_s"] = int(cs) // 100 if isinstance(cs, int) else None
+    arriba_cs = cs if isinstance(cs, int) else 0
+    datos["uptime_s"] = arriba_cs // 100 if arriba_cs else None
 
-    # Las interfaces son opcionales: si la tabla no viene, el bloque de sistema
-    # ya vale por sí solo y no hay razón para tirar todo.
     interfaces = []
     try:
-        nombres = dict(walk(destino, IF_NOMBRE, comunidad=comunidad, version=version,
-                            puerto=puerto, timeout=timeout, tope=max_if))
-        oper = dict(walk(destino, IF_OPER, comunidad=comunidad, version=version,
-                         puerto=puerto, timeout=timeout, tope=max_if))
-        admin = dict(walk(destino, IF_ADMIN, comunidad=comunidad, version=version,
-                          puerto=puerto, timeout=timeout, tope=max_if))
-        vel = dict(walk(destino, IF_VELOCIDAD, comunidad=comunidad, version=version,
-                        puerto=puerto, timeout=timeout, tope=max_if))
-        for oid, nombre in nombres.items():
+        nombres = walk(destino, IF_NOMBRE, comunidad=comunidad, version=version,
+                       puerto=puerto, timeout=timeout, tope=max_if)
+        for oid, nombre in nombres:
             idx = oid.rsplit(".", 1)[-1]
-            o = oper.get(f"{IF_OPER}.{idx}")
-            a = admin.get(f"{IF_ADMIN}.{idx}")
+            r = pedir([f"{b}.{idx}" for b in
+                       (IF_OPER, IF_ADMIN, IF_VELOCIDAD, IF_ULTIMO_CAMBIO,
+                        IF_IN, IF_OUT, IF_ALIAS)])
+            o = r.get(f"{IF_OPER}.{idx}")
+            a = r.get(f"{IF_ADMIN}.{idx}")
+            oper = OPER.get(o, str(o)) if o is not None else None
+            admin = OPER.get(a, str(a)) if a is not None else None
+            trafico = (r.get(f"{IF_IN}.{idx}") or 0) + (r.get(f"{IF_OUT}.{idx}") or 0)
+            ult = r.get(f"{IF_ULTIMO_CAMBIO}.{idx}")
+            # `ifLastChange` en 0 significa «así desde que arrancó el equipo»,
+            # no «cambió recién». Confundirlos daría «caído hace 0 segundos» en
+            # un puerto que lleva años abajo: la mentira más peligrosa posible
+            # en esta pantalla.
+            desde_arranque = ult == 0
+            caido_s = (
+                arriba_cs // 100 if desde_arranque
+                else (arriba_cs - ult) // 100 if isinstance(ult, int) and arriba_cs
+                else None
+            )
+            clave, explica = veredicto(oper, admin, trafico)
             interfaces.append({
                 "indice": idx,
                 "nombre": nombre,
-                "operativa": OPER.get(o, str(o)) if o is not None else None,
+                "alias": r.get(f"{IF_ALIAS}.{idx}") or None,
+                "operativa": oper,
                 # 🔴 «Apagada por alguien» y «caída sola» son cosas MUY
                 #    distintas y las dos se ven como «abajo». Sin separarlas,
                 #    un puerto deshabilitado a propósito figura como falla.
-                "administrativa": OPER.get(a, str(a)) if a is not None else None,
-                "velocidad_bps": vel.get(f"{IF_VELOCIDAD}.{idx}"),
+                "administrativa": admin,
+                "velocidad_bps": r.get(f"{IF_VELOCIDAD}.{idx}"),
+                "trafico_bytes": trafico,
+                "cambio_hace_s": caido_s,
+                "desde_el_arranque": desde_arranque,
+                "veredicto": clave,
+                "explica": explica,
+                # 🔴 Marca de agrupación: dos puertos con el MISMO
+                #    `ifLastChange` cayeron en el mismo instante, y eso es UN
+                #    evento, no dos. Medido: tres puertos de un router llamados
+                #    `ether1/2/3-L2-OLT8` con el mismo valor exacto. Tres
+                #    coincidencias no existen: fue un cable, un equipo o una
+                #    persona.
+                "evento": ult if isinstance(ult, int) and ult else None,
             })
     except (socket.timeout, TimeoutError, ErrorSNMP, OSError):
         pass

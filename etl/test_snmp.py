@@ -148,3 +148,48 @@ def test_no_existe_SET_en_el_modulo():
     assert not hasattr(snmp, "set")
     fuente = open(snmp.__file__, encoding="utf-8").read()
     assert "0xA3" not in fuente and "PDU_SET" not in fuente
+
+
+# ── El veredicto por interfaz ────────────────────────────────────────────────
+#
+# 🔴 Es la lógica que convierte 180 puertos «abajo» en 27 que importan. Si se
+#    equivoca hacia un lado, se ahoga la señal; hacia el otro, se manda gente a
+#    arreglar puertos vacantes. Las dos son caras.
+
+class TestVeredicto:
+    def test_apagada_a_proposito_no_es_una_falla(self):
+        # Aunque haya movido terabytes: si una persona la deshabilitó, listo.
+        clave, _ = snmp.veredicto("abajo", "abajo", 9_999_999_999)
+        assert clave == "apagado"
+
+    def test_andando_es_ok(self):
+        assert snmp.veredicto("arriba", "arriba", 0)[0] == "ok"
+
+    def test_habilitada_sin_enlace_y_sin_trafico_es_un_puerto_vacante(self):
+        # 153 de los 180 medidos caen acá. Son ruido, no incidentes.
+        clave, explica = snmp.veredicto("abajo", "arriba", 0)
+        assert clave == "libre"
+        assert "vacante" in explica
+
+    def test_habilitada_sin_enlace_pero_CON_trafico_es_lo_unico_que_importa(self):
+        clave, explica = snmp.veredicto("abajo", "arriba", 5_800_000_000)
+        assert clave == "caido"
+        assert "no anda" in explica
+
+    def test_el_umbral_separa_ruido_de_servicio(self):
+        # Un megabyte es negociación y descubrimiento, no un cliente conectado.
+        assert snmp.veredicto("abajo", "arriba", snmp.TRAFICO_MINIMO - 1)[0] == "libre"
+        assert snmp.veredicto("abajo", "arriba", snmp.TRAFICO_MINIMO)[0] == "caido"
+
+    def test_un_estado_raro_no_se_reporta_como_falla(self):
+        # `dormido`, `prueba`, `sin señal`… no se sabe qué son. Inventar que son
+        # fallas llenaría la lista de ruido que nadie puede accionar.
+        for o in ("dormido", "prueba", "desconocido", None):
+            assert snmp.veredicto(o, "arriba", 9_999_999_999)[0] == "ok"
+
+    def test_solo_UNA_de_las_cuatro_respuestas_pide_accion(self):
+        claves = {snmp.veredicto(o, a, b)[0]
+                  for o in ("arriba", "abajo", "dormido", None)
+                  for a in ("arriba", "abajo", None)
+                  for b in (0, 10**9)}
+        assert claves == {"ok", "apagado", "libre", "caido"}

@@ -64,6 +64,30 @@ const TONO: Record<string, string> = {
   'sin respuesta': 'text-caido-txt',
   error: 'text-caido-txt',
 };
+/**
+ * 🔴 Primero lo que pide acción. Una tabla ordenada por número de interfaz
+ *    entierra el único puerto roto entre treinta vacantes, que es exactamente
+ *    cómo se pierde. Medido: 180 puertos «abajo», 27 que importaban.
+ *
+ * Se calcula acá y no dentro de la plantilla: Astro no permite una función
+ * anónima invocada en el medio del marcado, y además así se lee.
+ */
+const ORDEN = { caido: 0, ok: 1, apagado: 2, libre: 3 } as const;
+const ifs = [...(sn?.interfaces ?? [])].sort(
+  (a, b) => ORDEN[a.veredicto] - ORDEN[b.veredicto] ||
+            (b.cambio_hace_s ?? 0) - (a.cambio_hace_s ?? 0),
+);
+const rotas = ifs.filter((i) => i.veredicto === 'caido');
+const libres = ifs.filter((i) => i.veredicto === 'libre').length;
+/**
+ * Puertos que cambiaron de estado en el MISMO instante. Eso es UN evento, no N.
+ * Medido en la red real: tres puertos de un router llamados `ether1/2/3-L2-OLT8`
+ * con el mismo `ifLastChange` exacto. Tres coincidencias no existen: fue un
+ * cable, un equipo o una persona.
+ */
+const juntos = new Map<number, number>();
+for (const i of rotas) if (i.evento) juntos.set(i.evento, (juntos.get(i.evento) ?? 0) + 1);
+const grupos = [...juntos.values()].filter((n) => n > 1);
 ---
 
 <section class="tarjeta mb-4 p-3" aria-labelledby="t-sonda">
@@ -241,51 +265,100 @@ const TONO: Record<string, string> = {
                   )}
                 </dl>
 
-                {sn.interfaces && sn.interfaces.length > 0 && (
-                  <div class="mt-3 overflow-x-auto">
-                    <table class="w-full text-xs">
-                      <thead class="text-tenue text-2xs text-left">
-                        <tr>
-                          <th class="py-1 pr-3 font-semibold">Interfaz</th>
-                          <th class="py-1 pr-3 font-semibold">Está</th>
-                          <th class="py-1 pr-3 font-semibold">La dejaron</th>
-                          <th class="py-1 font-semibold">Velocidad</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {sn.interfaces.map((i) => {
-                          // 🔴 «Debería andar y no anda». Es el ÚNICO estado que
-                          //    pide acción, y el que un panel de ping no ve.
-                          const rota = i.operativa === 'abajo' && i.administrativa === 'arriba';
-                          return (
-                            <tr class="border-borde/50 border-b last:border-0">
-                              <td class="py-1 pr-3 font-mono">{i.nombre}</td>
-                              <td
+                {ifs.length > 0 && (
+                    <div class="mt-3">
+                      <p class="mb-2 text-xs">
+                        {rotas.length === 0 ? (
+                          <span class="text-arriba-txt font-semibold">
+                            Ninguna interfaz caída que haya movido tráfico.
+                          </span>
+                        ) : (
+                          <span class="text-caido-txt font-semibold">
+                            {rotas.length} interfaz{rotas.length === 1 ? '' : 'es'} movió tráfico y hoy no
+                            tiene enlace.
+                          </span>
+                        )}
+                        {libres > 0 && (
+                          <span class="text-tenue">
+                            {' '}Otras {libres} están habilitadas pero nunca movieron nada: son puertos
+                            vacantes, no fallas.
+                          </span>
+                        )}
+                        {grupos.length > 0 && (
+                          <span class="text-tinta">
+                            {' '}🔴 {grupos.map((n) => `${n} puertos`).join(' y ')} cayeron en el MISMO
+                            instante: eso es un evento, no varios. Un cable, un equipo o una persona.
+                          </span>
+                        )}
+                      </p>
+                      <div class="overflow-x-auto">
+                        <table class="w-full text-xs">
+                          <thead class="text-tenue text-2xs text-left">
+                            <tr>
+                              <th class="py-1 pr-3 font-semibold">Interfaz</th>
+                              <th class="py-1 pr-3 font-semibold">Veredicto</th>
+                              <th class="py-1 pr-3 font-semibold">Así hace</th>
+                              <th class="py-1 pr-3 font-semibold">Movió</th>
+                              <th class="py-1 font-semibold">Velocidad</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {ifs.map((i) => (
+                              <tr
                                 class:list={[
-                                  'py-1 pr-3 font-medium',
-                                  i.operativa === 'arriba' ? 'text-arriba-txt' : rota ? 'text-caido-txt' : 'text-tenue',
+                                  'border-borde/50 border-b last:border-0',
+                                  i.veredicto === 'libre' && 'opacity-50',
                                 ]}
                               >
-                                {i.operativa ?? '—'}
-                                {rota && ' ← debería andar'}
-                              </td>
-                              <td class="text-tenue py-1 pr-3">{i.administrativa ?? '—'}</td>
-                              <td class="text-tenue py-1 tabular-nums">
-                                {i.velocidad_bps ? `${Math.round(i.velocidad_bps / 1e6)} Mb/s` : ''}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                    <p class="text-tenue mt-2 text-2xs leading-snug">
-                      «Está» es cómo está de verdad; «la dejaron» es cómo la configuró una persona.
-                      Un puerto <strong class="text-tinta">abajo con administrativa arriba</strong> es
-                      una falla: debería andar y no anda. Uno con administrativa abajo está apagado a
-                      propósito y no hay nada que arreglar. Las dos se ven igual si sólo se mira el
-                      estado operativo.
-                    </p>
-                  </div>
+                                <td class="py-1 pr-3 font-mono">
+                                  {i.nombre}
+                                  {i.alias && <span class="text-tenue block text-2xs">«{i.alias}»</span>}
+                                </td>
+                                <td
+                                  class:list={[
+                                    'py-1 pr-3 font-medium',
+                                    i.veredicto === 'caido' && 'text-caido-txt',
+                                    i.veredicto === 'ok' && 'text-arriba-txt',
+                                    (i.veredicto === 'libre' || i.veredicto === 'apagado') && 'text-tenue',
+                                  ]}
+                                  title={i.explica}
+                                >
+                                  {i.veredicto === 'caido' ? 'debería andar' :
+                                   i.veredicto === 'apagado' ? 'apagada' :
+                                   i.veredicto === 'libre' ? 'vacante' : 'anda'}
+                                </td>
+                                <td class="text-tenue py-1 pr-3 tabular-nums whitespace-nowrap">
+                                  {i.cambio_hace_s == null
+                                    ? '—'
+                                    : cuanto(i.cambio_hace_s) + (i.desde_el_arranque ? ' (desde el arranque)' : '')}
+                                </td>
+                                <td class="text-tenue py-1 pr-3 tabular-nums">
+                                  {i.trafico_bytes >= 1e9
+                                    ? `${(i.trafico_bytes / 1e9).toFixed(1)} GB`
+                                    : i.trafico_bytes >= 1e6
+                                      ? `${Math.round(i.trafico_bytes / 1e6)} MB`
+                                      : '—'}
+                                </td>
+                                <td class="text-tenue py-1 tabular-nums">
+                                  {i.velocidad_bps ? `${Math.round(i.velocidad_bps / 1e6)} Mb/s` : ''}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <p class="text-tenue mt-2 text-2xs leading-snug">
+                        <strong class="text-tinta">«Debería andar»</strong> = habilitada, sin enlace, y
+                        movió tráfico alguna vez. <strong class="text-tinta">«Vacante»</strong> = habilitada
+                        y nunca movió nada. <strong class="text-tinta">«Apagada»</strong> = la deshabilitó
+                        una persona. Un panel que sólo mira el estado operativo mete las tres en la misma
+                        bolsa: acá había 180 puertos «abajo» y sólo 27 pedían atención.
+                        <br />
+                        ⚠️ El tráfico es <strong class="text-tinta">acumulado desde el último arranque</strong>:
+                        dice que el puerto trabajó, no cuándo. Por eso la columna «así hace» es la que
+                        decide si hay que ir.
+                      </p>
+                    </div>
                 )}
               </>
             )}
