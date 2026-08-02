@@ -274,8 +274,15 @@ const grupos = [...juntos.values()].filter((n) => n > 1);
                           </span>
                         ) : (
                           <span class="text-caido-txt font-semibold">
-                            {rotas.length} interfaz{rotas.length === 1 ? '' : 'es'} movió tráfico y hoy no
-                            tiene enlace.
+                            {/* 🔴 Una sola expresión, no el plural pegado con un
+                                ternario: «interfaz» + «es» da «interfazes», que
+                                no existe, y el verbo también cambia. Es el mismo
+                                error que ya produjo «6 residuo s» en el mapa —
+                                un texto mal armado se lee como descuido y le
+                                resta credibilidad a lo que dice el número. */}
+                            {rotas.length === 1
+                              ? '1 interfaz movió tráfico y hoy no tiene enlace.'
+                              : `${rotas.length} interfaces movieron tráfico y hoy no tienen enlace.`}
                           </span>
                         )}
                         {libres > 0 && (
