@@ -362,9 +362,30 @@ class Manejador(BaseHTTPRequestHandler):
                 # —está en la base— y preguntarle a un tercero por una dirección
                 # privada es justo lo que `camino` tiene prohibido.
                 t = camino.trazar(destino, resolutor=None)
+                # 🔴 SI EL CAMINO NO LLEGÓ, HAY QUE PREGUNTAR SI EL EQUIPO ESTÁ.
+                #
+                #    Medido en producción contra un equipo real: el traceroute
+                #    terminó en «no contestó» y el ping al MISMO equipo daba
+                #    0,44 ms. No es contradictorio — el traceroute manda UDP a
+                #    un puerto cerrado y espera un «port unreachable», y hay
+                #    montones de equipos que no lo mandan: Windows no lo manda
+                #    de fábrica y RouterOS le limita la tasa.
+                #
+                #    Sin esta comprobación la pantalla dice «no se llegó», el
+                #    operador lo lee como «el camino está cortado» y sale a
+                #    buscar un problema que no existe. Es exactamente el tipo de
+                #    error que este panel viene a no cometer: una herramienta de
+                #    diagnóstico que manda al lado equivocado es peor que no
+                #    tenerla.
+                #
+                #    Cuesta una sonda más, y sólo cuando el camino falló.
+                vive = None
+                if not t.alcanzado:
+                    vive = ping(destino, sondas=2)["respondieron"] > 0
                 datos = {
                     "destino": destino,
                     "alcanzado": t.alcanzado,
+                    "responde_igual": vive,
                     "motivo_fin": t.motivo_fin,
                     "saltos": [
                         # `rtt_ms`, no `ms`: el nombre sale de `camino.Salto` y

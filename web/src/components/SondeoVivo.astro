@@ -179,7 +179,9 @@ const TONO: Record<string, string> = {
             <p class="text-tenue mt-2 text-2xs">
               {tr.alcanzado
                 ? `Se llegó al equipo en ${tr.saltos.length} saltos.`
-                : `No se llegó (${tr.motivo_fin}). El último salto que contestó es hasta dónde llega el camino — de ahí en adelante está el problema.`}
+                : tr.responde_igual
+                  ? 'El camino no se completó, pero el equipo RESPONDE. No es una falla: el traceroute manda UDP a un puerto cerrado y hay equipos que nunca contestan eso —Windows no lo hace de fábrica y RouterOS le limita la tasa—. Los saltos mudos del medio son routers que no avisan del TTL agotado. Para saber si el equipo está, mirá el ping.'
+                  : `No se llegó (${tr.motivo_fin}) y el equipo tampoco responde al ping. El último salto que contestó es hasta dónde llega el camino: de ahí en adelante está el problema.`}
             </p>
           </div>
         )}

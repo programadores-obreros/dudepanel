@@ -67,6 +67,16 @@ export interface SaltoVivo {
 export interface Traza {
   destino: string;
   alcanzado: boolean;
+  /**
+   * Si el camino NO se completó: ¿el equipo responde igual?
+   *
+   * 🔴 `true` acá cambia el diagnóstico por completo. Medido en producción: un
+   *    traceroute que termina en «no contestó» contra un equipo que responde
+   *    ping en 0,44 ms. No es contradictorio — el traceroute manda UDP a un
+   *    puerto cerrado y hay equipos que nunca contestan eso. `null` cuando el
+   *    camino sí llegó y la pregunta no aplica.
+   */
+  responde_igual: boolean | null;
   motivo_fin: string;
   saltos: SaltoVivo[];
   ms_total: number;
