@@ -7,6 +7,8 @@ import Accesos from '@/components/Accesos.astro';
 import Grafico from '@/components/Grafico.astro';
 import LineaDeTiempo from '@/components/LineaDeTiempo.astro';
 import FotoEquipo from '@/components/FotoEquipo.astro';
+import SondeoVivo from '@/components/SondeoVivo.astro';
+import { haySonda, sondear, type Accion, type Resultado } from '@/lib/sonda';
 import {
   cadenaDePadresInferida,
   arrastreDe,
@@ -27,6 +29,21 @@ import { accesos as calcularAccesos, type Acceso } from '@/lib/accesos';
 import { fabricante, macsReales } from '@/lib/oui';
 import { duracion, numero } from '@/lib/formato';
 import { reportarError } from '@/lib/errores';
+
+/**
+ * 🔴 El sondeo en vivo va por POST, nunca por GET.
+ *
+ *    Es una acción con efecto: manda paquetes a un equipo de producción. Con
+ *    GET la dispararían el prefetch del navegador, un rastreador o cualquiera
+ *    que comparta el enlace — y el operador vería sondas que nadie pidió.
+ *
+ *    Quién puede: cualquiera que ya entró. Un ping no cambia nada y es
+ *    justamente la herramienta del que está de guardia a las tres de la
+ *    mañana, que muchas veces es la cuenta de sólo lectura. Los frenos son de
+ *    tasa y de destino, no de rol, y viven en `etl/sonda.py`.
+ */
+let sondeoAccion: Accion | null = null;
+let sondeoResultado: Resultado | null = null;
 
 const id = Number(Astro.params.id);
 if (!Number.isInteger(id) || id <= 0) return Astro.redirect('/dispositivos', 302);
@@ -101,6 +118,22 @@ try {
         spanMedicionesDe(id),
       ]);
     if (acc) accesos = calcularAccesos(acc);
+
+    // 🔴 El sondeo va DESPUÉS de cargar el equipo, y no antes.
+    //
+    //    Hace falta su dirección para saber a quién preguntarle, y hace falta
+    //    que el equipo EXISTA: sondear a partir de un id inventado sería
+    //    exactamente el agujero que `etl/sonda.py` cierra del otro lado. Dos
+    //    controles independientes para lo mismo, a propósito.
+    if (Astro.request.method === 'POST' && haySonda) {
+      const f = await Astro.request.formData();
+      const pedida = String(f.get('sondeo') ?? '');
+      const ip = d.direcciones?.[0] ?? null;
+      if ((pedida === 'ping' || pedida === 'puertos' || pedida === 'traza') && ip) {
+        sondeoAccion = pedida;
+        sondeoResultado = await sondear(pedida, ip);
+      }
+    }
     // Sólo cuando hace falta explicar un vacío. En el camino normal —el equipo
     // TIENE mediciones— esta consulta no se hace, y son 885 fichas por turno.
     if (series.length === 0) covHistoria = await coberturaHistoria();
@@ -182,6 +215,17 @@ const SNMP = ['v1', 'v2c', 'v3'];
         <section class="tarjeta mb-4 p-3">
           <Accesos accesos={accesos} nombre={d!.nombre} />
         </section>
+
+        {/* Debajo de los accesos y antes de los gráficos: el que abre esta
+            ficha con el equipo caído primero intenta entrar, y si no puede,
+            lo siguiente que necesita es saber si el equipo está o si el
+            problema está en el camino. Recién después mira historia. */}
+        <SondeoVivo
+          destino={d!.direcciones?.[0] ?? null}
+          accion={sondeoAccion}
+          resultado={sondeoResultado}
+          disponible={haySonda}
+        />
 
         <div class="grid gap-4 lg:grid-cols-[2fr_1fr]">
           <div class="flex flex-col gap-4">

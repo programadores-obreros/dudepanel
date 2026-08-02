@@ -240,6 +240,68 @@ services:
 
     logging: *logs
 
+  # ── Sonda: ping, puertos y traceroute EN VIVO, a pedido ─────────────────────
+  #
+  # 🔴 ESTE SERVICIO CONVIERTE AL PANEL EN ACTOR DE LA RED.
+  #
+  #    Todo lo demás refleja lo que The Dude midió. Esto manda paquetes cuando
+  #    alguien aprieta un botón. Los frenos están en `sonda.py` y son cuatro:
+  #    sólo direcciones que ya están en `devices`, sólo seis puertos fijos,
+  #    enfriamiento por destino más tope global, y jamás escribe en un equipo.
+  #
+  #    Va aparte del `etl` por la misma razón que `camino`: el ETL abre la base
+  #    con las credenciales de todos los equipos del ISP, y ése no sale a
+  #    internet. Y va aparte de `camino` porque `camino` corre solo en un bucle
+  #    y esto atiende pedidos: dos ciclos de vida distintos en un contenedor es
+  #    cómo se termina reiniciando el sondeo para arreglar el traceroute.
+  sonda:
+    image: ghcr.io/programadores-obreros/dudepanel-etl:${PANEL_VERSION:?falta PANEL_VERSION en .env.prod}@${ETL_DIGEST:?falta ETL_DIGEST en .env.prod — ver deploy/digests.sh}
+    restart: unless-stopped
+    depends_on:
+      db: { condition: service_healthy }
+    entrypoint: ["python", "-u", "/app/sonda.py"]
+
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-dude}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-dude}
+      SONDA_ENFRIAMIENTO_S: ${SONDA_ENFRIAMIENTO_S:-10}
+      SONDA_POR_MINUTO: ${SONDA_POR_MINUTO:-60}
+
+    # 🔴 EL SYSCTL VA EXPLÍCITO, no se confía en el defecto de Docker.
+    #
+    #    `net.ipv4.ping_group_range` es lo que permite abrir un socket ICMP sin
+    #    `CAP_NET_RAW`. Docker lo deja abierto de fábrica — y ESO es la trampa:
+    #    un anfitrión endurecido lo cierra, y entonces el ping se degrada a UDP
+    #    en producción y no en desarrollo, que es el peor orden posible para
+    #    enterarse. Declarándolo, la máquina de desarrollo y el servidor hacen
+    #    lo mismo.
+    #
+    #    Medido con el rango cerrado: `sonda.py` cae solo a UDP con IP_RECVERR
+    #    y mide 4,9-5,2 ms donde ICMP medía 4,77-5,43. Anda igual, y lo DICE en
+    #    la respuesta — un «no contestó» por UDP y uno por ICMP no significan lo
+    #    mismo.
+    sysctls:
+      net.ipv4.ping_group_range: "10001 10001"
+
+    # 🔴 SIN `ports:`. Sólo lo alcanza el contenedor `web` por la red interna.
+    #    Publicar esto sería regalar un escáner de la red de gestión.
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import socket,sys; s=socket.create_connection(('127.0.0.1',8099),2); s.close()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    networks: [interna, borde]
+
+    logging: *logs
+
   # ── Panel web ───────────────────────────────────────────────────────────────
   web:
     image: ghcr.io/programadores-obreros/dudepanel-web:${PANEL_VERSION:?falta PANEL_VERSION en .env.prod}@${WEB_DIGEST:?falta WEB_DIGEST en .env.prod — ver deploy/digests.sh}
@@ -268,6 +330,10 @@ services:
       #    Con esta variable apuntando a un volumen, se copia el archivo, se
       #    espera hasta un minuto a que el índice se relea, y listo.
       FOTOS_EQUIPOS_DIR: /fotos
+      # Adónde le pide el panel un sondeo en vivo. Sin esto definido, la ficha
+      # del equipo NO ofrece los botones: es preferible que no aparezcan a que
+      # aparezcan y fallen. Ver `web/src/lib/sonda.ts`.
+      SONDA_URL: http://sonda:8099
 
       # 🔴 Quién puede acomodar los mapas. Sin esta línea la variable queda en
       #    `.env.prod` y NUNCA llega al proceso: Compose sólo pasa al

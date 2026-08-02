@@ -58,7 +58,11 @@ WORKDIR /app
 #       necesita salida. Medido: `[Errno 101] Network is unreachable`. Va como
 #       servicio aparte con `networks: [interna, borde]`, o a mano desde un
 #       contenedor con salida. Ver el encabezado de `camino.py`.
-COPY dudeobj.py sync.py syslog.py respaldo.py camino.py schema.sql ./
+#
+#    ⚠️ Lo mismo vale para `sonda.py`, que además necesita el sysctl
+#       `net.ipv4.ping_group_range` abierto para hacer ping ICMP sin
+#       privilegios. Si no lo tiene, cae solo a UDP y lo informa.
+COPY dudeobj.py sync.py syslog.py respaldo.py camino.py sonda.py schema.sql ./
 COPY salud.py /usr/local/bin/salud.py
 
 ENV PYTHONUNBUFFERED=1 \

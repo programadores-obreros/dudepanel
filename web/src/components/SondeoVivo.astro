@@ -1,0 +1,196 @@
+---
+import type { Ping, Puertos, Resultado, Traza } from '@/lib/sonda';
+
+/**
+ * Ping, puertos y traceroute EN VIVO desde la ficha del equipo.
+ *
+ * ── Qué agrega, sobre todo lo demás que ya está en esta página ──────────────
+ *
+ * Todo lo que rodea a este bloque es un espejo: muestra lo que The Dude midió
+ * hace hasta 30 segundos. Esto pregunta AHORA. Son dos cosas distintas y la
+ * segunda es la que sirve cuando alguien llama diciendo «se me cayó».
+ *
+ * Y de las tres, la que más resuelve es el **camino**: distingue «se murió el
+ * equipo» de «se cortó el enlace tres saltos antes». Sin eso, un equipo que no
+ * contesta lleva a mandar un técnico, y la mitad de las veces el problema
+ * estaba en el medio.
+ *
+ * ── 🔴 Sin JavaScript, y con una consecuencia que hay que aceptar ───────────
+ *
+ *    Es un `<form method="post">` a esta misma página. No hay redirect después
+ *    del POST —a diferencia de `/inventario`— porque acá el resultado ES la
+ *    respuesta: redirigir lo perdería.
+ *
+ *    Eso significa que recargar vuelve a sondear. Está contemplado: el
+ *    servicio tiene enfriamiento por destino y contesta 429 con el tiempo que
+ *    falta. Preferimos ese aviso claro antes que un script para evitarlo.
+ */
+
+interface Props {
+  /** Dirección a sondear. Ya validada contra la base por el servicio. */
+  destino: string | null;
+  /** Qué acción se pidió en este POST, si hubo alguno. */
+  accion?: string | null;
+  resultado?: Resultado | null;
+  /** Si no hay servicio configurado, no se ofrece nada. */
+  disponible: boolean;
+}
+
+const { destino, accion = null, resultado = null, disponible } = Astro.props;
+
+const ACCIONES = [
+  { id: 'ping', texto: 'Ping ahora', ayuda: '5 sondas: ida y vuelta, pérdida y jitter en este momento.' },
+  { id: 'puertos', texto: 'Probar puertos', ayuda: 'Si SSH, Winbox o la web contestan. Un equipo puede responder ping con el Winbox muerto.' },
+  { id: 'traza', texto: 'Camino hasta acá', ayuda: 'Por dónde se llega y en qué salto se corta. Separa «es el equipo» de «es el enlace».' },
+] as const;
+
+const p = resultado?.ok && resultado.accion === 'ping' ? (resultado.datos as Ping) : null;
+const pu = resultado?.ok && resultado.accion === 'puertos' ? (resultado.datos as Puertos) : null;
+const tr = resultado?.ok && resultado.accion === 'traza' ? (resultado.datos as Traza) : null;
+
+const TONO: Record<string, string> = {
+  abierto: 'text-arriba-txt',
+  cerrado: 'text-tenue',
+  'sin respuesta': 'text-caido-txt',
+  error: 'text-caido-txt',
+};
+---
+
+<section class="tarjeta mb-4 p-3" aria-labelledby="t-sonda">
+  <h2 id="t-sonda" class="text-tenue text-2xs mb-2 font-semibold tracking-wide uppercase">
+    Preguntarle al equipo ahora
+  </h2>
+
+  {
+    !disponible || !destino ? (
+      <p class="text-tenue text-xs">
+        {!destino
+          ? 'Este elemento no tiene dirección IP, así que no hay a quién preguntarle.'
+          : 'No hay servicio de sondeo configurado en este despliegue.'}
+      </p>
+    ) : (
+      <>
+        <div class="flex flex-wrap gap-2">
+          {ACCIONES.map((a) => (
+            <form method="post" class="contents">
+              <input type="hidden" name="sondeo" value={a.id} />
+              <button
+                type="submit"
+                title={a.ayuda}
+                class:list={[
+                  'border-borde bg-panel-2 hover:border-borde-fuerte hover:text-tinta rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors',
+                  accion === a.id ? 'border-acento text-acento-txt' : 'text-tenue',
+                ]}
+              >
+                {a.texto}
+              </button>
+            </form>
+          ))}
+          <span class="text-tenue self-center text-2xs">contra {destino}</span>
+        </div>
+
+        {/* 🔴 El error se muestra con el MISMO peso que un resultado, y con el
+            motivo cuando lo hay. Un botón que no hace nada visible es cómo se
+            pierde la confianza en una herramienta: si no se pudo, hay que
+            decir por qué. */}
+        {resultado && !resultado.ok && (
+          <div class="border-caido bg-caido-bg text-caido-txt mt-3 rounded-lg border p-2 text-xs">
+            <p class="font-semibold">{resultado.error}</p>
+            {resultado.motivo && <p class="mt-0.5 opacity-90">{resultado.motivo}</p>}
+          </div>
+        )}
+
+        {p && (
+          <div class="border-borde bg-panel-2 mt-3 rounded-lg border p-3">
+            <div class="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-sm">
+              <span class:list={['font-bold', p.respondieron ? 'text-arriba-txt' : 'text-caido-txt']}>
+                {p.respondieron}/{p.sondas} respondieron
+              </span>
+              {p.ms_prom != null && (
+                <span class="tabular-nums">
+                  {p.ms_min} / <strong>{p.ms_prom}</strong> / {p.ms_max} ms
+                  <span class="text-tenue text-2xs"> mín/prom/máx</span>
+                </span>
+              )}
+              {p.jitter_ms != null && (
+                <span class="tabular-nums text-tenue text-xs">jitter {p.jitter_ms} ms</span>
+              )}
+              {p.perdida_pct > 0 && (
+                <span class="text-caido-txt tabular-nums text-xs">{p.perdida_pct} % de pérdida</span>
+              )}
+            </div>
+
+            {/* Las muestras una por una, no sólo el promedio: cinco sondas de
+                5 ms y una serie 2/3/40/3/2 dan promedios parecidos y son dos
+                redes distintas. El promedio solo esconde exactamente eso. */}
+            <div class="mt-2 flex flex-wrap gap-1">
+              {p.muestras_ms.map((m) => (
+                <span
+                  class:list={[
+                    'rounded px-1.5 py-0.5 font-mono text-2xs tabular-nums',
+                    m == null ? 'bg-caido-bg text-caido-txt' : 'bg-panel text-tenue',
+                  ]}
+                >
+                  {m == null ? 'sin resp.' : `${m} ms`}
+                </span>
+              ))}
+            </div>
+
+            <p class="text-tenue mt-2 text-2xs leading-snug">{p.explica}</p>
+          </div>
+        )}
+
+        {pu && (
+          <div class="border-borde bg-panel-2 mt-3 overflow-x-auto rounded-lg border">
+            <table class="w-full text-xs">
+              <tbody>
+                {pu.puertos.map((x) => (
+                  <tr class="border-borde/50 border-b last:border-0">
+                    <td class="px-3 py-1.5 font-mono tabular-nums">{x.puerto}</td>
+                    <td class="text-tenue px-3 py-1.5">{x.etiqueta}</td>
+                    <td class:list={['px-3 py-1.5 font-medium', TONO[x.estado]]}>{x.estado}</td>
+                    <td class="text-tenue px-3 py-1.5 tabular-nums">{x.ms != null ? `${x.ms} ms` : ''}</td>
+                    <td class="text-tenue px-3 py-1.5 text-2xs">{x.detalle}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p class="text-tenue px-3 py-1.5 text-2xs leading-snug">
+              Un equipo que contesta ping con el Winbox sin respuesta está caído para quien lo
+              administra, y el monitoreo por ping lo da por sano. Eso es lo que esta tabla
+              encuentra.
+            </p>
+          </div>
+        )}
+
+        {tr && (
+          <div class="border-borde bg-panel-2 mt-3 rounded-lg border p-2">
+            <ol class="space-y-0.5 text-xs">
+              {tr.saltos.map((s) => (
+                <li class="flex items-baseline gap-2">
+                  <span class="text-tenue w-5 text-right font-mono tabular-nums">{s.ttl}</span>
+                  <span class:list={['font-mono', s.direccion ? '' : 'text-tenue italic']}>
+                    {s.direccion ?? 'no contestó'}
+                  </span>
+                  {s.ms != null && <span class="text-tenue tabular-nums">{s.ms} ms</span>}
+                </li>
+              ))}
+            </ol>
+            <p class="text-tenue mt-2 text-2xs">
+              {tr.alcanzado
+                ? `Se llegó al equipo en ${tr.saltos.length} saltos.`
+                : `No se llegó (${tr.motivo_fin}). El último salto que contestó es hasta dónde llega el camino — de ahí en adelante está el problema.`}
+            </p>
+          </div>
+        )}
+
+        {resultado?.ok && (
+          <p class="text-tenue mt-2 text-2xs">
+            Medido recién, en {(resultado.datos as { ms_total: number }).ms_total} ms. No sale de
+            la base: son paquetes que se mandaron ahora.
+          </p>
+        )}
+      </>
+    )
+  }
+</section>
