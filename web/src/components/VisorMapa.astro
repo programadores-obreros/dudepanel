@@ -35,12 +35,28 @@ interface Props {
   editable?: boolean;
   /** Cuántos nodos de este mapa ya tienen posición puesta a mano. */
   movidos?: number;
+  /** Días de historia disponibles, para clasificar la vida. Ver `lib/vida`. */
+  alcanceDias?: number;
+  /** Qué capa está mirando. La elige la página por la URL. */
+  capa?: 'activos' | 'dudosos' | 'todo';
+  /** Cuántos elementos quedaron afuera por esa capa. Se dice SIEMPRE. */
+  ocultos?: number;
 }
 
 const {
   mapaId, nombre, elementos, submapas = new Map(), fuera, trafico,
-  editable = false, movidos = 0,
+  editable = false, movidos = 0, alcanceDias, capa = 'todo', ocultos = 0,
 } = Astro.props;
+
+/**
+ * Las tres capas, con su enlace. Vive acá y no en la página porque es lo que
+ * se DIBUJA; la página sólo decide cuál está activa.
+ */
+const CAPAS = [
+  { valor: 'activos', texto: 'En servicio' },
+  { valor: 'dudosos', texto: '+ dudosos' },
+  { valor: 'todo', texto: 'Todo' },
+] as const;
 
 // El tamaño natural de cada icono se mide ANTES de armar la geometría: sin él
 // no se puede aplicar `image_scale`, que es un porcentaje sobre ese tamaño. Se
@@ -55,7 +71,11 @@ const medidas = await medidasDeIconos(
   elementos.flatMap((e) => [e.icon, e.icon_tipo]),
 );
 
-const lienzo = construirLienzo(elementos, submapas, medidas, { trafico });
+const lienzo = construirLienzo(elementos, submapas, medidas, { trafico, alcanceDias });
+
+// Los que se muestran pero atenuados. Los de baja ni llegan hasta acá: la
+// página ya los sacó, para que el encuadre no los tenga en cuenta.
+const dudosos = lienzo.nodos.filter((n) => n.vida === 'dudoso').length;
 
 // Cuántos nodos son residuo. Es lo que justifica —o no— ofrecer atenuarlos.
 const residuos = lienzo.nodos.filter((n) => n.antiguedad === 'residuo').length;
@@ -222,6 +242,48 @@ const destinos = enOtroMapa > 0 ? (fuera?.destinos ?? []) : [];
         </button>
       )
     }
+
+    {/* ── Capas: qué parte de la realidad se está mirando ──────────────────
+        Son ENLACES y no botones: el filtrado ocurre en el servidor —para que
+        el encuadre del mapa se recalcule— y un enlace es lo que se puede
+        pegar en un chat. Un botón con JS daría lo mismo en pantalla y no se
+        podría compartir.
+
+        🔴 Y se dibuja SIEMPRE que haya algo oculto, aunque estés en «Todo»:
+           un mapa recortado que no dice que está recortado es peor que el
+           mapa sucio. Toda la idea es no mentir. */}
+    {
+      (ocultos > 0 || capa !== 'activos') && (
+        <nav
+          aria-label="Qué equipos se muestran"
+          class="border-borde bg-panel/90 pointer-events-auto flex items-center gap-0.5 rounded-lg border p-0.5 backdrop-blur"
+        >
+          {CAPAS.map((c) => (
+            <a
+              href={`?capa=${c.valor}`}
+              aria-current={c.valor === capa ? 'page' : undefined}
+              class:list={[
+                'text-2xs rounded-md px-2 py-1 font-medium no-underline transition-colors',
+                c.valor === capa
+                  ? 'bg-acento-bg text-acento-txt'
+                  : 'text-tenue hover:bg-panel-2 hover:text-tinta',
+              ]}
+            >
+              {c.texto}
+            </a>
+          ))}
+          {ocultos > 0 && (
+            <a
+              href="/inventario"
+              class="text-tenue hover:text-tinta px-1.5 tabular-nums"
+              title="Equipos sin señales de vida que no se están dibujando. Ver el inventario completo, con fechas y motivos."
+            >
+              {`−${numero(ocultos)}`}
+            </a>
+          )}
+        </nav>
+      )
+    }
   </div>
 
   {/* ── Referencia de estados ─────────────────────────────────────────────
@@ -383,6 +445,11 @@ const destinos = enOtroMapa > 0 ? (fuera?.destinos ?? []) : [];
             // ahora mide lo que pidió `image_scale` y con la proporción del
             // archivo. La marca de estado y la etiqueta cuelgan de sus bordes.
             const caja = medioRecuadro(n);
+            // 🔴 «Sin señales» entra en el NOMBRE ACCESIBLE, no sólo en la
+            //    opacidad. Atenuar es un canal visual y nada más: quien usa
+            //    lector de pantalla tiene que escuchar la misma advertencia, o
+            //    para esa persona un nodo dudoso suena igual que uno sano.
+            const aviso = n.vida === 'dudoso' ? ' — sin señales de vida recientes' : '';
             return (
               <Nodo
                 class="nodo-mapa"
@@ -391,10 +458,11 @@ const destinos = enOtroMapa > 0 ? (fuera?.destinos ?? []) : [];
                 data-antiguedad={n.antiguedad ?? undefined}
                 data-edad={n.edad_s != null ? Math.round(n.edad_s) : undefined}
                 data-dev={n.deviceId ?? undefined}
+                data-vida={n.vida ?? undefined}
                 href={n.href ?? undefined}
                 tabindex={n.href ? 0 : undefined}
                 role={n.href ? 'link' : 'img'}
-                aria-label={`${que} ${n.nombre} — ${m.etiqueta}${ips}${cuanto}`}
+                aria-label={`${que} ${n.nombre} — ${m.etiqueta}${ips}${cuanto}${aviso}`}
                 data-rotulo={`${que} ${n.nombre}`}
                 data-ips={ips}
                 transform={`translate(${n.cx} ${n.cy})`}
@@ -403,6 +471,7 @@ const destinos = enOtroMapa > 0 ? (fuera?.destinos ?? []) : [];
                   {n.nombre} — {m.etiqueta}
                   {ips}
                   {cuanto}
+                  {n.vidaMotivo && n.vida !== 'activo' ? `\n${n.vidaMotivo}` : ''}
                 </title>
 
                 <rect
@@ -713,6 +782,27 @@ const destinos = enOtroMapa > 0 ? (fuera?.destinos ?? []) : [];
   }
   :global([data-visor] .nodo-mapa) {
     transition: opacity 160ms ease-out;
+  }
+
+  /* Un nodo DUDOSO: callado hace tiempo, pero no lo suficiente para darlo de
+     baja. Se dibuja punteado y a media tinta.
+
+     🔴 Punteado Y atenuado, no sólo atenuado. La opacidad sola se pierde en
+        una pantalla de NOC con reflejo, y encima ya la usa el arrastre. El
+        trazo discontinuo es un segundo canal que sobrevive al monocromo, al
+        daltonismo y al brillo mal calibrado. Es la misma regla que la rampa de
+        antigüedad: nunca un solo canal.
+
+     La advertencia va además en el `aria-label` y en el globito, así que quien
+     no ve el dibujo escucha lo mismo. */
+  :global([data-visor] .nodo-mapa[data-vida='dudoso']) {
+    opacity: 0.6;
+  }
+  :global([data-visor] .nodo-mapa[data-vida='dudoso'] .halo) {
+    stroke-dasharray: 3 3;
+    stroke-width: 1;
+    stroke: currentColor;
+    opacity: 0.5;
   }
 
   /* Marca discreta en los que alguien acomodó. Un punto, no un cartel: hay que

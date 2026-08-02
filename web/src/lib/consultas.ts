@@ -9,6 +9,7 @@ import {
   type ConteoAntiguedad,
 } from './antiguedad';
 import type { ConteoSubmapa } from './plantillas';
+import { clasificar, DIAS_ACTIVO, sqlEsActivo, type SenalDeVida } from './vida';
 
 /**
  * Toda la SQL del panel vive acá.
@@ -386,6 +387,19 @@ export interface ElementoMapa {
   image_scale: number | null;
   /** Desde cuándo el equipo está en su estado. Ver `SQL_ESTADO_DESDE`. */
   estado_desde: string | null;
+
+  // ── Vida: si este nodo se dibuja, se atenúa o se esconde ──────────────────
+  //
+  // 🔴 Los mapas de esta instalación arrastran 420 equipos dados de baja sobre
+  //    885. Dibujarlos a todos no es «mostrar todo»: es mostrar una red que ya
+  //    no existe, y encima teñida de rojo por caídas de las que nadie se puede
+  //    ocupar. Ver `lib/vida.ts`.
+  //
+  //    Vienen NULOS para los elementos que no son equipos —un rótulo, un
+  //    submapa, un enlace— y esos se dibujan siempre.
+  dias_sin_senal: number | null;
+  arriba_ahora: boolean | null;
+  estado_manual: 'activo' | 'baja' | null;
 }
 
 /**
@@ -411,10 +425,19 @@ export async function lienzoMapa(mapId: number): Promise<ElementoMapa[]> {
             c.movido,
             c.icon_tipo, c.image_scale_tipo, c.tipo_nombre,
             ARRAY(SELECT unnest(c.macs)) AS macs,
-            sc.estado_desde
+            sc.estado_desde,
+            -- OJO: sin comillas invertidas en este comentario. Va dentro de un
+            -- template literal de JS y una sola corta la cadena ahí mismo; el
+            -- error que salta después apunta a cualquier otro lado.
+            --
+            -- La vida se une ACA y no dentro de v_map_canvas: esa vista se
+            -- define antes que v_device_estado en schema.sql, y Postgres
+            -- resuelve las referencias al CREAR la vista, no al consultarla.
+            dv.dias_sin_senal, dv.arriba_ahora, dv.estado_manual
      FROM v_map_canvas c
      JOIN map_elements me ON me.id = c.element_id
      LEFT JOIN devices d ON d.id = c.device_id
+     LEFT JOIN v_device_estado dv ON dv.device_id = c.device_id
      ${JOIN_ESTADO_DESDE}
      WHERE c.map_id = $1
      ORDER BY (c.kind = 'link') DESC, c.element_id`,
@@ -1386,6 +1409,22 @@ export interface FiltrosCaidas {
   q?: string;
   pagina?: number;
   porPagina?: number;
+  /**
+   * Sólo caídas de equipos que siguen en servicio. **Por omisión, sí.**
+   *
+   * 🔴 El valor por defecto es la decisión importante de todo este parámetro.
+   *
+   *    En la instalación medida, 420 de 885 equipos son bajas que nadie sacó
+   *    del monitoreo, y The Dude les sigue contando caídas. Una lista de
+   *    incidentes donde la mitad son de equipos que no existen no es un
+   *    historial: es ruido con fecha. Y el daño no es que moleste — es que
+   *    enseña a la gente a no mirar la lista, y entonces la caída de verdad
+   *    tampoco se ve.
+   *
+   *    Se puede apagar, y cuando está apagado la página lo dice. Lo que no se
+   *    hace es esconder que hay un filtro puesto.
+   */
+  soloActivos?: boolean;
 }
 
 export interface PaginaCaidas {
@@ -1417,18 +1456,34 @@ export async function historialCaidas(f: FiltrosCaidas = {}): Promise<PaginaCaid
   const porPagina = Math.min(Math.max(Math.round(f.porPagina ?? 50), 10), 200);
   const pagina = Math.max(Math.round(f.pagina ?? 1), 1);
 
+  const soloActivos = f.soloActivos ?? true;
+
+  // El JOIN sólo se agrega si hace falta: sin filtro, no se paga.
+  const unirVida = soloActivos ? 'LEFT JOIN v_device_estado dv ON dv.device_id = o.device_id' : '';
+  const filtroVida = soloActivos ? `AND ${sqlEsActivo('dv', '$4')}` : '';
+
   const donde = `
     WHERE o.started_at >= now() - make_interval(hours => $1::int)
       AND COALESCE(o.duration_s, EXTRACT(epoch FROM now() - o.started_at)) >= $2
-      AND ($3 = '' OR d.name ILIKE '%' || $3 || '%')`;
+      AND ($3 = '' OR d.name ILIKE '%' || $3 || '%')
+      ${filtroVida}`;
+
+  // 🔴 Los marcadores se numeran distinto segun haya filtro o no. Se arma una
+  //    sola vez y se reusa: dos listas de parametros escritas a mano en dos
+  //    consultas que comparten el WHERE es como se cuela un $4 que apunta a
+  //    otra cosa, y Postgres no se queja — devuelve otro resultado.
+  const base: unknown[] = soloActivos ? [horas, minimo, q, DIAS_ACTIVO] : [horas, minimo, q];
+  const nLim = base.length + 1;
 
   const [resumen] = await consultar<{ total: string; equipos: string; tiempo: string }>(
     `SELECT count(*) AS total,
             count(DISTINCT o.device_id) AS equipos,
             COALESCE(sum(COALESCE(o.duration_s, EXTRACT(epoch FROM now() - o.started_at))), 0) AS tiempo
-       FROM outages o LEFT JOIN devices d ON d.id = o.device_id
+       FROM outages o
+       LEFT JOIN devices d ON d.id = o.device_id
+       ${unirVida}
        ${donde}`,
-    [horas, minimo, q],
+    base,
   );
 
   const total = Number(resumen?.total ?? 0);
@@ -1444,14 +1499,15 @@ export async function historialCaidas(f: FiltrosCaidas = {}): Promise<PaginaCaid
        LEFT JOIN devices d  ON d.id = o.device_id
        LEFT JOIN services s ON s.id = o.service_id
        LEFT JOIN probes p   ON p.id = s.probe_id
+       ${unirVida}
        ${donde}
        -- Las abiertas primero: son las que todavía se pueden atender. Después
        -- por duración, que es el orden en que importan las que ya terminaron.
        ORDER BY (o.ended_at IS NULL) DESC,
                 COALESCE(o.duration_s, EXTRACT(epoch FROM now() - o.started_at)) DESC,
                 o.started_at DESC
-       LIMIT $4 OFFSET $5`,
-    [horas, minimo, q, porPagina, desde],
+       LIMIT $${nLim} OFFSET $${nLim + 1}`,
+    [...base, porPagina, desde],
   );
 
   return {
@@ -2433,4 +2489,142 @@ export async function historialCamino(
       LIMIT $2`,
     [destino, Math.min(Math.max(limite, 1), 200)],
   );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Vida: qué equipo sigue en servicio y qué es arrastre
+//
+// La política —dónde cortar— vive en `lib/vida.ts`. Acá sólo salen los datos.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface FilaVida extends SenalDeVida {
+  device_id: number;
+  name: string;
+  status: number | null;
+  status_label: string | null;
+  probe_enabled: boolean | null;
+  ultima_senal: string | null;
+  /** El «presente» del cálculo: el mtime del volcado, no el reloj de pared. */
+  ahora: string | null;
+  nota_manual: string | null;
+  por_manual: string | null;
+  at_manual: string | null;
+}
+
+/**
+ * Cuántos días de historia hay REALMENTE, para no dar de baja lo que no se sabe.
+ *
+ * 🔴 Esto no es una curiosidad estadística: es un freno.
+ *
+ *    La base viva de esta instalación se rearmó de cero el 12/06/2026 al chocar
+ *    el techo de 2 GB de SQLite. Un equipo «sin señales» en una base de 50 días
+ *    no está probado muerto — está sin evidencia, que es otra cosa. Ver
+ *    `clasificar()`: con el alcance por debajo del corte, «sin señales» se
+ *    responde `dudoso` y NUNCA `baja`.
+ *
+ *    Sin este número, el día que alguien tenga que rearmar la base otra vez el
+ *    panel escondería la red entera y diría que está todo dado de baja.
+ */
+export async function alcanceHistoria(): Promise<number> {
+  const f = await consultarUna<{ dias: number | null }>(`
+    WITH mas_viejo AS (
+      SELECT LEAST(
+               (SELECT min(ts)         FROM chart_values),
+               (SELECT min(started_at) FROM outages),
+               (SELECT min(started_at) FROM syslog_outages)
+             ) AS t
+    )
+    SELECT floor(EXTRACT(EPOCH FROM (
+             (SELECT max(ahora) FROM device_vida) - (SELECT t FROM mas_viejo)
+           )) / 86400)::int AS dias`);
+  // Sin historia, cero: hace que `clasificar` conteste «no sé» en vez de
+  // inventar bajas. El valor prudente es el chico, nunca el grande.
+  return Math.max(f?.dias ?? 0, 0);
+}
+
+/** Todos los equipos con su última señal. 885 filas, 3 ms medidos. */
+export async function estadosDeVida(): Promise<FilaVida[]> {
+  return consultar<FilaVida>(
+    `SELECT device_id, name, status, status_label, probe_enabled,
+            ultima_senal, ahora, dias_sin_senal, arriba_ahora,
+            estado_manual, nota_manual, por_manual, at_manual
+       FROM v_device_estado
+      ORDER BY dias_sin_senal DESC NULLS FIRST, name`,
+  );
+}
+
+export interface ResumenVida {
+  activo: number;
+  dudoso: number;
+  baja: number;
+  /** De los que están de baja, cuántos SIGUEN siendo sondeados por The Dude. */
+  baja_sondeada: number;
+  alcance_dias: number;
+  /** Contra qué instante se midió todo esto. */
+  ahora: string | null;
+}
+
+/**
+ * El reparto, ya clasificado.
+ *
+ * Se clasifica en TypeScript y no en SQL a propósito: los umbrales salen de
+ * variables de entorno, y el día que un ISP quiera 60 días en vez de 30 tiene
+ * que ser un cambio de configuración, no una migración de base.
+ *
+ * Cuesta traer 885 filas para contarlas — y es exactamente lo que hace falta:
+ * la alternativa era duplicar la regla de corte en SQL, y una regla escrita dos
+ * veces es una regla que en algún momento va a decir dos cosas distintas.
+ */
+export async function resumenVida(): Promise<ResumenVida> {
+  const [filas, alcance] = await Promise.all([estadosDeVida(), alcanceHistoria()]);
+  const r: ResumenVida = {
+    activo: 0,
+    dudoso: 0,
+    baja: 0,
+    baja_sondeada: 0,
+    alcance_dias: alcance,
+    ahora: filas[0]?.ahora ?? null,
+  };
+  for (const f of filas) {
+    const { vida } = clasificar(f, alcance);
+    r[vida] += 1;
+    if (vida === 'baja' && f.probe_enabled) r.baja_sondeada += 1;
+  }
+  return r;
+}
+
+/**
+ * El veredicto humano. Es una ESCRITURA, y de las que importan.
+ *
+ * 🔴 Marcar «baja» esconde el equipo del mapa y le apaga las alarmas. Si el
+ *    juicio estaba equivocado, la próxima caída real de ese equipo no la ve
+ *    nadie. Por eso queda firmado con usuario y fecha, y por eso la nota no es
+ *    opcional por capricho: dentro de seis meses, «¿por qué está oculto esto?»
+ *    tiene que tener respuesta sin preguntarle a nadie.
+ *
+ * Quién puede llamarla se decide arriba, en la ruta. Ver `lib/roles.ts`.
+ */
+export async function marcarVida(
+  deviceId: number,
+  estado: 'activo' | 'baja',
+  nota: string | null,
+  usuario: string,
+): Promise<void> {
+  await consultar(
+    `INSERT INTO device_estado_manual (device_id, estado, nota, por, at)
+     VALUES ($1, $2, $3, $4, now())
+     ON CONFLICT (device_id) DO UPDATE
+       SET estado = EXCLUDED.estado, nota = EXCLUDED.nota,
+           por = EXCLUDED.por, at = EXCLUDED.at`,
+    [deviceId, estado, nota, usuario],
+  );
+}
+
+/** Saca el veredicto humano y devuelve el equipo al cálculo automático. */
+export async function olvidarVida(deviceId: number): Promise<boolean> {
+  const f = await consultar<{ device_id: string }>(
+    'DELETE FROM device_estado_manual WHERE device_id = $1 RETURNING device_id',
+    [deviceId],
+  );
+  return f.length > 0;
 }

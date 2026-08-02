@@ -2,6 +2,7 @@ import type { ElementoMapa, ResumenSubmapa, TraficoEnlace } from './consultas';
 import type { Medida } from './iconos';
 import { aEstado, estadoAgregado, type Estado } from './estado';
 import { antiguedadDe, segundosDesde, type Antiguedad } from './antiguedad';
+import { clasificar, type Vida } from './vida';
 import {
   DESCONOCIDA,
   huecosOrdenados,
@@ -229,6 +230,23 @@ export interface Nodo {
   antiguedad: Antiguedad | null;
   /** Antigüedad en segundos, para el texto exacto. */
   edad_s: number | null;
+  /**
+   * ¿Sigue en servicio, o es arrastre de un mapa que nadie actualizó?
+   *
+   * 🔴 NO se confunde con `antiguedad`, aunque las dos hablen de tiempo.
+   *
+   *    `antiguedad` mide hace cuánto que el nodo está COMO ESTÁ: un equipo
+   *    caído hace un año es `residuo`. `vida` mide si el equipo EXISTE: ese
+   *    mismo nodo puede ser un router apagado que mañana vuelve, o un poste
+   *    que se desmontó en 2021. Son dos preguntas y la segunda decide si el
+   *    nodo se dibuja.
+   *
+   * `null` cuando el elemento no es un equipo —un rótulo, un submapa— y por
+   * lo tanto no tiene vida que medir. Esos se dibujan siempre.
+   */
+  vida: Vida | null;
+  /** Por qué dio esa clasificación. Va en el globito: esconder exige explicar. */
+  vidaMotivo: string | null;
 }
 
 export interface Enlace {
@@ -358,6 +376,41 @@ export interface ContextoLienzo {
    * distintas, y que un test que compara dos nodos sea escamoso.
    */
   ahora?: Date;
+  /**
+   * Cuántos días de historia hay, para clasificar la vida de cada nodo.
+   *
+   * 🔴 Si no viene, la vida queda en `null` para TODOS y el mapa se dibuja
+   *    entero, como antes. Es el fallo seguro: ante la duda se muestra de más,
+   *    nunca de menos. Esconder un equipo vivo porque a la página se le olvidó
+   *    pasar un parámetro sería el peor de los dos errores posibles.
+   */
+  alcanceDias?: number;
+}
+
+/**
+ * La vida de un elemento del mapa, o `null` si no corresponde preguntársela.
+ *
+ * Devuelve las dos claves juntas para que el armado del nodo sea un `...spread`
+ * y no dos líneas que alguien pueda actualizar a medias.
+ */
+function vidaDe(
+  e: ElementoMapa,
+  alcanceDias: number | undefined,
+): Pick<Nodo, 'vida' | 'vidaMotivo'> {
+  // Sin equipo detrás no hay vida que medir: un rótulo o un submapa se dibujan
+  // siempre. Y sin alcance, tampoco se clasifica — ver `ContextoLienzo`.
+  if (e.device_id == null || alcanceDias === undefined) {
+    return { vida: null, vidaMotivo: null };
+  }
+  const v = clasificar(
+    {
+      dias_sin_senal: e.dias_sin_senal ?? null,
+      arriba_ahora: e.arriba_ahora ?? false,
+      estado_manual: e.estado_manual ?? null,
+    },
+    alcanceDias,
+  );
+  return { vida: v.vida, vidaMotivo: v.motivo };
 }
 
 export function construirLienzo(
@@ -442,6 +495,7 @@ export function construirLienzo(
       desde,
       edad_s,
       antiguedad: antiguedadDe(estado, desde, ahora),
+      ...vidaDe(e, ctx.alcanceDias),
       // Un nodo sin nada legible seguiría siendo un cuadrado anónimo en el
       // mapa. Si el rótulo se quedó sin líneas —`[Network.SubnetsColumn]` a
       // secas, por ejemplo— al menos se dibuja de qué elemento se trata.

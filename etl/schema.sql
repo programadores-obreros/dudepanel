@@ -497,6 +497,20 @@ SELECT
     -- Las MAC del equipo, para deducir el fabricante. Ver `web/src/lib/oui.ts`:
     -- da la marca de 557 equipos sin preguntarle nada a la red.
     d.macs          AS macs
+-- 🔴 LA VIDA DEL EQUIPO NO SE UNE ACÁ, y el motivo es el orden del archivo.
+--
+--    Sería natural agregar `dias_sin_senal` y compañía a esta vista: es la que
+--    dibuja el mapa y es justo lo que decide si un nodo se dibuja. Pero
+--    `v_device_estado` se define al FINAL de schema.sql —depende de
+--    `syslog_outages`, que está en la línea 781, después de esto— y Postgres
+--    resuelve las referencias al CREAR la vista, no al consultarla. El JOIN
+--    acá revienta con «relation v_device_estado does not exist» en cualquier
+--    base nueva, y el ETL aplica este archivo entero en cada corrida.
+--
+--    Reordenar el archivo para arreglarlo sería mover tres bloques con sus
+--    transacciones. La unión se hace en la CONSULTA del mapa
+--    (`web/src/lib/consultas.ts`, `mapaCanvas`), que cuesta un JOIN por clave
+--    primaria sobre 885 filas: nada.
 FROM map_elements e
 LEFT JOIN devices d  ON d.id  = e.device_id
 LEFT JOIN maps    sm ON sm.id = e.submap_id
@@ -1232,5 +1246,237 @@ SELECT DISTINCT ON (t.destino) t.*
 
 COMMENT ON VIEW v_camino_ultimo IS
   'Una fila por destino: la traza más reciente. Es lo que muestra /camino.';
+
+COMMIT;
+
+
+-- ════════════════════════════════════════════════════════════════════════════
+--  QUÉ EQUIPO ESTÁ VIVO — Y QUÉ ES ARRASTRE DE UN MAPA QUE NADIE ACTUALIZÓ
+--
+--  Bloque agregado el 02/08/2026, con su propia transacción.
+--
+--  ── El problema ────────────────────────────────────────────────────────────
+--
+--  De los 885 equipos de la base, medidos el 02/08/2026, sólo 465 dieron alguna
+--  señal de vida en 30 días. Los otros 420 son equipos dados de baja: la red
+--  cambió, los mapas no. Y no son un detalle estético — 325 de ellos siguen con
+--  el sondeo HABILITADO, así que The Dude les pregunta cada 60 s, cuenta sus
+--  caídas y manda avisos por equipos que hace meses que no existen.
+--
+--  Una alarma que suena por algo que ya no está no es una alarma: es ruido que
+--  entrena a la gente a ignorar las alarmas de verdad.
+--
+--  ── 🔴 La trampa conceptual, que es el corazón de todo esto ────────────────
+--
+--  LA AUSENCIA DE EVIDENCIA NO ES EVIDENCIA DE BAJA.
+--
+--  Un equipo que estuvo impecable 30 días y uno desmantelado en 2021 son
+--  IGUAL de silenciosos si la pregunta es «¿tuvo caídas?». El primero no tuvo
+--  ninguna porque anduvo bien; el segundo, porque no existe.
+--
+--  Por eso acá NO se busca ausencia. Se busca EVIDENCIA POSITIVA: algo que sólo
+--  puede haber ocurrido si el equipo estaba ahí y alguien lo midió.
+--
+--  ── 🔴 Y no alcanza con que EXISTA la medición: tiene que valer > 0 ────────
+--
+--  Medido sobre la base real: 744 equipos tienen fila diaria en la ventana de
+--  30 días, y sólo 397 tienen algún valor mayor que cero. Los 347 de diferencia
+--  son el relleno de casillero vacío — el mismo centinela que hace que el
+--  86,5 % de las muestras de latencia valgan exactamente 0.
+--
+--  Contar filas habría dado 744 «vivos»: casi el DOBLE de la verdad.
+-- ════════════════════════════════════════════════════════════════════════════
+
+BEGIN;
+
+-- ── El veredicto humano, que siempre gana ───────────────────────────────────
+--
+-- 🔴 SIN CLAVE FORÁNEA a `devices`, y no es un olvido.
+--
+--    El ETL hace `DELETE FROM devices` + `INSERT` en cada corrida, cada 30 s.
+--    Una foránea con CASCADE vaciaría esta tabla en la primera vuelta y el
+--    trabajo de una persona se perdería sin un solo error en el log. Es la
+--    misma razón por la que `map_element_positions` tampoco la tiene.
+--
+-- ¿Por qué hace falta un override si la clasificación se calcula sola?
+--
+--    Porque una escuela apagada en receso es indistinguible de un equipo
+--    desmantelado, y la máquina no sabe cuál es cuál. Sin esta tabla, la
+--    primera escuela que apagan en enero desaparece del mapa y nadie se entera
+--    hasta marzo. La máquina propone; la persona decide, y queda firmado.
+CREATE TABLE IF NOT EXISTS device_estado_manual (
+    device_id  bigint PRIMARY KEY,
+    estado     text NOT NULL,
+    nota       text,
+    por        text NOT NULL,
+    at         timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT device_estado_manual_estado_chk
+        CHECK (estado IN ('activo', 'baja'))
+);
+
+COMMENT ON TABLE device_estado_manual IS
+  'Veredicto humano sobre si un equipo sigue en servicio. Gana SIEMPRE sobre '
+  'el cálculo automático, en las dos direcciones: «activo» rescata a un equipo '
+  'legítimamente apagado, «baja» confirma uno que la máquina todavía duda. '
+  'Sin clave foránea a propósito: el ETL vacía `devices` cada 30 s.';
+COMMENT ON COLUMN device_estado_manual.por IS
+  'Usuario del basic_auth que lo firmó. No es decorativo: una baja mal puesta '
+  'esconde un equipo del mapa, y hay que poder preguntarle a alguien.';
+
+
+-- ── El cálculo caro, aislado en una vista ───────────────────────────────────
+--
+-- Recorre `chart_values` entero (cientos de miles de filas) para sacar la
+-- última medición útil de cada equipo. No se consulta desde las páginas: el
+-- ETL la vuelca en `device_vida` una vez por corrida. Ver ahí por qué.
+CREATE OR REPLACE VIEW v_device_senal AS
+WITH presente AS (
+    -- 🔴 EL PRESENTE ES `source_mtime`, NO `now()`.
+    --
+    --    `dude.db` es un archivo que alguien copia; el día que esa copia se
+    --    atrase 48 h —que ya pasó— medir contra el reloj de pared correría la
+    --    ventana de 30 días dos días hacia adelante y empezaría a declarar
+    --    «de baja» equipos vivos, sin que nada falle ni avise.
+    --
+    --    Anclando al mtime del volcado, una copia vieja produce una respuesta
+    --    vieja pero CORRECTA. Que es la única clase de error tolerable acá.
+    --    Y NO se filtra por `ok`: el mtime es una propiedad del ARCHIVO, no
+    --    del éxito de la corrida. Con `WHERE ok` la primerísima corrida de una
+    --    base nueva no encuentra ninguna fila —la suya todavía tiene ok NULL—
+    --    y cae al reloj de pared, midiendo la ventana contra el momento
+    --    equivocado justo cuando nadie está mirando.
+    SELECT COALESCE(max(source_mtime), now()) AS ahora
+      FROM sync_runs
+     WHERE source_mtime IS NOT NULL
+),
+medicion AS (
+    -- Cualquier unidad sirve. Una latencia > 0 prueba que volvió un ping; un
+    -- tráfico > 0, que pasaron bits. Las dos cosas sólo ocurren si el equipo
+    -- está. No se filtra por unidad porque la evidencia no necesita ser
+    -- necesaria, sólo SUFICIENTE.
+    SELECT s.device_id, max(v.ts) AS ts
+      FROM chart_sources s
+      JOIN chart_values v ON v.source_id = s.id
+     WHERE s.device_id IS NOT NULL AND v.value > 0
+     GROUP BY s.device_id
+),
+caida_dude AS (
+    -- Que un equipo se HAYA CAÍDO también prueba que estaba: para caerse hay
+    -- que haber estado arriba, y para que alguien lo registre hay que existir.
+    SELECT device_id, max(GREATEST(started_at, COALESCE(ended_at, started_at))) AS ts
+      FROM outages
+     WHERE device_id IS NOT NULL
+     GROUP BY device_id
+),
+caida_syslog AS (
+    SELECT device_id, max(GREATEST(started_at, COALESCE(ended_at, started_at))) AS ts
+      FROM syslog_outages
+     WHERE device_id IS NOT NULL
+     GROUP BY device_id
+)
+SELECT d.id                                   AS device_id,
+       m.ts                                   AS ultima_medicion,
+       cd.ts                                  AS ultima_caida,
+       cs.ts                                  AS ultima_syslog,
+       -- 🔴 El COALESCE no es paranoia: `status` es NULL en 159 de los 885
+       --    equipos, y en SQL `NULL IN (1,2)` vale NULL, no `false`. Sin esto
+       --    la columna sale NULL y revienta contra su propio NOT NULL — que
+       --    es exactamente cómo se encontró.
+       COALESCE(d.status IN (1, 2), false)    AS arriba_ahora,
+       p.ahora,
+       -- Un equipo que está ARRIBA ahora mismo no necesita más prueba: la
+       -- señal es este instante. Para el resto, la más reciente de las tres,
+       -- topeada al presente — un `ended_at` en el futuro (una duración basura)
+       -- no puede fabricar vida que no ocurrió.
+       --
+       -- 🔴 Y el caso «ninguna de las tres» se atiende APARTE, antes del LEAST.
+       --
+       --    `LEAST` en Postgres IGNORA los NULL: `LEAST(NULL, ahora)` no da
+       --    NULL, da `ahora`. Sin esta rama, un equipo sin una sola evidencia
+       --    de vida —los 386 que jamás dieron señal— saldría con
+       --    `ultima_senal = ahora`, o sea clasificado como VIVO HOY. El error
+       --    exactamente al revés del que este módulo viene a evitar, y en
+       --    silencio: ninguna restricción lo habría atajado.
+       CASE WHEN COALESCE(d.status IN (1, 2), false) THEN p.ahora
+            WHEN GREATEST(m.ts, cd.ts, cs.ts) IS NULL THEN NULL
+            ELSE LEAST(GREATEST(m.ts, cd.ts, cs.ts), p.ahora)
+       END                                    AS ultima_senal
+  FROM devices d
+ CROSS JOIN presente p
+  LEFT JOIN medicion     m  ON m.device_id  = d.id
+  LEFT JOIN caida_dude   cd ON cd.device_id = d.id
+  LEFT JOIN caida_syslog cs ON cs.device_id = d.id;
+
+COMMENT ON VIEW v_device_senal IS
+  'Última evidencia POSITIVA de vida por equipo, y de qué fuente salió. '
+  'Cara: recorre chart_values entero. El ETL la vuelca en device_vida.';
+
+
+-- ── La foto, que es lo que leen las páginas ─────────────────────────────────
+--
+-- 🔴 Una tabla y no una vista materializada, a propósito.
+--
+--    `REFRESH MATERIALIZED VIEW` sin CONCURRENTLY toma un ACCESS EXCLUSIVE que
+--    congelaría el panel cada 30 s; con CONCURRENTLY no puede correr dentro de
+--    una transacción, y todo el ETL vive dentro de una. Un DELETE + INSERT
+--    entra en la transacción que ya existe, no bloquea a ningún lector, y si
+--    la corrida falla no deja una foto a medias.
+--
+-- Se puede vaciar sin miedo: es 100 % derivada. Lo que NO se puede perder es
+-- `device_estado_manual`, que es de una persona.
+CREATE TABLE IF NOT EXISTS device_vida (
+    device_id        bigint PRIMARY KEY,
+    ultima_medicion  timestamptz,
+    ultima_caida     timestamptz,
+    ultima_syslog    timestamptz,
+    ultima_senal     timestamptz,
+    arriba_ahora     boolean     NOT NULL DEFAULT false,
+    ahora            timestamptz NOT NULL,
+    calculada_at     timestamptz NOT NULL DEFAULT now()
+);
+
+COMMENT ON TABLE device_vida IS
+  'Foto de v_device_senal, rehecha por el ETL en cada corrida. Derivada al '
+  '100 %: se puede vaciar sin perder nada.';
+COMMENT ON COLUMN device_vida.ahora IS
+  'El «presente» contra el que se midió: source_mtime del volcado, NO now(). '
+  'Guardarlo permite que la página diga «según un volcado de hace 2 días» en '
+  'vez de presentar una respuesta vieja como si fuera de ahora.';
+
+
+-- ── Lo que consultan las páginas: barata, una fila por equipo ───────────────
+--
+-- La CLASIFICACIÓN (activo / dudoso / baja) NO se hace acá sino en
+-- `web/src/lib/vida.ts`, con umbrales que salen de variables de entorno.
+-- Motivo: si los umbrales viven en el SQL, cambiarlos es una migración; y el
+-- corte correcto depende del ISP, no del código. Acá se expone el DATO
+-- —cuántos días hace— y la política se decide arriba.
+CREATE OR REPLACE VIEW v_device_estado AS
+SELECT d.id                                        AS device_id,
+       d.name,
+       d.status,
+       d.status_label,
+       d.probe_enabled,
+       v.ultima_senal,
+       v.ultima_medicion,
+       v.ultima_caida,
+       v.ultima_syslog,
+       COALESCE(v.arriba_ahora, false)             AS arriba_ahora,
+       v.ahora,
+       CASE WHEN v.ultima_senal IS NULL THEN NULL
+            ELSE floor(EXTRACT(EPOCH FROM (v.ahora - v.ultima_senal)) / 86400)::int
+       END                                         AS dias_sin_senal,
+       m.estado                                    AS estado_manual,
+       m.nota                                      AS nota_manual,
+       m.por                                       AS por_manual,
+       m.at                                        AS at_manual
+  FROM devices d
+  LEFT JOIN device_vida           v ON v.device_id = d.id
+  LEFT JOIN device_estado_manual  m ON m.device_id = d.id;
+
+COMMENT ON VIEW v_device_estado IS
+  'Una fila por equipo con su última señal de vida y el veredicto humano si lo '
+  'hay. La clasificación en activo/dudoso/baja se hace en web/src/lib/vida.ts, '
+  'no acá: los umbrales son política y cambian por ISP.';
 
 COMMIT;

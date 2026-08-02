@@ -39,10 +39,24 @@ const minimo = MINIMOS.some((m) => m.s === Number(p.get('min'))) ? Number(p.get(
 const q = (p.get('q') ?? '').trim().slice(0, 80);
 const pagina = Math.max(Number(p.get('p')) || 1, 1);
 
+/**
+ * 🔴 Por omisión, sólo caídas de equipos QUE SIGUEN EN SERVICIO.
+ *
+ *    En esta instalación 420 de 885 equipos son bajas que nadie sacó del
+ *    monitoreo, y The Dude les sigue contando caídas. Una lista donde la mitad
+ *    de los incidentes son de equipos que no existen no es un historial: es
+ *    ruido con fecha. Y el daño de fondo no es que moleste, es que enseña a no
+ *    mirar la lista — y entonces la caída de verdad tampoco se ve.
+ *
+ *    Se puede apagar con `?todos=1`, y cuando el filtro está puesto la página
+ *    lo DICE. Un recorte silencioso sería cambiar una mentira por otra.
+ */
+const soloActivos = p.get('todos') !== '1';
+
 let datos: PaginaCaidas | null = null;
 let error: string | null = null;
 try {
-  datos = await historialCaidas({ horas, minimo_s: minimo, q, pagina });
+  datos = await historialCaidas({ horas, minimo_s: minimo, q, pagina, soloActivos });
 } catch (e) {
   error = reportarError('caidas', e);
 }
@@ -51,6 +65,7 @@ try {
 function con(cambios: Record<string, string | number>): string {
   const u = new URLSearchParams({ h: String(horas), min: String(minimo) });
   if (q) u.set('q', q);
+  if (!soloActivos) u.set('todos', '1');
   for (const [k, v] of Object.entries(cambios)) u.set(k, String(v));
   if (!('p' in cambios)) u.delete('p');
   return `?${u}`;
@@ -65,6 +80,36 @@ const rangoTexto = RANGOS.find((r) => r.h === horas)?.texto ?? '';
     <p class="text-tenue mt-1 text-sm">
       Lo que registró The Dude. Cada fila es un servicio que dejó de responder y
       —si terminó— cuándo volvió.
+    </p>
+
+    {/* 🔴 El filtro se ANUNCIA, siempre, esté puesto o no.
+        Una lista recortada que no avisa que está recortada es peor que la
+        lista sucia: la primera vez que alguien busque una caída que sabe que
+        pasó y no la encuentre, deja de confiar en el panel entero. */}
+    <p class="border-borde bg-panel-2 text-tenue mt-2 rounded-lg border px-3 py-2 text-xs">
+      {
+        soloActivos ? (
+          <>
+            Mostrando sólo caídas de equipos <strong class="text-tinta">en servicio</strong>. Los
+            que ya no dan señales de vida no generan alarmas — por eso no están acá.{' '}
+            <a href={con({ todos: 1 })} class="underline">
+              Ver también los dados de baja
+            </a>
+            {' · '}
+            <a href="/inventario" class="underline">
+              Revisar el inventario
+            </a>
+          </>
+        ) : (
+          <>
+            Mostrando <strong class="text-tinta">todas</strong> las caídas, incluidas las de equipos
+            que ya no existen.{' '}
+            <a href={con({ todos: 0 })} class="underline">
+              Volver a sólo los que están en servicio
+            </a>
+          </>
+        )
+      }
     </p>
   </header>
 

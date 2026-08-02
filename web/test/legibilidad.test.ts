@@ -432,6 +432,8 @@ function nodo(parcial: Partial<Nodo>): Nodo {
     desde: null,
     antiguedad: null,
     edad_s: null,
+    vida: null,
+    vidaMotivo: null,
     ...parcial,
   };
 }
@@ -478,6 +480,9 @@ export function elemento(p: Partial<ElementoMapa>): ElementoMapa {
     services_down: 0,
     image_scale: 100,
     estado_desde: null,
+    dias_sin_senal: null,
+    arriba_ahora: null,
+    estado_manual: null,
     ...p,
   };
 }

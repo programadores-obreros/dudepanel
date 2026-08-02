@@ -3,6 +3,7 @@ import Base from '@/layouts/Base.astro';
 import VisorMapa from '@/components/VisorMapa.astro';
 import { reportarError } from '@/lib/errores';
 import {
+  alcanceHistoria,
   enlacesFueraDelMapa,
   lienzoMapa,
   obtenerMapa,
@@ -13,9 +14,33 @@ import {
   type TraficoEnlace,
 } from '@/lib/consultas';
 import { quien } from '@/lib/roles';
+import { clasificar } from '@/lib/vida';
 
 const id = Number(Astro.params.id);
 if (!Number.isInteger(id) || id <= 0) return Astro.redirect('/mapas', 302);
+
+/**
+ * Qué capa se está mirando.
+ *
+ * 🔴 Va por la URL y el filtrado ocurre en el SERVIDOR, no con CSS.
+ *
+ *    La tentación era dibujar todo y esconder con una clase: el interruptor
+ *    sería instantáneo. Pero el ENCUADRE del mapa se calcula sobre los nodos,
+ *    y con los muertos adentro el mapa «limpio» quedaría alejado y lleno de
+ *    agujeros donde antes había equipos. Mostrar la realidad incluye el
+ *    encuadre — si no, se cambió una mentira por otra más prolija.
+ *
+ *    Y por la URL para que «este mapa, como está hoy de verdad» se pueda pegar
+ *    en un chat y le llegue igual al otro.
+ */
+const CAPAS = [
+  { valor: 'activos', texto: 'En servicio', ayuda: 'Sólo los equipos que dieron señales de vida.' },
+  { valor: 'dudosos', texto: '+ dudosos', ayuda: 'Suma los callados hace tiempo, atenuados.' },
+  { valor: 'todo', texto: 'Todo', ayuda: 'También los dados de baja. Como estaba antes.' },
+] as const;
+type Capa = (typeof CAPAS)[number]['valor'];
+const capa: Capa =
+  (CAPAS.find((c) => c.valor === Astro.url.searchParams.get('capa'))?.valor as Capa) ?? 'activos';
 
 let mapa = null;
 let elementos: Awaited<ReturnType<typeof lienzoMapa>> = [];
@@ -26,16 +51,42 @@ let fuera: EnlacesFuera | undefined;
 // El tráfico de los enlaces. Medido sobre `VLANS`: 0,58 ms — se pide siempre.
 let trafico = new Map<number, TraficoEnlace>();
 let error: string | null = null;
+let alcance = 0;
+/** Cuántos se dejaron afuera por la capa elegida. Se dice siempre. */
+let ocultos = 0;
 
 try {
   mapa = await obtenerMapa(id);
   if (mapa) {
-    [elementos, submapas, fuera, trafico] = await Promise.all([
+    [elementos, submapas, fuera, trafico, alcance] = await Promise.all([
       lienzoMapa(id),
       resumenSubmapas(id),
       enlacesFueraDelMapa(id),
       traficoDeMapa(id),
+      alcanceHistoria(),
     ]);
+
+    // 🔴 Los enlaces y los rótulos NO se filtran acá.
+    //
+    //    Un enlace no tiene `device_id`, así que no tiene vida propia: la
+    //    hereda de sus dos puntas. Filtrarlo por su cuenta sería inventar un
+    //    criterio; `construirLienzo` ya descarta los que se quedaron sin
+    //    extremo, y el visor informa cuántos faltan. Esa cuenta ya existe.
+    const visible = (e: (typeof elementos)[number]) => {
+      if (capa === 'todo' || e.device_id == null) return true;
+      const { vida } = clasificar(
+        {
+          dias_sin_senal: e.dias_sin_senal ?? null,
+          arriba_ahora: e.arriba_ahora ?? false,
+          estado_manual: e.estado_manual ?? null,
+        },
+        alcance,
+      );
+      return vida === 'activo' || (capa === 'dudosos' && vida === 'dudoso');
+    };
+    const antes = elementos.length;
+    elementos = elementos.filter(visible);
+    ocultos = antes - elementos.length;
   }
 } catch (e) {
   error = reportarError('mapas/[id]', e);
@@ -97,6 +148,9 @@ const movidos = elementos.filter((e) => e.movido).length;
           trafico={trafico}
           editable={yo.puedeEditar}
           movidos={movidos}
+          alcanceDias={alcance}
+          capa={capa}
+          ocultos={ocultos}
         />
       )
     }

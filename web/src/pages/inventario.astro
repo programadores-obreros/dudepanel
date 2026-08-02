@@ -1,0 +1,357 @@
+---
+import Base from '@/layouts/Base.astro';
+import { reportarError } from '@/lib/errores';
+import { alcanceHistoria, estadosDeVida, marcarVida, olvidarVida } from '@/lib/consultas';
+import { quien } from '@/lib/roles';
+import { clasificar, metaVida, VIDAS, DIAS_ACTIVO, DIAS_BAJA, type Vida } from '@/lib/vida';
+import { numero } from '@/lib/formato';
+
+/**
+ * Qué hay de verdad en la red, y qué es arrastre de un mapa que nadie tocó.
+ *
+ * ── Por qué esta página existe ───────────────────────────────────────────────
+ *
+ * Los mapas de esta instalación traen 885 equipos y sólo la mitad dio señales
+ * de vida en 30 días. El resto se sigue dibujando, se sigue contando y —peor—
+ * se sigue sondeando y avisando. Una alarma que suena por algo que ya no está
+ * no es una alarma: es lo que entrena a la gente a ignorar el panel.
+ *
+ * ── 🔴 Sin una sola línea de JavaScript ─────────────────────────────────────
+ *
+ *    Marcar un equipo es un `<form method="post">` a esta misma ruta, y después
+ *    un redirect. Patrón POST-redirect-GET, que además arregla el «recargar
+ *    reenvía el formulario».
+ *
+ *    No es purismo: la CSP de este panel es `default-src 'none'` con UN hash
+ *    permitido, y cada script nuevo es una oportunidad más de que algo quede
+ *    bloqueado en silencio. Ya pasó con `/salir`, que compiló, se sirvió con
+ *    200 y no hizo absolutamente nada durante horas.
+ */
+
+const yo = quien(Astro.request);
+
+let aviso: { tono: 'ok' | 'error'; texto: string } | null = null;
+
+// ── El POST del formulario ───────────────────────────────────────────────────
+if (Astro.request.method === 'POST') {
+  // 🔴 El permiso se comprueba ACÁ, no en el `hidden` del formulario ni en el
+  //    botón que no se dibuja. Ocultarle el botón a `soporte` es cortesía; que
+  //    esta rama lo rechace es la seguridad.
+  if (!yo.puedeEditar) {
+    return new Response('No podés cambiar el estado de un equipo', { status: 403 });
+  }
+  try {
+    const f = await Astro.request.formData();
+    const id = Number(f.get('device_id'));
+    const estado = String(f.get('estado') ?? '');
+    const nota = String(f.get('nota') ?? '').trim();
+
+    if (!Number.isInteger(id) || id <= 0) {
+      aviso = { tono: 'error', texto: 'Id de equipo inválido.' };
+    } else if (estado === 'auto') {
+      await olvidarVida(id);
+      aviso = { tono: 'ok', texto: 'Listo: vuelve a decidirlo el cálculo automático.' };
+    } else if (estado === 'activo' || estado === 'baja') {
+      // La nota es obligatoria sólo para la baja, y la asimetría es a
+      // propósito: marcar «activo» muestra un equipo de más —error visible,
+      // que molesta y se corrige— y marcar «baja» lo esconde, que es un error
+      // invisible. El que no se ve es el que tiene que quedar explicado.
+      if (estado === 'baja' && nota.length < 4) {
+        aviso = {
+          tono: 'error',
+          texto: 'Para dar de baja hace falta una nota que diga por qué. Alguien la va a leer en seis meses.',
+        };
+      } else {
+        await marcarVida(id, estado, nota || null, yo.usuario ?? 'desconocido');
+        aviso = { tono: 'ok', texto: `Guardado y firmado como ${yo.usuario}.` };
+      }
+    } else {
+      aviso = { tono: 'error', texto: 'Estado desconocido.' };
+    }
+  } catch (e) {
+    aviso = { tono: 'error', texto: reportarError('inventario/POST', e) };
+  }
+}
+
+const VER = ['baja', 'dudoso', 'activo'] as const;
+const verPedido = Astro.url.searchParams.get('ver');
+const ver: Vida = (VER as readonly string[]).includes(verPedido ?? '')
+  ? (verPedido as Vida)
+  : 'baja';
+const soloSondeados = Astro.url.searchParams.get('sondeados') === '1';
+
+let error: string | null = null;
+let filas: Awaited<ReturnType<typeof estadosDeVida>> = [];
+let alcance = 0;
+
+try {
+  [filas, alcance] = await Promise.all([estadosDeVida(), alcanceHistoria()]);
+} catch (e) {
+  error = reportarError('inventario', e);
+}
+
+const juzgadas = filas.map((f) => ({ f, v: clasificar(f, alcance) }));
+const conteo: Record<Vida, number> = { activo: 0, dudoso: 0, baja: 0 };
+for (const j of juzgadas) conteo[j.v.vida] += 1;
+
+// De los dados de baja, cuántos SIGUEN siendo sondeados por The Dude. Es el
+// número que convierte esto de un problema estético en uno operativo.
+const bajaSondeada = juzgadas.filter((j) => j.v.vida === 'baja' && j.f.probe_enabled).length;
+
+let lista = juzgadas.filter((j) => j.v.vida === ver);
+if (soloSondeados) lista = lista.filter((j) => j.f.probe_enabled);
+
+const ahora = filas[0]?.ahora ?? null;
+const fecha = (s: string | null) =>
+  s ? new Date(s).toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' }) : '—';
+---
+
+<Base
+  titulo="Inventario"
+  encabezado="Qué hay de verdad en la red"
+  descripcion="Qué equipo sigue en servicio y qué es arrastre de un mapa que nadie actualizó."
+>
+  {
+    error && (
+      <div class="border-caido bg-caido-bg text-caido-txt mb-4 rounded-xl border-2 p-4">
+        <p class="font-bold">No se puede consultar el inventario</p>
+        <p class="mt-1 font-mono text-xs break-all">{error}</p>
+      </div>
+    )
+  }
+
+  {
+    aviso && (
+      <div
+        class:list={[
+          'mb-4 rounded-xl border-2 p-3 text-sm',
+          aviso.tono === 'ok'
+            ? 'border-arriba bg-arriba-bg text-arriba-txt'
+            : 'border-caido bg-caido-bg text-caido-txt',
+        ]}
+        role="status"
+      >
+        {aviso.texto}
+      </div>
+    )
+  }
+
+  {/* ── Cómo se decide, dicho antes que los números ───────────────────────
+      🔴 Esta explicación NO es opcional.
+
+         La página esconde equipos del mapa. Un operador que ve «420 de baja»
+         sin saber de dónde sale ese número sólo puede hacer dos cosas: creerlo
+         a ciegas o desconfiar de todo el panel. Las dos son malas. */}
+  <details class="border-borde bg-panel-2 mb-4 rounded-xl border p-3 text-sm">
+    <summary class="cursor-pointer font-semibold">Cómo se decide esto</summary>
+    <div class="text-tenue mt-2 space-y-2 leading-relaxed">
+      <p>
+        <strong class="text-tinta">No se busca ausencia de problemas: se busca prueba de vida.</strong>{' '}
+        Un equipo impecable durante un mes y uno desmantelado en 2021 son igual de
+        silenciosos si la pregunta es «¿tuvo caídas?». Por eso cuenta como señal sólo lo
+        que no puede pasar si el equipo no está: una medición mayor que cero, una caída
+        que empezó, una que terminó, o estar respondiendo ahora.
+      </p>
+      <p>
+        Hasta <strong class="text-tinta">{DIAS_ACTIVO} días</strong> sin señales, en servicio.
+        Más de <strong class="text-tinta">{DIAS_BAJA}</strong>, de baja. En el medio, dudoso — y
+        ahí no se decide solo.
+      </p>
+      <p>
+        Hay <strong class="text-tinta">{numero(alcance)} días</strong> de historia disponible.
+        {alcance < DIAS_BAJA && (
+          <>
+            {' '}Como es menos que el corte de baja, un equipo del que no hay
+            <strong class="text-tinta"> ninguna</strong> señal se deja en «dudoso» y no en «de baja»:
+            sin evidencia no se puede afirmar que no existe.
+          </>
+        )}
+      </p>
+      <p class="text-2xs">
+        Todo se mide contra el volcado de <strong class="text-tinta">{fecha(ahora)}</strong>, no
+        contra el reloj de pared. Si la copia se atrasa, la respuesta queda vieja pero sigue
+        siendo correcta.
+      </p>
+    </div>
+  </details>
+
+  {/* ── Los tres montones ────────────────────────────────────────────────── */}
+  <div class="mb-4 grid gap-2 sm:grid-cols-3">
+    {
+      VIDAS.map((m) => (
+        <a
+          href={`/inventario?ver=${m.clave}`}
+          aria-current={m.clave === ver ? 'page' : undefined}
+          class:list={[
+            'block rounded-xl border-2 p-3 no-underline transition-colors',
+            m.clave === ver
+              ? 'border-acento bg-acento-bg'
+              : 'border-borde bg-panel hover:border-borde-fuerte',
+          ]}
+        >
+          <div class="flex items-baseline justify-between gap-2">
+            <span class="text-sm font-semibold">{m.etiqueta}</span>
+            <span class="text-2xl font-bold tabular-nums">{numero(conteo[m.clave])}</span>
+          </div>
+          <p class="text-tenue mt-1 text-xs leading-snug">{m.explica}</p>
+        </a>
+      ))
+    }
+  </div>
+
+  {/* 🔴 El número que convierte esto en un problema operativo y no estético. */}
+  {
+    bajaSondeada > 0 && (
+      <div class="border-caido bg-caido-bg text-caido-txt mb-4 rounded-xl border-2 p-3 text-sm">
+        <p>
+          <strong>{numero(bajaSondeada)} equipos dados de baja siguen con el sondeo habilitado</strong>{' '}
+          en The Dude: se les pregunta cada minuto, se cuentan sus caídas y se avisa por ellos.
+        </p>
+        <p class="mt-1 text-xs opacity-90">
+          El panel no toca The Dude — es de sólo lectura por diseño. Esta lista es para
+          aplicarla a mano desde el cliente de The Dude.{' '}
+          <a href="/inventario?ver=baja&sondeados=1" class="underline">
+            Ver sólo esos
+          </a>
+          .
+        </p>
+      </div>
+    )
+  }
+
+  <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+    <h2 class="text-lg font-bold">
+      {metaVida(ver).etiqueta}: {numero(lista.length)}
+      {soloSondeados && <span class="text-tenue font-normal"> · sólo los que se siguen sondeando</span>}
+    </h2>
+    {
+      soloSondeados && (
+        <a href={`/inventario?ver=${ver}`} class="text-acento-txt text-sm">
+          Quitar el filtro
+        </a>
+      )
+    }
+  </div>
+
+  {
+    lista.length === 0 ? (
+      <p class="text-tenue border-borde bg-panel-2 rounded-xl border p-4 text-sm">
+        No hay ningún equipo en este grupo.
+      </p>
+    ) : (
+      <div class="border-borde bg-panel overflow-x-auto rounded-xl border">
+        <table class="w-full min-w-[46rem] text-sm">
+          <thead class="border-borde bg-panel-2 border-b text-left">
+            <tr class="text-tenue text-xs">
+              <th class="px-3 py-2 font-semibold">Equipo</th>
+              <th class="px-3 py-2 font-semibold">Última señal</th>
+              <th class="px-3 py-2 font-semibold">Por qué</th>
+              <th class="px-3 py-2 font-semibold">Sondeo</th>
+              {yo.puedeEditar && <th class="px-3 py-2 font-semibold">Decidir</th>}
+            </tr>
+          </thead>
+          <tbody>
+            {lista.map(({ f, v }) => (
+              <tr class="border-borde/60 border-b last:border-0 align-top">
+                <td class="px-3 py-2">
+                  <a href={`/dispositivos/${f.device_id}`} class="font-medium">
+                    {f.name}
+                  </a>
+                  {v.manual && (
+                    <span class="text-2xs text-tenue block">
+                      {`Marcado por ${f.por_manual} el ${fecha(f.at_manual)}`}
+                      {f.nota_manual && ` — ${f.nota_manual}`}
+                    </span>
+                  )}
+                </td>
+                <td class="text-tenue px-3 py-2 tabular-nums whitespace-nowrap">
+                  {f.ultima_senal ? fecha(f.ultima_senal) : 'nunca'}
+                  {f.dias_sin_senal != null && (
+                    <span class="text-2xs block">{`hace ${numero(f.dias_sin_senal)} d`}</span>
+                  )}
+                </td>
+                <td class="text-tenue px-3 py-2 text-xs">{v.motivo}</td>
+                <td class="px-3 py-2 text-xs">
+                  {f.probe_enabled ? (
+                    <span class="text-caido-txt font-medium">habilitado</span>
+                  ) : (
+                    <span class="text-tenue">apagado</span>
+                  )}
+                </td>
+                {yo.puedeEditar && (
+                  <td class="px-3 py-2">
+                    {/* Tres formularios chicos y no uno con un `select`: sin JS,
+                        un `select` necesita su propio botón de enviar, y tres
+                        botones que dicen lo que hacen se leen mejor que un menú
+                        más un «Aplicar». */}
+                    <div class="flex flex-wrap items-center gap-1">
+                      {v.vida !== 'activo' && (
+                        <form method="post" class="contents">
+                          <input type="hidden" name="device_id" value={f.device_id} />
+                          <input type="hidden" name="estado" value="activo" />
+                          <button
+                            type="submit"
+                            class="border-arriba text-arriba-txt hover:bg-arriba-bg rounded border px-2 py-1 text-xs"
+                            title="Está en servicio aunque esté callado. Vuelve al mapa y sus alarmas cuentan."
+                          >
+                            En servicio
+                          </button>
+                        </form>
+                      )}
+                      {v.vida !== 'baja' && (
+                        <form method="post" class="flex items-center gap-1">
+                          <input type="hidden" name="device_id" value={f.device_id} />
+                          <input type="hidden" name="estado" value="baja" />
+                          <input
+                            type="text"
+                            name="nota"
+                            required
+                            minlength="4"
+                            maxlength="500"
+                            placeholder="por qué…"
+                            aria-label={`Motivo de la baja de ${f.name}`}
+                            class="border-borde bg-panel-2 w-28 rounded border px-1.5 py-1 text-xs"
+                          />
+                          <button
+                            type="submit"
+                            class="border-caido text-caido-txt hover:bg-caido-bg rounded border px-2 py-1 text-xs"
+                            title="Lo esconde del mapa y le apaga las alarmas. Por eso pide un motivo."
+                          >
+                            Dar de baja
+                          </button>
+                        </form>
+                      )}
+                      {v.manual && (
+                        <form method="post" class="contents">
+                          <input type="hidden" name="device_id" value={f.device_id} />
+                          <input type="hidden" name="estado" value="auto" />
+                          <button
+                            type="submit"
+                            class="border-borde text-tenue hover:bg-panel-2 rounded border px-2 py-1 text-xs"
+                            title="Saca la marca humana y devuelve el equipo al cálculo."
+                          >
+                            Automático
+                          </button>
+                        </form>
+                      )}
+                    </div>
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )
+  }
+
+  {
+    !yo.puedeEditar && (
+      <p class="text-tenue mt-3 text-xs">
+        Estás mirando como <strong class="text-tinta">{yo.usuario ?? 'invitado'}</strong>, que puede
+        ver todo y no cambiar nada. Marcar un equipo esconde nodos del mapa y apaga alarmas: lo
+        hacen los editores, y queda firmado.
+      </p>
+    )
+  }
+</Base>

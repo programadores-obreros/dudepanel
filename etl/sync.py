@@ -675,6 +675,39 @@ def sincronizar_chart_values(
     return insertadas
 
 
+def refrescar_vida(cur: psycopg.Cursor) -> int:
+    """Rehace `device_vida` a partir de `v_device_senal`.
+
+    Qué equipo dio señales de vida y cuándo. Ver el bloque de `schema.sql` para
+    el porqué; acá sólo importa **dónde** va esto y por qué es barato.
+
+    🔴 VA DESPUÉS de cargar el núcleo y la historia, en la MISMA transacción.
+
+       El orden no es cosmético: la vista lee `devices`, `chart_values`,
+       `outages` y `syslog_outages`. Corriéndola antes, mediría el snapshot
+       anterior y la foto quedaría una vuelta atrasada — un equipo que acaba de
+       volver seguiría figurando como callado durante 30 s. Poco, pero es
+       exactamente la clase de desfase que después nadie encuentra.
+
+       Y en la misma transacción porque si la corrida revienta más adelante,
+       esta foto tiene que irse con ella. Una `device_vida` de una corrida y un
+       `devices` de otra es una contradicción que ninguna página sabría mostrar.
+
+    DELETE y no TRUNCATE, por lo mismo que `cargar_nucleo`: TRUNCATE toma un
+    lock que frena a los lectores, y el panel se tildaría cada 30 s.
+    """
+    cur.execute("DELETE FROM device_vida")
+    cur.execute(
+        "INSERT INTO device_vida"
+        " (device_id, ultima_medicion, ultima_caida, ultima_syslog,"
+        "  ultima_senal, arriba_ahora, ahora)"
+        " SELECT device_id, ultima_medicion, ultima_caida, ultima_syslog,"
+        "        ultima_senal, arriba_ahora, ahora"
+        "   FROM v_device_senal"
+    )
+    return cur.rowcount
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Una corrida
 # ─────────────────────────────────────────────────────────────────────────────
@@ -753,6 +786,7 @@ def corrida(con: psycopg.Connection, ruta: str) -> None:
                 datos["chart_values_inserted"] = sincronizar_chart_values(
                     cur, origen, [f[0] for f in s.chart_sources]
                 )
+                refrescar_vida(cur)
             finally:
                 origen.close()
     except Exception as e:  # noqa: BLE001 — se registra y se sigue en la próxima
