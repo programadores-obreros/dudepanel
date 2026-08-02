@@ -88,7 +88,11 @@ export const POST: APIRoute = async ({ request }) => {
   }
 
   try {
-    await marcarVida(deviceId, estado, nota || null, q.usuario ?? 'desconocido');
+    const existe = await marcarVida(deviceId, estado, nota || null, q.usuario ?? 'desconocido');
+    // 404 y no un 200 optimista: si el id no está, NO se marcó nada. Contestar
+    // «guardado» sobre algo que no ocurrió es el fallo silencioso que este
+    // control viene a evitar.
+    if (!existe) return json({ error: `No existe el equipo ${deviceId}` }, 404);
     return json({
       device_id: deviceId,
       estado,

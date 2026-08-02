@@ -2609,15 +2609,28 @@ export async function marcarVida(
   estado: 'activo' | 'baja',
   nota: string | null,
   usuario: string,
-): Promise<void> {
-  await consultar(
+): Promise<boolean> {
+  // 🔴 El `WHERE EXISTS` no es paranoia: sin él, un id equivocado escribe una
+  //    fila huérfana, el panel contesta «guardado» y el equipo que la persona
+  //    quería marcar sigue igual. Un fallo SILENCIOSO, que es la peor clase.
+  //    Encontrado en producción probando permisos: la API aceptó un veredicto
+  //    sobre el equipo 1, que no existe, y devolvió 200.
+  //
+  //    No puede ser una clave foránea —el ETL vacía `devices` cada 30 s y un
+  //    CASCADE se llevaría los veredictos— pero sí puede comprobarse al
+  //    escribir. Y no hay carrera con el ETL: su DELETE + INSERT va en una
+  //    transacción, así que un lector nunca ve la tabla vacía.
+  const filas = await consultar<{ device_id: string }>(
     `INSERT INTO device_estado_manual (device_id, estado, nota, por, at)
-     VALUES ($1, $2, $3, $4, now())
+     SELECT $1, $2, $3, $4, now()
+      WHERE EXISTS (SELECT 1 FROM devices WHERE id = $1)
      ON CONFLICT (device_id) DO UPDATE
        SET estado = EXCLUDED.estado, nota = EXCLUDED.nota,
-           por = EXCLUDED.por, at = EXCLUDED.at`,
+           por = EXCLUDED.por, at = EXCLUDED.at
+     RETURNING device_id`,
     [deviceId, estado, nota, usuario],
   );
+  return filas.length > 0;
 }
 
 /** Saca el veredicto humano y devuelve el equipo al cálculo automático. */

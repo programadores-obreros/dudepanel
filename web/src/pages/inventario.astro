@@ -62,8 +62,10 @@ if (Astro.request.method === 'POST') {
           texto: 'Para dar de baja hace falta una nota que diga por qué. Alguien la va a leer en seis meses.',
         };
       } else {
-        await marcarVida(id, estado, nota || null, yo.usuario ?? 'desconocido');
-        aviso = { tono: 'ok', texto: `Guardado y firmado como ${yo.usuario}.` };
+        const existe = await marcarVida(id, estado, nota || null, yo.usuario ?? 'desconocido');
+        aviso = existe
+          ? { tono: 'ok', texto: `Guardado y firmado como ${yo.usuario}.` }
+          : { tono: 'error', texto: `No existe el equipo ${id}: no se marcó nada.` };
       }
     } else {
       aviso = { tono: 'error', texto: 'Estado desconocido.' };
