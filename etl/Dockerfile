@@ -62,7 +62,7 @@ WORKDIR /app
 #    ⚠️ Lo mismo vale para `sonda.py`, que además necesita el sysctl
 #       `net.ipv4.ping_group_range` abierto para hacer ping ICMP sin
 #       privilegios. Si no lo tiene, cae solo a UDP y lo informa.
-COPY dudeobj.py sync.py syslog.py respaldo.py camino.py sonda.py schema.sql ./
+COPY dudeobj.py sync.py syslog.py respaldo.py camino.py sonda.py snmp.py schema.sql ./
 COPY salud.py /usr/local/bin/salud.py
 
 ENV PYTHONUNBUFFERED=1 \

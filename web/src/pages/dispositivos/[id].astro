@@ -129,7 +129,7 @@ try {
       const f = await Astro.request.formData();
       const pedida = String(f.get('sondeo') ?? '');
       const ip = d.direcciones?.[0] ?? null;
-      if ((pedida === 'ping' || pedida === 'puertos' || pedida === 'traza') && ip) {
+      if ((pedida === 'ping' || pedida === 'puertos' || pedida === 'traza' || pedida === 'snmp') && ip) {
         sondeoAccion = pedida;
         sondeoResultado = await sondear(pedida, ip);
       }

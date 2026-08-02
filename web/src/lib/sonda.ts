@@ -25,7 +25,38 @@ const URL_SONDA = (import.meta.env.SONDA_URL ?? process.env.SONDA_URL ?? '').rep
  */
 export const haySonda = URL_SONDA.length > 0;
 
-export type Accion = 'ping' | 'puertos' | 'traza';
+export type Accion = 'ping' | 'puertos' | 'traza' | 'snmp';
+
+export interface Interfaz {
+  indice: string;
+  nombre: string;
+  /** Cómo está de verdad. */
+  operativa: string | null;
+  /**
+   * 🔴 Cómo la dejó una persona. NO es lo mismo que `operativa`, y confundirlas
+   *    es el error caro: un puerto `admin=arriba, oper=abajo` es una falla —
+   *    debería andar y no anda—; uno `admin=abajo` está apagado a propósito y
+   *    no hay nada que arreglar. Las dos se ven igual en un panel que sólo
+   *    mira el estado operativo. Medido en producción sobre una OLT real.
+   */
+  administrativa: string | null;
+  velocidad_bps: number | null;
+}
+
+export interface Snmp {
+  destino: string;
+  version: string;
+  responde: boolean;
+  /** Por qué no contestó. `undefined` cuando sí. */
+  motivo?: string;
+  descripcion?: string | null;
+  nombre?: string | null;
+  contacto?: string | null;
+  ubicacion?: string | null;
+  uptime_s?: number | null;
+  interfaces?: Interfaz[];
+  ms_total?: number;
+}
 
 export interface Ping {
   destino: string;
@@ -86,6 +117,7 @@ export type Resultado =
   | { ok: true; accion: 'ping'; datos: Ping }
   | { ok: true; accion: 'puertos'; datos: Puertos }
   | { ok: true; accion: 'traza'; datos: Traza }
+  | { ok: true; accion: 'snmp'; datos: Snmp }
   | { ok: false; error: string; motivo?: string; estado: number };
 
 /**
@@ -129,7 +161,8 @@ export async function sondear(
     //    No es una validación completa —para eso habría que arrastrar un
     //    esquema— pero comprueba la clave que cada vista realmente recorre, que
     //    es exactamente donde duele.
-    const clave = { ping: 'muestras_ms', puertos: 'puertos', traza: 'saltos' }[accion];
+    const clave = { ping: 'muestras_ms', puertos: 'puertos', traza: 'saltos',
+                    snmp: 'responde' }[accion];
     if (!(clave in cuerpo)) {
       return {
         ok: false,

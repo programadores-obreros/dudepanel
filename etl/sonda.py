@@ -82,6 +82,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import psycopg
 
 import camino
+import snmp as msnmp
 
 log = logging.getLogger("sonda")
 
@@ -115,6 +116,26 @@ PUERTOS = [
 #: Puerto UDP alto y cerrado para el ping por UDP. El mismo criterio que
 #: traceroute: se busca el «port unreachable», no que alguien conteste.
 PUERTO_UDP_CERRADO = int(os.environ.get("SONDA_PUERTO_UDP", "33500"))
+
+#: 🔴 La comunidad SNMP viene del ENTORNO, no de la base.
+#:
+#:    The Dude la guarda adentro de `dude.db` —medido: `public` en los dos
+#:    perfiles de esta instalación, el valor de fábrica— pero el ETL no la
+#:    extrae, y esto tampoco la lee de ahí.
+#:
+#:    En SNMP v1/v2c la comunidad ES la contraseña. Que acá valga `public` no la
+#:    vuelve inofensiva en el próximo ISP que instale esto, y la ficha del
+#:    equipo promete que «el panel no guarda usuarios ni contraseñas de los
+#:    equipos». Una promesa impresa en pantalla no se rompe por comodidad.
+#:
+#:    Consecuencia honesta: no hay comunidades distintas por equipo. Acá no hace
+#:    falta —los 885 heredan el perfil del servidor— y el día que haga falta es
+#:    una decisión a tomar de nuevo, no un defecto a arrastrar.
+SNMP_COMUNIDAD = os.environ.get("SNMP_COMMUNITY", "public")
+#: 0 = v1, 1 = v2c. Los dos perfiles de esta instalación son uno de cada uno.
+SNMP_VERSION = int(os.environ.get("SNMP_VERSION", "1"))
+SNMP_TIMEOUT_S = float(os.environ.get("SNMP_TIMEOUT_S", "1.5"))
+SNMP_MAX_IF = int(os.environ.get("SNMP_MAX_IF", "48"))
 
 
 # ── Frenos ───────────────────────────────────────────────────────────────────
@@ -329,7 +350,7 @@ class Manejador(BaseHTTPRequestHandler):
 
         destino = str(pedido.get("destino") or "").strip()
         que = self.path.strip("/")
-        if que not in ("ping", "puertos", "traza"):
+        if que not in ("ping", "puertos", "traza", "snmp"):
             return self._json({"error": f"no sé hacer «{que}»"}, 404)
 
         try:
@@ -357,6 +378,17 @@ class Manejador(BaseHTTPRequestHandler):
                 datos = ping(destino)
             elif que == "puertos":
                 datos = {"destino": destino, "puertos": puertos(destino)}
+            elif que == "snmp":
+                # 🔴 Sólo lectura: `snmp.py` no implementa SET, a propósito.
+                #    Y «no contestó» es un RESULTADO, no un fallo — en esta
+                #    instalación 853 de 859 servicios son ping y la mayoría de
+                #    los equipos no tiene SNMP habilitado. Medido: 1 de 10
+                #    contesta, incluso entre los que SÍ tienen contadores de
+                #    interfaz. Presentarlo como error del panel sería mentir.
+                datos = msnmp.interrogar(
+                    destino, comunidad=SNMP_COMUNIDAD, version=SNMP_VERSION,
+                    timeout=SNMP_TIMEOUT_S, max_if=SNMP_MAX_IF,
+                )
             else:
                 # Sin resolutor de ASN: el destino es INTERNO por definición
                 # —está en la base— y preguntarle a un tercero por una dirección

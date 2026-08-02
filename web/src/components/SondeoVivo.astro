@@ -1,5 +1,5 @@
 ---
-import type { Ping, Puertos, Resultado, Traza } from '@/lib/sonda';
+import type { Ping, Puertos, Resultado, Snmp, Traza } from '@/lib/sonda';
 
 /**
  * Ping, puertos y traceroute EN VIVO desde la ficha del equipo.
@@ -42,11 +42,21 @@ const ACCIONES = [
   { id: 'ping', texto: 'Ping ahora', ayuda: '5 sondas: ida y vuelta, pérdida y jitter en este momento.' },
   { id: 'puertos', texto: 'Probar puertos', ayuda: 'Si SSH, Winbox o la web contestan. Un equipo puede responder ping con el Winbox muerto.' },
   { id: 'traza', texto: 'Camino hasta acá', ayuda: 'Por dónde se llega y en qué salto se corta. Separa «es el equipo» de «es el enlace».' },
+  { id: 'snmp', texto: 'Preguntar por SNMP', ayuda: 'Uptime, modelo, firmware y estado de cada interfaz. Sólo lectura. En esta instalación lo contesta 1 de cada 10 equipos.' },
 ] as const;
 
 const p = resultado?.ok && resultado.accion === 'ping' ? (resultado.datos as Ping) : null;
 const pu = resultado?.ok && resultado.accion === 'puertos' ? (resultado.datos as Puertos) : null;
 const tr = resultado?.ok && resultado.accion === 'traza' ? (resultado.datos as Traza) : null;
+const sn = resultado?.ok && resultado.accion === 'snmp' ? (resultado.datos as Snmp) : null;
+
+/** «2 d 5 h», que es como lo lee un humano de guardia. */
+function cuanto(s: number): string {
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return d ? `${d} d ${h} h` : h ? `${h} h ${m} min` : `${m} min`;
+}
 
 const TONO: Record<string, string> = {
   abierto: 'text-arriba-txt',
@@ -183,6 +193,102 @@ const TONO: Record<string, string> = {
                   ? 'El camino no se completó, pero el equipo RESPONDE. No es una falla: el traceroute manda UDP a un puerto cerrado y hay equipos que nunca contestan eso —Windows no lo hace de fábrica y RouterOS le limita la tasa—. Los saltos mudos del medio son routers que no avisan del TTL agotado. Para saber si el equipo está, mirá el ping.'
                   : `No se llegó (${tr.motivo_fin}) y el equipo tampoco responde al ping. El último salto que contestó es hasta dónde llega el camino: de ahí en adelante está el problema.`}
             </p>
+          </div>
+        )}
+
+        {sn && (
+          <div class="border-borde bg-panel-2 mt-3 rounded-lg border p-3">
+            {!sn.responde ? (
+              <p class="text-tenue text-xs leading-relaxed">
+                <strong class="text-tinta">No contestó SNMP.</strong> {sn.motivo}
+                <br />
+                <span class="text-2xs">
+                  Y eso es un resultado, no una falla del panel: en esta instalación 853 de los
+                  859 servicios son ping y la mayoría de los equipos no tiene SNMP habilitado.
+                  Medido: contesta 1 de cada 10, incluso entre los que sí tienen contadores de
+                  interfaz.
+                </span>
+              </p>
+            ) : (
+              <>
+                <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+                  {sn.uptime_s != null && (
+                    <>
+                      <dt class="text-tenue text-xs">Encendido hace</dt>
+                      {/* 🔴 El dato que no está en ningún otro lado del panel:
+                          «se reinició hace 3 horas» explica una caída que si no
+                          se queda sin explicación para siempre. */}
+                      <dd class="font-semibold tabular-nums">{cuanto(sn.uptime_s)}</dd>
+                    </>
+                  )}
+                  {sn.nombre && (
+                    <>
+                      <dt class="text-tenue text-xs">Se llama a sí mismo</dt>
+                      <dd class="font-mono text-xs">{sn.nombre}</dd>
+                    </>
+                  )}
+                  {sn.descripcion && (
+                    <>
+                      <dt class="text-tenue text-xs">Modelo y firmware</dt>
+                      <dd class="font-mono text-xs break-all">{sn.descripcion}</dd>
+                    </>
+                  )}
+                  {sn.ubicacion && (
+                    <>
+                      <dt class="text-tenue text-xs">Ubicación</dt>
+                      <dd class="text-xs">{sn.ubicacion}</dd>
+                    </>
+                  )}
+                </dl>
+
+                {sn.interfaces && sn.interfaces.length > 0 && (
+                  <div class="mt-3 overflow-x-auto">
+                    <table class="w-full text-xs">
+                      <thead class="text-tenue text-2xs text-left">
+                        <tr>
+                          <th class="py-1 pr-3 font-semibold">Interfaz</th>
+                          <th class="py-1 pr-3 font-semibold">Está</th>
+                          <th class="py-1 pr-3 font-semibold">La dejaron</th>
+                          <th class="py-1 font-semibold">Velocidad</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sn.interfaces.map((i) => {
+                          // 🔴 «Debería andar y no anda». Es el ÚNICO estado que
+                          //    pide acción, y el que un panel de ping no ve.
+                          const rota = i.operativa === 'abajo' && i.administrativa === 'arriba';
+                          return (
+                            <tr class="border-borde/50 border-b last:border-0">
+                              <td class="py-1 pr-3 font-mono">{i.nombre}</td>
+                              <td
+                                class:list={[
+                                  'py-1 pr-3 font-medium',
+                                  i.operativa === 'arriba' ? 'text-arriba-txt' : rota ? 'text-caido-txt' : 'text-tenue',
+                                ]}
+                              >
+                                {i.operativa ?? '—'}
+                                {rota && ' ← debería andar'}
+                              </td>
+                              <td class="text-tenue py-1 pr-3">{i.administrativa ?? '—'}</td>
+                              <td class="text-tenue py-1 tabular-nums">
+                                {i.velocidad_bps ? `${Math.round(i.velocidad_bps / 1e6)} Mb/s` : ''}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                    <p class="text-tenue mt-2 text-2xs leading-snug">
+                      «Está» es cómo está de verdad; «la dejaron» es cómo la configuró una persona.
+                      Un puerto <strong class="text-tinta">abajo con administrativa arriba</strong> es
+                      una falla: debería andar y no anda. Uno con administrativa abajo está apagado a
+                      propósito y no hay nada que arreglar. Las dos se ven igual si sólo se mira el
+                      estado operativo.
+                    </p>
+                  </div>
+                )}
+              </>
+            )}
           </div>
         )}
 

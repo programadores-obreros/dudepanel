@@ -265,6 +265,12 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-dude}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-dude}
       SONDA_ENFRIAMIENTO_S: ${SONDA_ENFRIAMIENTO_S:-10}
       SONDA_POR_MINUTO: ${SONDA_POR_MINUTO:-60}
+      # 🔴 La comunidad SNMP va acá y NO en la base. En v1/v2c la comunidad es
+      #    la contraseña, y la ficha del equipo promete que el panel no guarda
+      #    contraseñas de equipos. `public` es lo que tiene esta instalación
+      #    —medido en dude.db— pero el próximo ISP puede tener otra cosa.
+      SNMP_COMMUNITY: ${SNMP_COMMUNITY:-public}
+      SNMP_VERSION: ${SNMP_VERSION:-1}
 
     # 🔴 EL SYSCTL VA EXPLÍCITO, no se confía en el defecto de Docker.
     #
