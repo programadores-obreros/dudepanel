@@ -261,6 +261,24 @@ function iniciar(visor: HTMLElement) {
         ev.stopPropagation();
         return;
       }
+      // 🔴 El veredicto FINAL se mira al final de la cadena, no acá: este
+      //    manejador es de captura y corre ANTES que los demás. Un
+      //    `defaultPrevented: false` en este punto no significa que el click
+      //    vaya a navegar — lo puede frenar cualquiera de los que siguen.
+      //    Por eso el segundo registro, en `window` y en burbuja.
+      if (DEPURAR) {
+        const marca = visor.dataset.recienMovido;
+        window.addEventListener(
+          'click',
+          (fin) =>
+            log('click · VEREDICTO', {
+              frenado: fin.defaultPrevented,
+              recienMovido: marca ?? '(sin marca)',
+              navegara: !fin.defaultPrevented && !!n?.getAttribute('href'),
+            }),
+          { once: true },
+        );
+      }
       log('click', {
         sobre: n ? n.getAttribute('data-rotulo') : '(lienzo)',
         href: n?.getAttribute('href') ?? null,

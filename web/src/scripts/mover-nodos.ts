@@ -358,6 +358,22 @@ function habilitarMovimiento(visor: HTMLElement) {
   svg.addEventListener('pointercancel', terminar);
 
   // Un arrastre no tiene que abrir la ficha del equipo.
+  //
+  // 🔴 LA MARCA SE LIMPIA AL EMPEZAR CADA INTERACCIÓN, no sólo al comerse un
+  //    click. Antes se borraba únicamente dentro del `if`, así que si un
+  //    arrastre terminaba SIN que llegara un click después —soltar fuera de un
+  //    nodo, un `pointercancel`, el navegador que no sintetiza el click— la
+  //    marca quedaba puesta y se comía el PRÓXIMO click legítimo.
+  //
+  //    El síntoma: acomodás un nodo, después hacés click en otro para abrir su
+  //    ficha, y no pasa nada. Sin nada en pantalla que lo explique.
+  //
+  //    Una marca que dice «lo que acaba de pasar» tiene que morir cuando
+  //    empieza lo siguiente. Si depende de que llegue un evento que puede no
+  //    llegar, no es una marca: es una fuga de estado.
+  svg.addEventListener('pointerdown', () => {
+    delete visor.dataset.recienMovido;
+  }, true);
   svg.addEventListener(
     'click',
     (ev) => {
