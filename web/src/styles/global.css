@@ -686,14 +686,35 @@ a.tarjeta:hover,
 
    El `scale` es de 0.97 y no menos: por debajo de 0.95 el elemento «salta» y en
    una lista densa parece que la fila se rompió. */
-button:not(:disabled):active,
-a[href]:active,
-[role='button']:not([aria-disabled='true']):active {
+/* 🔴 `:not(svg *)` NO ES DEFENSIVO: sin eso, el mapa se rompe entero.
+ *
+ *    En SVG, la propiedad `transform` de CSS PISA al atributo `transform` del
+ *    elemento. Los nodos del mapa se posicionan con ese atributo
+ *    —`transform="translate(678 1873)"`— así que un `transform: scale(.97)` en
+ *    `:active` no los encoge: **los teletransporta al origen del lienzo**.
+ *
+ *    Medido sobre un nodo real: de (674, 1314) a (217, 51). **1.343 píxeles de
+ *    salto en el instante en que se aprieta el botón.**
+ *
+ *    Y el daño no es sólo visual. Para cuando el dedo se levanta, el nodo ya no
+ *    está bajo el cursor: el `click` se dispara en el ancestro común —el `svg`—
+ *    y el `<a>` del nodo nunca lo recibe. **Clickear un equipo dejaba de abrir
+ *    su ficha.** Se vio en el registro del propio panel:
+ *
+ *        pointerdown  sobre: 'Equipo MGomezRTS'  href: /dispositivos/54465979
+ *        click        sobre: '(lienzo)'          objetivo: 'g'
+ *
+ *    Los nodos del mapa ya tienen su propia respuesta visual —el halo y la
+ *    tarjeta— y no necesitan ésta. La respuesta al toque es para los controles
+ *    de HTML, que es donde `transform` no compite con nada. */
+button:not(:disabled):active:not(svg *),
+a[href]:active:not(svg *),
+[role='button']:not([aria-disabled='true']):active:not(svg *) {
   transform: scale(0.97);
   transition-duration: var(--mov-rapido);
 }
-button,
-[role='button'] {
+button:not(svg *),
+[role='button']:not(svg *) {
   transition: transform var(--mov-rapido) var(--curva-sale);
 }
 
