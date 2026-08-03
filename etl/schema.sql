@@ -63,6 +63,39 @@ CREATE TABLE IF NOT EXISTS sync_runs (
 --    un aviso, **aborta la corrida entera** y el panel deja de actualizarse.
 ALTER TABLE sync_runs ADD COLUMN IF NOT EXISTS chart_values_podadas integer;
 
+
+-- ═════════════════════════════════════════════════════════════════════════════
+--  🔴 LA MARCA DE AGUA DE LA HISTORIA, FUERA DE LOS DATOS QUE SE PODAN
+--
+--  El ETL importa `chart_values` de forma incremental: pide a SQLite sólo lo
+--  posterior a la última marca. Esa marca salía de `max(ts)` de la propia
+--  `chart_values` — y funcionó hasta que se agregó la poda de `raw`.
+--
+--  El bucle: una fuente MUERTA —un equipo dado de baja— sólo tiene filas
+--  viejas. La poda se las lleva TODAS. Sin filas no hay `max(ts)`, así que el
+--  ETL concluye «esta fuente es nueva» y reimporta su historia entera desde
+--  SQLite. En la vuelta siguiente la poda vuelve a borrarla. Y otra vez.
+--
+--  Medido en producción antes del arreglo: **borraba 200.000 filas e insertaba
+--  202.983 en la MISMA corrida**, cada 45 segundos, para siempre. La tabla no
+--  bajaba, el ETL quemaba 18 s por vuelta, y la ficha del equipo agotaba su
+--  tiempo de consulta.
+--
+--  Con la marca en su propia tabla, borrar un dato no borra el hecho de que
+--  ese dato existió. Es la distinción que faltaba.
+-- ═════════════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS chart_marca (
+    source_id bigint      NOT NULL,
+    bucket    text        NOT NULL,
+    ultimo_ts timestamptz NOT NULL,
+    PRIMARY KEY (source_id, bucket)
+);
+
+COMMENT ON TABLE chart_marca IS
+  'Hasta dónde se importó cada (fuente, cajón). Vive aparte de chart_values '
+  'porque esa tabla se poda: sin esto, podar la última fila de una fuente '
+  'muerta hace que el ETL reimporte su historia entera en bucle.';
+
 CREATE INDEX IF NOT EXISTS sync_runs_started_idx ON sync_runs (started_at DESC);
 
 COMMENT ON TABLE sync_runs IS

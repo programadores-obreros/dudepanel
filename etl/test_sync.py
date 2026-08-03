@@ -864,3 +864,65 @@ def test_ninguna_mac_de_la_base_real_es_el_centinela(objetos):
     todas = [m for o in objetos for m in o.macs()]
     assert todas, "la base tiene que traer MACs"
     assert "00:64:75:64:65:2d" not in todas
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 🔴 PODAR NO PUEDE HACER QUE SE REIMPORTE
+#
+# El defecto que llegó a producción: la marca de agua salía de `max(ts)` de
+# `chart_values`, y la poda de `raw` borraba TODAS las filas de las fuentes
+# muertas. Sin filas no hay `max(ts)`, así que el ETL las tomaba por nuevas y
+# reimportaba su historia entera desde SQLite. La poda volvía a borrarlas en la
+# vuelta siguiente. Y otra vez.
+#
+# Medido antes del arreglo: borraba 200.000 filas e insertaba 202.983 en la
+# MISMA corrida, cada 45 segundos, indefinidamente.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@sin_postgres
+def test_podar_no_reimporta(pg, monkeypatch):
+    """Borrar un dato no puede borrar el hecho de que ese dato existió."""
+    # La muestra es del 30/07 y la retención real es de 1 día: con ella puesta
+    # la poda se lleva todo el `raw` en la primera vuelta y no quedaría nada que
+    # borrar a mano. Se desactiva para AISLAR lo que este test mide — que la
+    # marca sobreviva al borrado— y no la poda en sí, que ya se prueba sola.
+    monkeypatch.setattr(sync, "CHART_RAW_DIAS", 3650)
+    sync.corrida(pg, MUESTRA)
+    # Se pone al día: se corre hasta que no entre nada nuevo.
+    for _ in range(12):
+        sync.corrida(pg, MUESTRA)
+        n = pg.execute(
+            "SELECT chart_values_inserted FROM sync_runs ORDER BY id DESC LIMIT 1"
+        ).fetchone()[0]
+        if not n:
+            break
+    assert n == 0, "el ETL no llegó a ponerse al día"
+
+    antes = pg.execute("SELECT count(*) FROM chart_values").fetchone()[0]
+    marcas = pg.execute("SELECT count(*) FROM chart_marca").fetchone()[0]
+    assert antes > 0 and marcas > 0
+
+    # 🔴 El caso exacto: se borra TODO el `raw`, como haría la poda con fuentes
+    #    que sólo tienen filas viejas.
+    borradas = pg.execute("DELETE FROM chart_values WHERE bucket = 'raw'").rowcount
+    assert borradas > 0
+
+    sync.corrida(pg, MUESTRA)
+    reimportadas = pg.execute(
+        "SELECT chart_values_inserted FROM sync_runs ORDER BY id DESC LIMIT 1"
+    ).fetchone()[0]
+
+    assert reimportadas == 0, (
+        f"reimportó {reimportadas} filas después de podar: la marca de agua "
+        "se perdió con los datos. Ver `chart_marca` en schema.sql."
+    )
+
+
+@sin_postgres
+def test_la_marca_sobrevive_a_la_poda(pg, monkeypatch):
+    """La marca queda aunque la fuente no tenga ni una fila."""
+    monkeypatch.setattr(sync, "CHART_RAW_DIAS", 3650)
+    sync.corrida(pg, MUESTRA)
+    pg.execute("DELETE FROM chart_values")
+    quedan = pg.execute("SELECT count(*) FROM chart_marca").fetchone()[0]
+    assert quedan > 0, "la marca se fue con los datos"

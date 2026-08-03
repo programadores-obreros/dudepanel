@@ -663,11 +663,34 @@ def sincronizar_chart_values(
     La alternativa —un `WHERE ts > x` sobre la tabla entera— no puede usar el
     índice, porque el tiempo va en los bits BAJOS de la clave.
     """
+    # 🔴 La marca sale de `chart_marca`, NO de `max(ts)` de `chart_values`.
+    #
+    #    `chart_values` se poda (ver `podar_raw`). Una fuente muerta —un equipo
+    #    dado de baja— sólo tiene filas viejas: la poda se las lleva todas, y
+    #    sin filas no hay `max(ts)`, así que el ETL la tomaba por nueva y
+    #    reimportaba su historia entera desde SQLite. En la vuelta siguiente la
+    #    poda volvía a borrarla. Y otra vez.
+    #
+    #    Medido en producción: borraba 200.000 filas e insertaba 202.983 en la
+    #    MISMA corrida, cada 45 segundos, indefinidamente.
+    #
+    #    Borrar un dato no puede borrar el hecho de que ese dato existió.
     cur.execute(
-        "SELECT source_id, bucket, extract(epoch FROM max(ts))::bigint"
-        "  FROM chart_values GROUP BY source_id, bucket"
+        "SELECT source_id, bucket, extract(epoch FROM ultimo_ts)::bigint FROM chart_marca"
     )
     marca = {(src, b): t for src, b, t in cur.fetchall()}
+    if not marca:
+        # Primera corrida con la tabla nueva: se siembra con lo que ya está
+        # importado, para no reimportar todo el histórico una vez.
+        cur.execute(
+            "INSERT INTO chart_marca (source_id, bucket, ultimo_ts)"
+            " SELECT source_id, bucket, max(ts) FROM chart_values"
+            "  GROUP BY source_id, bucket ON CONFLICT DO NOTHING"
+        )
+        cur.execute(
+            "SELECT source_id, bucket, extract(epoch FROM ultimo_ts)::bigint FROM chart_marca"
+        )
+        marca = {(src, b): t for src, b, t in cur.fetchall()}
 
     pendientes: list[tuple] = []
     tope_alcanzado = False
@@ -711,6 +734,15 @@ def sincronizar_chart_values(
         " ON CONFLICT DO NOTHING"
     )
     insertadas = cur.rowcount
+    # La marca avanza con lo que se LEYÓ, no con lo que se insertó: un
+    # `ON CONFLICT DO NOTHING` no cuenta las que ya estaban, y si la marca
+    # dependiera de eso se quedaría clavada y reimportaría lo mismo cada vuelta.
+    cur.execute(
+        "INSERT INTO chart_marca (source_id, bucket, ultimo_ts)"
+        " SELECT source_id, bucket, max(ts) FROM tmp_chart GROUP BY source_id, bucket"
+        " ON CONFLICT (source_id, bucket) DO UPDATE"
+        "   SET ultimo_ts = GREATEST(chart_marca.ultimo_ts, EXCLUDED.ultimo_ts)"
+    )
     if tope_alcanzado:
         log.info("historia: tope de %d filas alcanzado, sigue en la próxima vuelta",
                  CHART_MAX_FILAS)
