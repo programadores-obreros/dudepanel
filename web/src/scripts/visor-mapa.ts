@@ -9,21 +9,22 @@
  *  · Con 401 elementos, mover el mapa es UNA escritura de atributo en un
  *    `<g>`, no 401 recálculos de posición.
  */
-import { estadoAgregado, metaEstado, type Estado } from '@/lib/estado';
+import { estadoAgregado, metaEstado, type Estado } from "@/lib/estado";
 
-const peor = (a: unknown, b: unknown): Estado => estadoAgregado([a, b].filter((x) => x != null));
+const peor = (a: unknown, b: unknown): Estado =>
+  estadoAgregado([a, b].filter((x) => x != null));
 
 const ESCALA_MIN = 0.15;
 const ESCALA_MAX = 8;
 const INTERVALO_MS = 30_000;
 
-for (const visor of document.querySelectorAll<HTMLElement>('[data-visor]')) {
+for (const visor of document.querySelectorAll<HTMLElement>("[data-visor]")) {
   iniciar(visor);
 }
 
 function iniciar(visor: HTMLElement) {
-  const svg = visor.querySelector<SVGSVGElement>('[data-svg-mapa]');
-  const capa = visor.querySelector<SVGGElement>('[data-capa]');
+  const svg = visor.querySelector<SVGSVGElement>("[data-svg-mapa]");
+  const capa = visor.querySelector<SVGGElement>("[data-capa]");
   if (!svg || !capa) return;
 
   let k = 1;
@@ -40,12 +41,12 @@ function iniciar(visor: HTMLElement) {
     // eventos por segundo y sin esto el navegador recompone el SVG en cada uno.
     requestAnimationFrame(() => {
       pendiente = false;
-      capa!.setAttribute('transform', `translate(${tx} ${ty}) scale(${k})`);
-      const nivel = visor.querySelector<HTMLElement>('[data-nivel-zoom]');
+      capa!.setAttribute("transform", `translate(${tx} ${ty}) scale(${k})`);
+      const nivel = visor.querySelector<HTMLElement>("[data-nivel-zoom]");
       if (nivel) nivel.textContent = `${Math.round(k * 100)} %`;
       // La tarjeta emergente está anclada a la posición en pantalla de un nodo
       // que se acaba de mover. Se avisa una vez por cuadro, no por evento.
-      document.dispatchEvent(new CustomEvent('mapa:movido'));
+      document.dispatchEvent(new CustomEvent("mapa:movido"));
     });
   }
 
@@ -92,7 +93,7 @@ function iniciar(visor: HTMLElement) {
   // ── Rueda y pellizco ──────────────────────────────────────────────────────
 
   svg.addEventListener(
-    'wheel',
+    "wheel",
     (ev) => {
       // El lienzo tiene alto propio y no se lleva el scroll de la página; sin
       // preventDefault el gesto natural sobre un mapa (acercar) haría scroll.
@@ -149,13 +150,16 @@ function iniciar(visor: HTMLElement) {
    */
   const DEPURAR = (() => {
     try {
-      return localStorage.getItem('mapa:debug') === '1';
+      return localStorage.getItem("mapa:debug") === "1";
     } catch {
       return false; // localStorage bloqueado: no es motivo para no dibujar el mapa
     }
   })();
-  const log = (...a: unknown[]) => DEPURAR && console.info('[mapa]', ...a);
-  if (DEPURAR) log('depuración encendida · localStorage.removeItem("mapa:debug") para apagarla');
+  const log = (...a: unknown[]) => DEPURAR && console.info("[mapa]", ...a);
+  if (DEPURAR)
+    log(
+      'depuración encendida · localStorage.removeItem("mapa:debug") para apagarla',
+    );
 
   const UMBRAL_ARRASTRE = 4;
   const capturados = new Set<number>();
@@ -171,12 +175,12 @@ function iniciar(visor: HTMLElement) {
     if (capturados.has(id)) return;
     capturados.add(id);
     lienzo.setPointerCapture(id);
-    visor.dataset.arrastrando = 'si';
+    visor.dataset.arrastrando = "si";
   };
 
-  svg.addEventListener('pointerdown', (ev) => {
+  svg.addEventListener("pointerdown", (ev) => {
     // Botón secundario y medio se dejan al navegador (menú contextual, pegar).
-    if (ev.button !== 0 && ev.pointerType === 'mouse') return;
+    if (ev.button !== 0 && ev.pointerType === "mouse") return;
     punteros.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
     // Con dos dedos es un pellizco desde el primer instante: ahí sí hay que
     // capturar ya, o el segundo dedo se pierde apenas sale del SVG.
@@ -184,16 +188,16 @@ function iniciar(visor: HTMLElement) {
       for (const id of punteros.keys()) capturar(id);
       pellizco = medirPellizco();
     }
-    const n = (ev.target as Element | null)?.closest?.('.nodo-mapa');
-    log('pointerdown', {
+    const n = (ev.target as Element | null)?.closest?.(".nodo-mapa");
+    log("pointerdown", {
       tipo: ev.pointerType,
       boton: ev.button,
-      sobre: n ? n.getAttribute('data-rotulo') : '(lienzo)',
-      href: n?.getAttribute('href') ?? null,
+      sobre: n ? n.getAttribute("data-rotulo") : "(lienzo)",
+      href: n?.getAttribute("href") ?? null,
     });
   });
 
-  svg.addEventListener('pointermove', (ev) => {
+  svg.addEventListener("pointermove", (ev) => {
     const previo = punteros.get(ev.pointerId);
     if (!previo) return;
     const dx = ev.clientX - previo.x;
@@ -201,7 +205,7 @@ function iniciar(visor: HTMLElement) {
     // Recién acá se decide que esto es un arrastre y no un click.
     if (!capturados.has(ev.pointerId)) {
       if (Math.hypot(dx, dy) < UMBRAL_ARRASTRE) return;
-      log('arrastre: se captura el puntero', { dx, dy });
+      log("arrastre: se captura el puntero", { dx, dy });
       capturar(ev.pointerId);
     }
     punteros.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
@@ -231,9 +235,9 @@ function iniciar(visor: HTMLElement) {
     if (punteros.size < 2) pellizco = null;
     if (punteros.size === 0) delete visor.dataset.arrastrando;
   };
-  svg.addEventListener('pointerup', soltar);
-  svg.addEventListener('pointercancel', soltar);
-  svg.addEventListener('lostpointercapture', soltar);
+  svg.addEventListener("pointerup", soltar);
+  svg.addEventListener("pointercancel", soltar);
+  svg.addEventListener("lostpointercapture", soltar);
 
   function medirPellizco() {
     const [a, b] = [...punteros.values()];
@@ -246,17 +250,55 @@ function iniciar(visor: HTMLElement) {
   }
 
   // Un arrastre no debe abrir el enlace del nodo que quedó debajo del dedo.
-  let arrastroDe = 0;
-  svg.addEventListener('pointerdown', (ev) => {
+  //
+  // 🔴 `null` y no `0`, y no es un detalle de estilo: es la diferencia entre
+  //    «no hubo ningún pointerdown» y «hubo uno en la esquina superior
+  //    izquierda». Con 0 las dos cosas se ven iguales, y de ahí salía el
+  //    defecto de abajo.
+  let arrastroDe: number | null = null;
+  svg.addEventListener("pointerdown", (ev) => {
     arrastroDe = ev.clientX + ev.clientY;
   });
   svg.addEventListener(
-    'click',
+    "click",
     (ev) => {
-      const n = (ev.target as Element | null)?.closest?.('.nodo-mapa');
-      const movido = Math.abs(ev.clientX + ev.clientY - arrastroDe);
+      const n = (ev.target as Element | null)?.closest?.(".nodo-mapa");
+
+      /**
+       * 🔴 ESTA GUARDA SE SALTEA CUANDO EL CLICK NO VINO DE UN PUNTERO, y
+       *    saltearla ARREGLA un defecto que estaba acá desde el principio.
+       *
+       *    Un Enter sobre un `<a>` enfocado dispara un `click` con
+       *    `clientX = 0, clientY = 0` —no hay mouse, no hay coordenadas— y
+       *    `detail = 0`. Comparando esos ceros contra el `pointerdown` de un
+       *    click real anterior, la resta da CIENTOS de píxeles:
+       *
+       *      click con el mouse en (527, 404)   →  arrastroDe = 931
+       *      Enter sobre un nodo con el teclado →  movido = |0 − 931| = 931
+       *      931 > 6                            →  «fue un arrastre», descartado
+       *
+       *    O sea: alcanzaba con haber hecho UN click en cualquier parte para
+       *    que la navegación por teclado dejara de funcionar en todo el mapa,
+       *    en silencio y sin ningún error. Medido en Chrome, no deducido.
+       *
+       *    `detail === 0` es la marca de una activación por teclado o por
+       *    lector de pantalla. Ahí no hay arrastre posible que detectar, así
+       *    que la guarda no tiene nada que hacer.
+       *
+       *    Y `arrastroDe` se limpia al consumirse: una medición vieja no puede
+       *    decidir sobre un click nuevo. Es la misma lección que dejó la marca
+       *    `recienMovido` en `mover-nodos.ts` —una marca que dice «lo que acaba
+       *    de pasar» tiene que morir cuando empieza lo siguiente— y estaba
+       *    escrita a diez líneas de acá sin que nadie la aplicara también aquí.
+       */
+      const origen = arrastroDe;
+      arrastroDe = null;
+      const movido =
+        origen === null || ev.detail === 0
+          ? 0
+          : Math.abs(ev.clientX + ev.clientY - origen);
       if (movido > 6) {
-        log('click DESCARTADO: fue un arrastre', { movido });
+        log("click DESCARTADO: fue un arrastre", { movido });
         ev.preventDefault();
         ev.stopPropagation();
         return;
@@ -269,22 +311,22 @@ function iniciar(visor: HTMLElement) {
       if (DEPURAR) {
         const marca = visor.dataset.recienMovido;
         window.addEventListener(
-          'click',
+          "click",
           (fin) =>
-            log('click · VEREDICTO', {
+            log("click · VEREDICTO", {
               frenado: fin.defaultPrevented,
-              recienMovido: marca ?? '(sin marca)',
-              navegara: !fin.defaultPrevented && !!n?.getAttribute('href'),
+              recienMovido: marca ?? "(sin marca)",
+              navegara: !fin.defaultPrevented && !!n?.getAttribute("href"),
             }),
           { once: true },
         );
       }
-      log('click', {
-        sobre: n ? n.getAttribute('data-rotulo') : '(lienzo)',
-        href: n?.getAttribute('href') ?? null,
+      log("click", {
+        sobre: n ? n.getAttribute("data-rotulo") : "(lienzo)",
+        href: n?.getAttribute("href") ?? null,
         // Si esto no es el `<a>` del nodo, el navegador NO va a navegar: es
         // exactamente el síntoma que produjo el puntero capturado de más.
-        objetivo: (ev.target as Element | null)?.tagName ?? '?',
+        objetivo: (ev.target as Element | null)?.tagName ?? "?",
         capturados: capturados.size,
       });
     },
@@ -293,30 +335,30 @@ function iniciar(visor: HTMLElement) {
 
   // ── Botones y teclado ─────────────────────────────────────────────────────
 
-  for (const b of visor.querySelectorAll<HTMLButtonElement>('[data-zoom]')) {
-    b.addEventListener('click', () => {
+  for (const b of visor.querySelectorAll<HTMLButtonElement>("[data-zoom]")) {
+    b.addEventListener("click", () => {
       const dir = Number(b.dataset.zoom) || 1;
       zoomEn(dir > 0 ? 1.35 : 1 / 1.35, ...centroPantalla());
     });
   }
-  visor.querySelector('[data-ajustar]')?.addEventListener('click', ajustar);
+  visor.querySelector("[data-ajustar]")?.addEventListener("click", ajustar);
 
   // ── Atenuar residuos ──────────────────────────────────────────────────────
   //
   // Una clase en el contenedor y listo: el CSS hace el resto para los N nodos
   // de una sola vez. Nada de recorrerlos.
-  const atenuar = visor.querySelector<HTMLButtonElement>('[data-atenuar]');
+  const atenuar = visor.querySelector<HTMLButtonElement>("[data-atenuar]");
   if (atenuar) {
-    visor.dataset.atenuarResiduos = 'si';
-    atenuar.addEventListener('click', () => {
-      const encendido = atenuar.getAttribute('aria-pressed') === 'true';
-      atenuar.setAttribute('aria-pressed', encendido ? 'false' : 'true');
+    visor.dataset.atenuarResiduos = "si";
+    atenuar.addEventListener("click", () => {
+      const encendido = atenuar.getAttribute("aria-pressed") === "true";
+      atenuar.setAttribute("aria-pressed", encendido ? "false" : "true");
       if (encendido) delete visor.dataset.atenuarResiduos;
-      else visor.dataset.atenuarResiduos = 'si';
+      else visor.dataset.atenuarResiduos = "si";
     });
   }
 
-  svg.addEventListener('keydown', (ev) => {
+  svg.addEventListener("keydown", (ev) => {
     // Sólo cuando el foco está en el lienzo, no en un nodo: con el foco en un
     // nodo las flechas tienen que seguir sirviendo para leer con el lector.
     if (ev.target !== svg) return;
@@ -326,10 +368,10 @@ function iniciar(visor: HTMLElement) {
       ArrowRight: () => (tx -= paso),
       ArrowUp: () => (ty += paso),
       ArrowDown: () => (ty -= paso),
-      '+': () => zoomEn(1.35, ...centroPantalla()),
-      '=': () => zoomEn(1.35, ...centroPantalla()),
-      '-': () => zoomEn(1 / 1.35, ...centroPantalla()),
-      '0': ajustar,
+      "+": () => zoomEn(1.35, ...centroPantalla()),
+      "=": () => zoomEn(1.35, ...centroPantalla()),
+      "-": () => zoomEn(1 / 1.35, ...centroPantalla()),
+      "0": ajustar,
     };
     const fn = acciones[ev.key];
     if (!fn) return;
@@ -344,10 +386,10 @@ function iniciar(visor: HTMLElement) {
   // 🔴 Delegado, no una escucha por nodo. Antes eran 401 `addEventListener` en
   //    el arranque del mapa más grande; ahora es uno. `focus` no burbujea, pero
   //    `focusin` sí, que es exactamente para esto.
-  svg.addEventListener('focusin', (ev) => {
+  svg.addEventListener("focusin", (ev) => {
     const objetivo = ev.target;
     if (!(objetivo instanceof Element)) return;
-    const nodo = objetivo.closest('.nodo-mapa[tabindex]');
+    const nodo = objetivo.closest(".nodo-mapa[tabindex]");
     if (nodo) acercarA(nodo as unknown as SVGGraphicsElement);
   });
 
@@ -358,9 +400,11 @@ function iniciar(visor: HTMLElement) {
     let dx = 0;
     let dy = 0;
     if (caja.left < vista.left + margen) dx = vista.left + margen - caja.left;
-    if (caja.right > vista.right - margen) dx = vista.right - margen - caja.right;
+    if (caja.right > vista.right - margen)
+      dx = vista.right - margen - caja.right;
     if (caja.top < vista.top + margen) dy = vista.top + margen - caja.top;
-    if (caja.bottom > vista.bottom - margen) dy = vista.bottom - margen - caja.bottom;
+    if (caja.bottom > vista.bottom - margen)
+      dy = vista.bottom - margen - caja.bottom;
     if (!dx && !dy) return;
     const escala = svg!.getScreenCTM()?.a || 1;
     tx += dx / escala;
@@ -379,14 +423,16 @@ function refrescoPeriodico(svg: SVGSVGElement, mapaId: string) {
   let temporizador: number | undefined;
 
   const nodos = new Map<string, SVGGraphicsElement>();
-  for (const n of svg.querySelectorAll<SVGGraphicsElement>('.nodo-mapa[data-id]')) {
+  for (const n of svg.querySelectorAll<SVGGraphicsElement>(
+    ".nodo-mapa[data-id]",
+  )) {
     nodos.set(n.dataset.id!, n);
   }
 
   async function tick() {
     try {
       const r = await fetch(`/api/mapa/${encodeURIComponent(mapaId)}.json`, {
-        headers: { accept: 'application/json' },
+        headers: { accept: "application/json" },
       });
       if (!r.ok) throw new Error(String(r.status));
       const datos = (await r.json()) as { estados: [number, Estado][] };
@@ -412,7 +458,7 @@ function refrescoPeriodico(svg: SVGSVGElement, mapaId: string) {
       if (!nodo || nodo.dataset.estado === String(estado)) continue;
       nodo.dataset.estado = String(estado);
       const m = metaEstado(estado);
-      const glifo = nodo.querySelector('[data-glifo]');
+      const glifo = nodo.querySelector("[data-glifo]");
       if (glifo) glifo.textContent = m.glifo;
 
       // 🔴 El estado ACABA de cambiar, así que su antigüedad es cero. Sin esta
@@ -421,30 +467,32 @@ function refrescoPeriodico(svg: SVGSVGElement, mapaId: string) {
       //    mapa seguiría atenuando la única novedad de la noche. Es el peor
       //    error posible en este eje y por eso se corrige acá y no al recargar.
       if (estado === 1) delete nodo.dataset.antiguedad;
-      else nodo.dataset.antiguedad = 'reciente';
-      nodo.dataset.edad = '0';
+      else nodo.dataset.antiguedad = "reciente";
+      nodo.dataset.edad = "0";
 
       // La etiqueta accesible tiene que seguir al color; si no, el lector de
       // pantalla anuncia un estado que ya no es. Se rearma de las partes en vez
       // de parchear la cadena, que con nombres que traen guiones se rompe.
       const base = nodo.dataset.rotulo;
-      const texto = `${base} — ${m.etiqueta}${nodo.dataset.ips ?? ''} — cambió recién`;
-      if (base) nodo.setAttribute('aria-label', texto);
+      const texto = `${base} — ${m.etiqueta}${nodo.dataset.ips ?? ""} — cambió recién`;
+      if (base) nodo.setAttribute("aria-label", texto);
 
-      const titulo = nodo.querySelector('title');
+      const titulo = nodo.querySelector("title");
       if (titulo && base) titulo.textContent = texto;
     }
 
     // Un enlace vale lo que valen sus puntas: se recalcula con el peor de las
     // dos, igual que lo hizo el servidor al dibujarlo.
-    for (const linea of svg.querySelectorAll<SVGLineElement>('.enlace-mapa[data-de]')) {
+    for (const linea of svg.querySelectorAll<SVGLineElement>(
+      ".enlace-mapa[data-de]",
+    )) {
       const a = nodos.get(linea.dataset.de!)?.dataset.estado;
-      const b = nodos.get(linea.dataset.a ?? '')?.dataset.estado;
+      const b = nodos.get(linea.dataset.a ?? "")?.dataset.estado;
       linea.dataset.estado = String(peor(a, b));
     }
   }
 
-  document.addEventListener('visibilitychange', () => {
+  document.addEventListener("visibilitychange", () => {
     if (!document.hidden) {
       espera = INTERVALO_MS;
       tick();
