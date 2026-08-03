@@ -108,13 +108,89 @@ function iniciar(visor: HTMLElement) {
   const punteros = new Map<number, { x: number; y: number }>();
   let pellizco: { dist: number; cx: number; cy: number } | null = null;
 
+  /**
+   * 🔴 EL PUNTERO SE CAPTURA RECIÉN CUANDO HAY ARRASTRE. Y esto arreglaba un
+   *    defecto que llevaba mucho tiempo escondido.
+   *
+   *    Acá se llamaba a `setPointerCapture` en CADA `pointerdown`. Con el
+   *    puntero capturado por el SVG, todos los eventos siguientes se
+   *    redirigen a él — y el `click` termina disparándose en el SVG y no en
+   *    el `<a>` del nodo. **Un click en un equipo nunca abría su ficha.**
+   *
+   *    No se notaba porque la tarjeta flotante quedaba encima del nodo y era
+   *    interactiva: lo que navegaba era un enlace DE LA TARJETA. Y como la
+   *    tarjeta se coloca a la derecha —sobre el nodo de al lado— y trae un
+   *    enlace al PADRE CAÍDO, el resultado era «hago click en un equipo y se
+   *    va a otro equipo». Reportado exactamente así.
+   *
+   *    Al quitarle el puntero a la tarjeta —para que dejara de robar clicks—
+   *    el defecto de fondo quedó a la vista: dejó de navegar del todo.
+   *
+   *    Capturando sólo cuando el dedo o el mouse SE MUEVE de verdad, un click
+   *    quieto es un click normal: abre la ficha, `Ctrl+clic` la abre en otra
+   *    pestaña, el botón del medio también, y el menú contextual funciona.
+   *    Todo eso lo daba el navegador y lo estábamos tirando.
+   */
+  /**
+   * Registro del recorrido de un click, apagado salvo que se pida.
+   *
+   * 🔴 Este mapa tuvo dos defectos seguidos en la misma interacción —la
+   *    tarjeta robando clicks y el puntero capturado comiéndoselos— y las dos
+   *    veces hubo que deducir el mecanismo leyendo código, porque desde afuera
+   *    lo único visible era «hace algo raro».
+   *
+   *    Se enciende desde la consola del navegador:
+   *
+   *        localStorage.setItem('mapa:debug', '1')   // y recargar
+   *        localStorage.removeItem('mapa:debug')     // para apagarlo
+   *
+   *    Apagado no cuesta nada —una lectura de `localStorage` al cargar— y
+   *    encendido dice exactamente qué recibió cada paso.
+   */
+  const DEPURAR = (() => {
+    try {
+      return localStorage.getItem('mapa:debug') === '1';
+    } catch {
+      return false; // localStorage bloqueado: no es motivo para no dibujar el mapa
+    }
+  })();
+  const log = (...a: unknown[]) => DEPURAR && console.info('[mapa]', ...a);
+  if (DEPURAR) log('depuración encendida · localStorage.removeItem("mapa:debug") para apagarla');
+
+  const UMBRAL_ARRASTRE = 4;
+  const capturados = new Set<number>();
+  // Alias no nulo: `svg` ya pasó su guarda más arriba, pero TypeScript no
+  // puede mantener ese estrechamiento dentro de una función declarada acá.
+  const lienzo = svg;
+
+  // Por ID y no por evento: para el pellizco hay que capturar el PRIMER dedo
+  // cuando llega el segundo, y ahí no se tiene su evento a mano. Un
+  // `{ ...ev, pointerId }` no sirve —`PointerEvent` expone accesores, no
+  // propiedades propias, así que el spread copia un objeto vacío.
+  const capturar = (id: number) => {
+    if (capturados.has(id)) return;
+    capturados.add(id);
+    lienzo.setPointerCapture(id);
+    visor.dataset.arrastrando = 'si';
+  };
+
   svg.addEventListener('pointerdown', (ev) => {
     // Botón secundario y medio se dejan al navegador (menú contextual, pegar).
     if (ev.button !== 0 && ev.pointerType === 'mouse') return;
     punteros.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
-    svg.setPointerCapture(ev.pointerId);
-    if (punteros.size === 2) pellizco = medirPellizco();
-    visor.dataset.arrastrando = 'si';
+    // Con dos dedos es un pellizco desde el primer instante: ahí sí hay que
+    // capturar ya, o el segundo dedo se pierde apenas sale del SVG.
+    if (punteros.size === 2) {
+      for (const id of punteros.keys()) capturar(id);
+      pellizco = medirPellizco();
+    }
+    const n = (ev.target as Element | null)?.closest?.('.nodo-mapa');
+    log('pointerdown', {
+      tipo: ev.pointerType,
+      boton: ev.button,
+      sobre: n ? n.getAttribute('data-rotulo') : '(lienzo)',
+      href: n?.getAttribute('href') ?? null,
+    });
   });
 
   svg.addEventListener('pointermove', (ev) => {
@@ -122,6 +198,12 @@ function iniciar(visor: HTMLElement) {
     if (!previo) return;
     const dx = ev.clientX - previo.x;
     const dy = ev.clientY - previo.y;
+    // Recién acá se decide que esto es un arrastre y no un click.
+    if (!capturados.has(ev.pointerId)) {
+      if (Math.hypot(dx, dy) < UMBRAL_ARRASTRE) return;
+      log('arrastre: se captura el puntero', { dx, dy });
+      capturar(ev.pointerId);
+    }
     punteros.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
 
     if (punteros.size >= 2) {
@@ -145,6 +227,7 @@ function iniciar(visor: HTMLElement) {
 
   const soltar = (ev: PointerEvent) => {
     punteros.delete(ev.pointerId);
+    capturados.delete(ev.pointerId);
     if (punteros.size < 2) pellizco = null;
     if (punteros.size === 0) delete visor.dataset.arrastrando;
   };
@@ -170,10 +253,22 @@ function iniciar(visor: HTMLElement) {
   svg.addEventListener(
     'click',
     (ev) => {
-      if (Math.abs(ev.clientX + ev.clientY - arrastroDe) > 6) {
+      const n = (ev.target as Element | null)?.closest?.('.nodo-mapa');
+      const movido = Math.abs(ev.clientX + ev.clientY - arrastroDe);
+      if (movido > 6) {
+        log('click DESCARTADO: fue un arrastre', { movido });
         ev.preventDefault();
         ev.stopPropagation();
+        return;
       }
+      log('click', {
+        sobre: n ? n.getAttribute('data-rotulo') : '(lienzo)',
+        href: n?.getAttribute('href') ?? null,
+        // Si esto no es el `<a>` del nodo, el navegador NO va a navegar: es
+        // exactamente el síntoma que produjo el puntero capturado de más.
+        objetivo: (ev.target as Element | null)?.tagName ?? '?',
+        capturados: capturados.size,
+      });
     },
     true,
   );
