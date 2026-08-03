@@ -71,6 +71,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import math
 import logging
 import os
 import socket
@@ -185,9 +186,15 @@ class Freno:
             if previo is not None:
                 falta = ENFRIAMIENTO_S - (ahora - previo)
                 if falta > ESPERA_CORTA_S:
+                    # 🔴 Se redondea HACIA ARRIBA. Con `:.0f`, una espera de
+                    #    3,4 s se anunciaba como «3 s»: quien vuelve a los tres
+                    #    segundos se lo come de nuevo, y la segunda negativa
+                    #    después de haber esperado lo que se le pidió se lee
+                    #    como que la herramienta miente.
                     return (False,
                             f"Este mismo sondeo se hizo recién. Se puede repetir en "
-                            f"{falta:.0f} s — las otras tres preguntas están disponibles ya.",
+                            f"{math.ceil(falta)} s — las otras tres preguntas "
+                            f"están disponibles ya.",
                             falta)
                 if falta > 0:
                     # Se reserva el turno ANTES de soltar el lock y dormir: si no,
