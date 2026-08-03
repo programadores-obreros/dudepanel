@@ -103,3 +103,86 @@ describe('origenAjeno', () => {
     expect(origenAjeno(pedido('DELETE', { origin: 'https://malicioso.com', host: 'panel.local' }))).toBe(true);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 🔴 EL CASO QUE ROMPIÓ PRODUCCIÓN
+//
+// La primera versión comparaba `Origin` contra el host y rechazaba al navegador
+// de verdad con «este formulario no se envió desde el panel». Andaba con
+// `curl -H Origin:…` —así lo probé— y fallaba con un navegador.
+//
+// La causa: `Origin` NO está garantizado en un POST de formulario de navegación
+// de nivel superior al MISMO origen. Varios navegadores lo omiten justamente
+// porque no aporta nada, y el código leía esa ausencia como «vino de afuera».
+//
+// Estos tests fijan el comportamiento con las combinaciones que manda un
+// navegador de verdad, no las que yo fabricaba con curl.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('🔴 Sec-Fetch-Site: la señal que sí mandan los navegadores', () => {
+  const nav = (extra: Record<string, string>) =>
+    pedido('POST', { ...FORM, host: 'panel.local', ...extra }, 'a=1');
+
+  it('un formulario del propio panel pasa AUNQUE NO VENGA Origin', () => {
+    // Éste es exactamente el pedido que rechazaba producción.
+    expect(origenAjeno(nav({ 'sec-fetch-site': 'same-origin' }))).toBe(false);
+  });
+
+  it('escrito a mano o desde un favorito también pasa', () => {
+    expect(origenAjeno(nav({ 'sec-fetch-site': 'none' }))).toBe(false);
+  });
+
+  it('🔴 desde otro sitio se rechaza', () => {
+    expect(origenAjeno(nav({ 'sec-fetch-site': 'cross-site' }))).toBe(true);
+  });
+
+  it('🔴 desde otro subdominio también: same-site NO es same-origin', () => {
+    expect(origenAjeno(nav({ 'sec-fetch-site': 'same-site' }))).toBe(true);
+  });
+
+  it('gana sobre Origin: es la señal más confiable de las tres', () => {
+    // Si las dos vinieran y se contradijeran, manda la que el navegador
+    // calcula solo y una página no puede falsificar.
+    expect(
+      origenAjeno(nav({ 'sec-fetch-site': 'same-origin', origin: 'https://malicioso.com' })),
+    ).toBe(false);
+  });
+});
+
+describe('respaldo para navegadores sin Sec-Fetch-Site', () => {
+  it('cae a Origin', () => {
+    expect(origenAjeno(pedido('POST', { ...FORM, origin: 'http://panel.local', host: 'panel.local' }, 'a=1'))).toBe(false);
+    expect(origenAjeno(pedido('POST', { ...FORM, origin: 'https://malicioso.com', host: 'panel.local' }, 'a=1'))).toBe(true);
+  });
+
+  it('y después a Referer, que es lo que queda en un navegador viejo', () => {
+    expect(
+      origenAjeno(pedido('POST', { ...FORM, referer: 'https://panel.local/equipos', host: 'panel.local' }, 'a=1')),
+    ).toBe(false);
+    expect(
+      origenAjeno(pedido('POST', { ...FORM, referer: 'https://malicioso.com/x', host: 'panel.local' }, 'a=1')),
+    ).toBe(true);
+  });
+
+  it('🔴 sin ninguna de las tres se rechaza: eso ya no es un navegador', () => {
+    expect(origenAjeno(pedido('POST', { ...FORM, host: 'panel.local' }, 'a=1'))).toBe(true);
+  });
+});
+
+describe('el rechazo se explica', () => {
+  it('dice con qué señal y con qué valor, para poder diagnosticarlo', async () => {
+    const { comprobarOrigen } = await import('@/middleware');
+    const v = comprobarOrigen(
+      pedido('POST', { ...FORM, 'sec-fetch-site': 'cross-site', host: 'panel.local' }, 'a=1'),
+    );
+    expect(v.ajeno).toBe(true);
+    expect(v.senal).toBe('sec-fetch-site');
+    expect(v.detalle).toBe('cross-site');
+  });
+
+  it('y cuando pasa, también: un permiso mudo no se puede auditar', async () => {
+    const { comprobarOrigen } = await import('@/middleware');
+    const v = comprobarOrigen(pedido('POST', { ...FORM, 'sec-fetch-site': 'same-origin' }, 'a=1'));
+    expect(v).toMatchObject({ ajeno: false, senal: 'sec-fetch-site', detalle: 'same-origin' });
+  });
+});
