@@ -38,11 +38,20 @@ const { accesos, nombre } = Astro.props;
          puede tocar `window.opener` y redirigir esta. */
       <ul class="flex flex-wrap gap-2" data-accesos>
         {accesos.map((a) => {
+          // 🔴 Sin `active:scale-[0.98]` ni anillo de foco propios.
+          //
+          //    Los pone el sistema (`global.css`): la respuesta al toque es
+          //    `scale(0.97)` con `--mov-rapido`, y el foco es `:focus-visible`
+          //    con el color de acento. Tenerlos ACÁ además significaba que la
+          //    propiedad `scale: .98` y el `transform: scale(.97)` del sistema
+          //    se COMPONÍAN —0,98 × 0,97 = 0,95— y este botón se hundía más que
+          //    todos los demás del panel. Nadie lo habría reportado; se siente,
+          //    no se ve.
           const comun =
             'group border-borde bg-panel-2 hover:bg-panel hover:border-acento/60 ' +
-            'focus-visible:outline-acento inline-flex cursor-pointer items-center gap-2 ' +
-            'rounded-lg border px-3 py-2 text-sm transition-[background-color,border-color,transform] ' +
-            'duration-150 active:scale-[0.98] focus-visible:outline-2 focus-visible:outline-offset-2';
+            'inline-flex cursor-pointer items-center gap-2 ' +
+            'rounded-lg border px-3 py-2 text-sm ' +
+            'transition-[background-color,border-color] duration-[--mov-base]';
           return (
             <li>
               {a.modo === 'enlace' ? (
