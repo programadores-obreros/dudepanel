@@ -12,6 +12,7 @@ import { fabricante } from '@/lib/oui';
 import { metaEstado, ESTADOS } from '@/lib/estado';
 import { ANTIGUEDADES } from '@/lib/antiguedad';
 import { duracion, numero, porcentaje } from '@/lib/formato';
+import TarjetaNodo from '@/components/TarjetaNodo.astro';
 
 interface Props {
   mapaId: number;
@@ -704,27 +705,12 @@ const destinos = enOtroMapa > 0 ? (fuera?.destinos ?? []) : [];
     }
   </div>
 
+  <TarjetaNodo />
 </div>
 
 <script>
   import '@/scripts/visor-mapa';
-  /* 🔴 `tarjeta-nodo` SACADA a pedido, y con el motivo medido.
-   *
-   *    Era una tarjeta flotante que aparecía a los 140 ms pegada al puntero,
-   *    tapando los nodos vecinos, con sus PROPIOS enlaces adentro y quedándose
-   *    abierta si el puntero entraba en ella.
-   *
-   *    En un mapa de 72 nodos eso produce una carrera: apuntás a A, la tarjeta
-   *    de A todavía está cargando —es un `fetch`—, movés a B, y el click cae en
-   *    un lado mientras estabas leyendo el otro. Reportado como «hago click en
-   *    un equipo y se va a otro equipo».
-   *
-   *    🔴 Y NO era un enlace roto: se comprobaron los 72 nodos del mapa real y
-   *       los 72 apuntan a su propio equipo. El defecto estaba en que la
-   *       tarjeta se metía en el medio, no en el destino.
-   *
-   *    Ahora un click en un nodo hace UNA cosa: abrir la ficha de ESE equipo.
-   */
+  import '@/scripts/tarjeta-nodo';
 
   /**
    * 🔴 El arrastre se pide con `import()` DINÁMICO, y no es un capricho.

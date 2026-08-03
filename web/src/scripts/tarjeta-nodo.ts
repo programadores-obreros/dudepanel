@@ -190,7 +190,26 @@ function iniciar(tarjeta: HTMLElement, cuerpo: HTMLElement) {
     cuerpo.innerHTML = esqueleto(nodo);
     tarjeta.hidden = false;
     tarjeta.dataset.modo = comoHoja ? 'hoja' : 'flotante';
-    tarjeta.classList.toggle('pointer-events-none', false);
+    // 🔴 EN VISTA PREVIA LA TARJETA NO RECIBE EL PUNTERO. Un carácter, y es el
+    //    defecto que se reportó como «hago click en un equipo y se va a otro».
+    //
+    //    Acá decía `toggle(..., false)`: le sacaba `pointer-events-none`
+    //    SIEMPRE, también cuando aparece sola al pasar el mouse. Y la tarjeta
+    //    se coloca A LA DERECHA del nodo — que en un mapa denso es justo encima
+    //    del nodo de al lado. Entonces:
+    //
+    //      1. apuntás al nodo A, la tarjeta aparece tapando al nodo B
+    //      2. movés hacia B y el puntero entra en la TARJETA, no en B
+    //      3. `pointerenter` marca `sobreTarjeta` y la tarjeta se queda
+    //      4. hacés click creyendo que tocás B, y tocás un enlace de A
+    //
+    //    Una VISTA PREVIA no es una superficie de control: informa y se corre.
+    //    Sin puntero no puede robar un click, y `pointerout` del nodo la cierra
+    //    sola porque `relatedTarget` ya no es ella.
+    //
+    //    En modo hoja —el toque, donde no existe el hover— SÍ es interactiva:
+    //    ahí sus enlaces son la única forma de llegar a la ficha.
+    tarjeta.classList.toggle('pointer-events-none', !comoHoja);
     if (cerrar) cerrar.style.display = comoHoja ? 'grid' : 'none';
     ubicar(nodo, comoHoja);
     anunciar(nodo);
