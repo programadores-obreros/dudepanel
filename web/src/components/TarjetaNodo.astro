@@ -21,7 +21,7 @@
   data-tarjeta
   hidden
   aria-hidden="true"
-  class="border-borde-fuerte bg-panel pointer-events-none fixed z-40 w-[22rem] max-w-[calc(100vw-1.5rem)] overflow-hidden rounded-xl border shadow-2xl"
+  class="border-borde-fuerte bg-panel fixed z-40 w-[22rem] max-w-[calc(100vw-1.5rem)] overflow-hidden rounded-xl border shadow-2xl"
 >
   <div data-tarjeta-cuerpo>
     {/* Se reemplaza con el HTML del servidor. Lo de acá es el esqueleto que se
@@ -50,36 +50,17 @@
     necesita y no una tarjeta entera leída en voz alta. */}
 <p class="sr-only" data-tarjeta-resumen role="status" aria-live="polite"></p>
 
-<style is:global>
-  /* ═══ Los dos modos de la tarjeta ═══════════════════════════════════════
-     🔴 EN VISTA PREVIA LA TARJETA NO RECIBE EL PUNTERO —ver `mostrar()` en
-        `scripts/tarjeta-nodo.ts`— y eso arregla el defecto de que robara
-        clicks destinados al nodo de al lado.
+{/* ═══ Los dos modos ya no se diferencian en lo que se puede tocar ═════════
+      Acá vivían tres reglas que en vista previa apagaban los enlaces de la
+      tarjeta: sin color, sin subrayado, sin cursor, y el pie mostraba una
+      pista —«clic en el equipo»— en lugar del enlace.
 
-        Pero deja un problema nuevo: sus CUATRO enlaces —el título, el padre
-        caído, los mapas y «abrir la ficha»— siguen PARECIENDO enlaces y ya no
-        se pueden apretar. Un enlace que promete y no cumple es peor que no
-        tenerlo: la persona apunta, hace clic, no pasa nada, y a partir de ahí
-        desconfía también de lo que sí funciona.
+      Tenían sentido mientras el NODO se llevaba el click y la tarjeta se lo
+      robaba al de al lado. Ya no: con el puntero el nodo no navega, así que la
+      tarjeta es lo único clickeable del lienzo.
 
-        Así que en vista previa se muestran como TEXTO: sin color de enlace,
-        sin subrayado y sin cursor de mano. Lo que se puede tocar es el nodo,
-        y el pie lo dice con todas las letras.
-
-        En modo hoja —el toque, donde no hay hover— la tarjeta SÍ recibe el
-        puntero y los enlaces vuelven a ser enlaces: ahí son la única forma de
-        llegar a la ficha. */
-  #tarjeta-nodo[data-modo='flotante'] a {
-    color: inherit;
-    text-decoration: none;
-    cursor: inherit;
-    font-weight: inherit;
-  }
-  /* El pie cambia de promesa según el modo. */
-  #tarjeta-nodo[data-modo='flotante'] [data-pie-enlace] {
-    display: none;
-  }
-  #tarjeta-nodo[data-modo='hoja'] [data-pie-pista] {
-    display: none;
-  }
-</style>
+      Con un solo dueño para el click —el nodo ya no navega con el puntero, lo
+      frena `scripts/tarjeta-nodo.ts`— un enlace puede volver a parecer y a
+      comportarse como un enlace en los dos modos, y no hace falta ninguna
+      regla para lograrlo. La corrección más limpia de las cinco fue borrar
+      código, no agregarlo. */}

@@ -509,28 +509,21 @@
   /* Aparece sin animación de entrada: 140 ms de demora ya son la transición.
      Un desvanecido encima agrega latencia percibida donde no hace falta. */
 
-  /* 🔴 EN VISTA PREVIA LA TARJETA NO RECIBE EL PUNTERO. Y acá decía `auto`.
+  /* 🔴 SÍ RECIBE EL PUNTERO, y ahora corresponde. Acá decía `none`.
    *
-   *    La tarjeta se coloca A LA DERECHA del nodo — que en un mapa denso es
-   *    justo encima del nodo de al lado. Siendo interactiva:
-   *
-   *      1. apuntás al nodo A y la tarjeta aparece tapando al nodo B
-   *      2. movés hacia B y el puntero entra en la TARJETA, no en B
-   *      3. hacés click creyendo que tocás B y tocás un enlace de A
-   *
+   *    Se lo habíamos quitado porque la tarjeta se dibuja A LA DERECHA del
+   *    nodo —o sea, encima del nodo de al lado en un mapa denso— y le robaba
+   *    los clicks: apuntabas a B, tocabas la tarjeta de A, y se abría A.
    *    Reportado como «hago click en un equipo y se va a otro equipo».
    *
-   *    🔴 Y ESTA REGLA ES LA QUE MANDA, no la clase de utilidad.
+   *    Ya no hay nada que robar: los nodos de equipo dejaron de ser enlaces
+   *    (ver `hrefDe` en `lib/mapa.ts`). La tarjeta es LA ÚNICA cosa clickeable
+   *    del lienzo, así que un click sólo puede tener un dueño.
    *
-   *       El script hacía `classList.toggle('pointer-events-none', …)` y no
-   *       pasaba nada: `#id[attr]` tiene especificidad 1-0-1 y le gana a una
-   *       clase 0-1-0. El arreglo se desplegó, la clase quedaba puesta en el
-   *       elemento, y el valor calculado seguía siendo `auto`. Sólo se vio
-   *       preguntándole al navegador qué regla estaba aplicando.
-   *
-   *       Por eso ahora el modo lo decide SÓLO el CSS por `data-modo`: un
-   *       mecanismo, no dos peleándose. */
-  pointer-events: none;
+   *    Ese es el arreglo de fondo de los cinco defectos que dio esta
+   *    interacción. Los cuatro anteriores discutían quién se queda con el
+   *    click; este saca a los demás candidatos. */
+  pointer-events: auto;
 }
 
 /* En pantalla táctil la tarjeta es una HOJA abajo de todo, no un globito al

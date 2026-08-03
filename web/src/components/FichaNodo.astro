@@ -266,22 +266,17 @@ const edadTrafico = segundosDesde(traficoUtil[0]?.ts);
     </dl>
   </section>
 
-  {/* El pie dice lo que se PUEDE hacer, y eso cambia entre los dos modos.
-      En vista previa la tarjeta no recibe el puntero: lo que se toca es el
-      nodo. En modo hoja —el toque— el enlace es la única forma de llegar.
-      Los dos van en el HTML y el CSS de `TarjetaNodo.astro` muestra el que
-      corresponde: así el parcial no necesita saber en qué modo se va a
-      dibujar. */}
+  {/* El pie dice lo que se puede hacer, y ya no depende del modo: en los dos
+      —vista previa y hoja— este enlace es LA forma de llegar a la ficha con el
+      puntero, porque el click sobre el nodo lo frena `scripts/tarjeta-nodo.ts`
+      a propósito. Con teclado el nodo sigue navegando solo. */}
   <footer class="border-borde bg-panel-2/60 border-t px-3 py-1.5">
     <a
       href={`/dispositivos/${d.id}`}
       data-pie-enlace
-      class="text-acento-txt text-2xs font-semibold"
+      class="text-acento-txt text-2xs font-semibold hover:underline"
     >
       Abrir la ficha completa →
     </a>
-    <span data-pie-pista class="text-tenue text-2xs">
-      Clic en el equipo para abrir su ficha
-    </span>
   </footer>
 </div>

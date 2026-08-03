@@ -214,7 +214,10 @@ function iniciar(tarjeta: HTMLElement, cuerpo: HTMLElement) {
     fijada = false;
     sobreTarjeta = false;
     tarjeta.hidden = true;
-    tarjeta.classList.add('pointer-events-none');
+    // `hidden` ya la saca del paso. La clase que había acá era el resto del
+    // mecanismo doble —clase de utilidad peleando contra `#id[data-modo]`—
+    // que una vez hizo perder una ronda entera: el arreglo se desplegaba, la
+    // clase quedaba puesta, y ganaba el CSS. Un solo mecanismo: `data-modo`.
   }
 
   function programarOcultar() {
@@ -330,6 +333,63 @@ function iniciar(tarjeta: HTMLElement, cuerpo: HTMLElement) {
       window.clearTimeout(temporizadorOcultar);
       window.clearTimeout(temporizadorMostrar);
       temporizadorMostrar = window.setTimeout(() => void mostrar(nodo, false), DEMORA_MOSTRAR);
+    });
+
+    /**
+     * ═══ CON EL MOUSE, EL NODO NO NAVEGA. NAVEGA EL ENLACE DE LA TARJETA ═════
+     *
+     * Esta interacción dio CINCO defectos distintos con el mismo síntoma —«hago
+     * click en un equipo y no pasa nada», o peor, «se va a otro equipo»—:
+     *
+     *   1. el puntero capturado en cada `pointerdown` se comía el click
+     *   2. la tarjeta se dibujaba encima del nodo vecino y se lo robaba
+     *   3. una regla `#id[attr]` anulaba el arreglo de (2) por especificidad
+     *   4. `:active { transform: scale(.97) }` teletransportaba el nodo 1.343 px
+     *      entre apretar y soltar, así que el click caía en el lienzo
+     *   5. la marca de arrastre quedaba pegada y se comía el click siguiente
+     *
+     * Los cinco son la misma enfermedad: en un lienzo con zoom, arrastre,
+     * tarjeta flotante y nodos movibles, **un click tiene demasiados dueños
+     * posibles**, y cada arreglo destapaba al siguiente candidato.
+     *
+     * La cura no es un sexto arreglo: es que haya UN dueño. Apuntás, aparece la
+     * tarjeta, y la tarjeta tiene «Abrir la ficha completa →». Ese enlace vive
+     * fuera del SVG, así que ni el arrastre, ni el zoom, ni la captura del
+     * puntero, ni el `:active` de los nodos pueden tocarlo.
+     *
+     * 🔴 PERO EL NODO SIGUE SIENDO UN `<a href>` EN EL HTML, y eso no es un
+     *    descuido: es lo que impide que el arreglo cueste más de lo que arregla.
+     *
+     *     · Sin JavaScript no hay tarjeta. Si además el nodo no fuera enlace,
+     *       el mapa quedaría sin ninguna forma de llegar a un equipo.
+     *     · Con teclado, la tarjeta está al final del DOM: Tab desde un nodo va
+     *       al nodo siguiente, no adentro de ella. Si el nodo no fuera enlace,
+     *       los 885 equipos quedarían fuera del alcance del teclado.
+     *
+     *    Por eso lo que se frena es el click DEL PUNTERO, no la navegación.
+     *    `detail === 0` es la marca de una activación por teclado —Enter sobre
+     *    un `<a>`, o un lector de pantalla— y esa pasa derecho.
+     *
+     * Los SUBMAPAS no se tocan: no tienen tarjeta, así que frenarlos los dejaría
+     * sin ningún camino. Sólo se frena donde hay algo mejor esperando.
+     */
+    svg.addEventListener('click', (ev) => {
+      if (ev.detail === 0) return; // teclado / lector de pantalla: que navegue
+      const nodo = nodoDe(ev.target);
+      if (!nodo?.dataset.dev) return; // submapa o lienzo vacío: no es asunto nuestro
+      ev.preventDefault();
+      // En táctil manda la hoja, que ya la abrió `pointerup`. Sin esta guarda,
+      // tocar un segundo nodo con la hoja abierta lo mostraría en modo FLOTANTE
+      // —el globito al lado del dedo— justo en la pantalla donde no entra.
+      if (fijada) return;
+      // Si el click llegó sin que hubiera tarjeta —el puntero entró y salió más
+      // rápido que los 140 ms de demora— se la muestra ya: quedarse sin nada
+      // después de hacer click se lee como que la aplicación se colgó.
+      if (nodo !== actual) {
+        window.clearTimeout(temporizadorMostrar);
+        window.clearTimeout(temporizadorOcultar);
+        void mostrar(nodo, false);
+      }
     });
 
     svg.addEventListener('pointerout', (ev) => {
