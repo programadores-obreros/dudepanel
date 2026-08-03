@@ -300,6 +300,37 @@ function iniciar(tarjeta: HTMLElement, cuerpo: HTMLElement) {
   // carga de mapa. Delegando hay dos, y funcionan igual para los nodos que
   // aparezcan después.
 
+  /**
+   * 🔴 Sacar el `<title>` de los nodos: si no, salen DOS globitos superpuestos.
+   *
+   *    Cada nodo lleva un `<title>` en el SVG. El navegador lo dibuja como
+   *    globito nativo al segundo de estar encima — y para entonces la tarjeta
+   *    ya está abierta, así que el globito cae ARRIBA de ella, tapándola, con
+   *    exactamente la misma información y con el estilo del sistema operativo.
+   *    Reportado con captura: «aparecen los dos y se solapan».
+   *
+   *    🔴 Y NO se saca del HTML que manda el servidor, a propósito.
+   *
+   *       Ese `<title>` es el respaldo para cuando este script no corre: sin
+   *       JavaScript, sin la tarjeta, el globito nativo es lo ÚNICO que dice
+   *       qué es cada nodo. Borrarlo en el servidor dejaría un mapa de cuadritos
+   *       mudos para quien tenga el JS bloqueado.
+   *
+   *       Se saca acá, en el arranque del script: en ese momento ya está
+   *       garantizado que la tarjeta lo reemplaza.
+   *
+   *    No se pierde accesibilidad: el nodo tiene además `aria-label` con el
+   *    mismo texto, y en SVG el `aria-label` gana sobre el `<title>` para el
+   *    nombre accesible. Los lectores de pantalla siguen leyendo lo mismo.
+   */
+  //    🔴 Y SÓLO a los que tienen `data-dev`. Un nodo de SUBMAPA también es
+  //       `.nodo-mapa`, pero la tarjeta no lo cubre —sólo aparece si hay
+  //       equipo detrás—: sacarle el `<title>` lo dejaría mudo a cambio de
+  //       nada. Se quita únicamente donde hay algo mejor que lo reemplace.
+  for (const t of document.querySelectorAll('[data-visor] .nodo-mapa[data-dev] > title')) {
+    t.remove();
+  }
+
   for (const visor of document.querySelectorAll<HTMLElement>('[data-visor]')) {
     const svg = visor.querySelector<SVGSVGElement>('[data-svg-mapa]');
     if (!svg) continue;
