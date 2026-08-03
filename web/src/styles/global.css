@@ -567,3 +567,135 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SISTEMA DE MOVIMIENTO
+   ═══════════════════════════════════════════════════════════════════════════
+
+   🔴 Una sola regla gobierna todo lo que sigue: EL MOVIMIENTO TIENE QUE
+      SIGNIFICAR ALGO. Este panel se mira durante una guardia de doce horas, de
+      madrugada, a veces desde un celular en 4G. Una animación decorativa acá no
+      es «linda»: es una cosa más moviéndose mientras alguien intenta leer si un
+      pueblo se quedó sin internet.
+
+   Por eso hay exactamente tres duraciones y tres curvas, y nada se anima que no
+   sea `transform` u `opacity` —lo único que el navegador compone sin recalcular
+   la página—. Animar `width`, `height` o `top` produce saltos de layout, que es
+   justo lo que arruina la lectura de una tabla.
+
+   Todo esto muere solo con `prefers-reduced-motion`: el bloque del final del
+   archivo apaga duración e iteraciones globalmente. No hay que acordarse por
+   componente, que es como se olvida. */
+:root {
+  /* Micro-respuesta: lo que confirma que el dedo tocó. Por debajo de 100 ms el
+     ojo lo lee como instantáneo pero el cuerpo igual lo siente. */
+  --mov-rapido: 120ms;
+  /* El estándar para hover, foco y cambios de estado. */
+  --mov-base: 200ms;
+  /* Entradas y despliegues. Nada de este panel pasa de acá. */
+  --mov-lento: 320ms;
+
+  /* Entrar: arranca rápido y frena. Es como se detienen las cosas con masa. */
+  --curva-entra: cubic-bezier(0.2, 0, 0, 1);
+  /* Salir: arranca lento y acelera al irse. Y SIEMPRE más corto que entrar
+     —al 65 %— porque una salida lenta se siente como que la interfaz duda. */
+  --curva-sale: cubic-bezier(0.4, 0, 1, 1);
+  /* Con un pasito de más. Sólo para confirmaciones: que algo «asiente». */
+  --curva-resorte: cubic-bezier(0.34, 1.4, 0.64, 1);
+
+  /* Elevación. Tres escalones y se terminó: en superficie plana sobre fondo
+     oscuro, más de tres es ruido que nadie puede interpretar. */
+  --sombra-1: 0 1px 2px oklch(0 0 0 / 0.06), 0 1px 1px oklch(0 0 0 / 0.04);
+  --sombra-2: 0 4px 12px oklch(0 0 0 / 0.08), 0 1px 3px oklch(0 0 0 / 0.06);
+  --sombra-3: 0 12px 32px oklch(0 0 0 / 0.14), 0 2px 8px oklch(0 0 0 / 0.08);
+}
+
+/* En oscuro la sombra casi no se ve: la elevación la da la LUZ, no la sombra.
+   Un borde superior más claro imita un objeto levantado hacia una fuente de
+   arriba, que es como el ojo lee el relieve cuando el fondo ya es negro. */
+:root[data-theme='dark'],
+html.dark {
+  --sombra-1: 0 1px 2px oklch(0 0 0 / 0.4), inset 0 1px 0 oklch(1 0 0 / 0.03);
+  --sombra-2: 0 4px 14px oklch(0 0 0 / 0.5), inset 0 1px 0 oklch(1 0 0 / 0.05);
+  --sombra-3: 0 14px 40px oklch(0 0 0 / 0.6), inset 0 1px 0 oklch(1 0 0 / 0.07);
+}
+
+/* ── Entrada escalonada ─────────────────────────────────────────────────────
+
+   🔴 El escalonado no es un adorno: ORDENA LA LECTURA. Cuando doce tarjetas
+      aparecen a la vez, el ojo no sabe por dónde empezar y arranca por el
+      centro. Con 40 ms entre una y otra, la mirada entra por arriba a la
+      izquierda y baja — que es el orden en que están escritas.
+
+   El desfase lo pone `--i` desde el marcado, y está TOPEADO: sin tope, la fila
+   200 de una tabla de caídas aparecería ocho segundos después de la primera, y
+   eso ya no es coreografía, es una página rota. */
+@keyframes entrar {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 8px, 0);
+  }
+}
+.entra {
+  animation: entrar var(--mov-lento) var(--curva-entra) backwards;
+  animation-delay: calc(min(var(--i, 0) * 40ms, 320ms));
+}
+
+/* ── Superficies ────────────────────────────────────────────────────────── */
+.tarjeta {
+  box-shadow: var(--sombra-1);
+  transition:
+    box-shadow var(--mov-base) var(--curva-entra),
+    border-color var(--mov-base) var(--curva-entra);
+}
+/* Sólo las tarjetas que LLEVAN a algún lado se levantan al pasar por encima.
+   Una tarjeta que se eleva y no se puede tocar es una promesa que no se cumple. */
+a.tarjeta:hover,
+.tarjeta:has(> a:hover) {
+  box-shadow: var(--sombra-2);
+  border-color: var(--color-borde-fuerte);
+}
+
+/* ── Respuesta al toque ─────────────────────────────────────────────────────
+
+   🔴 Va en `:active` y no en `:hover`: en un celular no existe el hover, y este
+      panel se abre desde un celular a las tres de la mañana. El hover es un
+      lujo de escritorio; la confirmación del toque es una necesidad.
+
+   El `scale` es de 0.97 y no menos: por debajo de 0.95 el elemento «salta» y en
+   una lista densa parece que la fila se rompió. */
+button:not(:disabled):active,
+a[href]:active,
+[role='button']:not([aria-disabled='true']):active {
+  transform: scale(0.97);
+  transition-duration: var(--mov-rapido);
+}
+button,
+[role='button'] {
+  transition: transform var(--mov-rapido) var(--curva-sale);
+}
+
+/* ── Filas de tabla ─────────────────────────────────────────────────────────
+   Resaltado al pasar: en una tabla de 200 caídas, seguir una fila con la vista
+   de izquierda a derecha sin ayuda es donde se leen mal los datos. */
+tbody tr {
+  transition: background-color var(--mov-rapido) linear;
+}
+tbody tr:hover {
+  background: var(--color-panel-2);
+}
+
+/* ── Foco ───────────────────────────────────────────────────────────────────
+
+   🔴 NUNCA se saca el anillo de foco. Se hace mejor.
+
+      `:focus-visible` y no `:focus`: el navegador ya sabe distinguir entre
+      «llegué con el mouse» y «llegué con el teclado», y sólo el segundo
+      necesita el anillo. Sacarlo del todo deja a quien navega con teclado sin
+      saber dónde está parado — y en un panel de guardia, eso lo usa más gente
+      de la que uno cree. */
+:where(a, button, [role='button'], input, select, textarea, summary):focus-visible {
+  outline: 2px solid var(--color-acento);
+  outline-offset: 2px;
+  border-radius: 0.375rem;
+}

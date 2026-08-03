@@ -3,11 +3,25 @@ import type { ResumenMapa } from '@/lib/consultas';
 import { estadoAgregado, metaEstado } from '@/lib/estado';
 import { numero } from '@/lib/formato';
 
+/**
+ * 🔴 El escalonado ORDENA LA LECTURA, no decora.
+ *
+ *    Cuando cuarenta tarjetas de mapa aparecen todas juntas, el ojo no sabe por
+ *    dónde empezar y arranca por el centro de la pantalla. Con 40 ms entre una
+ *    y otra, la mirada entra arriba a la izquierda y baja — que es el orden en
+ *    que están escritas, y en esta página el orden IMPORTA: los mapas con
+ *    problemas van primero.
+ *
+ *    El desfase está topeado en `.entra` (global.css): sin tope, la tarjeta
+ *    cuarenta aparecería un segundo y medio después de la primera.
+ */
 interface Props {
+  /** Posición en la rejilla, para el desfase de entrada. */
+  orden?: number;
   mapa: ResumenMapa;
 }
 
-const { mapa: m } = Astro.props;
+const { mapa: m, orden = 0 } = Astro.props;
 
 // El estado de la tarjeta es el peor de sus equipos: un mapa con 40 verdes y un
 // rojo NO es un mapa verde.
@@ -35,10 +49,15 @@ const totalBarra = partes.reduce((a, [, n]) => a + n, 0) || 1;
 const MINIMO_VISIBLE = 3; // en porcentaje
 ---
 
-<li>
+{/* La sombra y el borde al pasar por encima los pone `.tarjeta` en global.css,
+    con las mismas curvas y duraciones que todo el panel. Acá estaban otra vez
+    —`transition-shadow hover:shadow-md`— y era el mismo efecto definido dos
+    veces con tiempos distintos: dos tarjetas de la misma pantalla se movían
+    diferente y no había forma de saber por qué. */}
+<li class="entra" style={`--i:${orden}`}>
   <a
     href={`/mapas/${m.id}`}
-    class="tarjeta hover:border-borde-fuerte flex h-full flex-col gap-2 p-3 no-underline transition-shadow hover:shadow-md focus-visible:shadow-md"
+    class="tarjeta hover:border-borde-fuerte flex h-full flex-col gap-2 p-3 no-underline"
   >
     <div class="flex items-start gap-2">
       <span class={`pildora pildora-${meta.clave} mt-px shrink-0`}>

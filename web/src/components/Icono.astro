@@ -19,7 +19,18 @@
 interface Props {
   nombre:
     | 'ventana' | 'terminal' | 'globo' | 'carpeta' | 'copiar'
-    | 'alerta' | 'reloj' | 'mover' | 'grafico' | 'flecha';
+    | 'alerta' | 'reloj' | 'mover' | 'grafico' | 'flecha'
+    // ── Navegación ──────────────────────────────────────────────────────────
+    // 🔴 Reemplazan a los glifos de texto `▚ ◈ ▤ ▼ ◆` que tenía la barra.
+    //
+    //    Un glifo depende de que la fuente del sistema lo tenga, y este
+    //    proyecto YA se quemó con eso: la rampa de antigüedad usaba `● ◐ ○` y
+    //    el del medio —U+25D0— no está en la monoespaciada del sistema, así que
+    //    salía como `‹`, un carácter de repuesto que no significa nada. El
+    //    dato era correcto, el marcado era correcto, los tests en verde, y sólo
+    //    se vio mirando la pantalla.
+    | 'panel' | 'mapa' | 'equipo' | 'caida' | 'disponibilidad'
+    | 'camino' | 'inventario' | 'buscar' | 'salir' | 'sol' | 'luna';
   /** Tamaño en píxeles. 16 en línea con texto, 20 en botones sueltos. */
   tam?: number;
   clase?: string;
@@ -39,6 +50,29 @@ const CAMINOS: Record<Props['nombre'], string> = {
   mover: 'M12 3v18M3 12h18M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3',
   grafico: 'M3 3v16.5A1.5 1.5 0 0 0 4.5 21H21M7 15l3.5-4 3 2.5L20 7',
   flecha: 'm9 6 6 6-6 6',
+
+  // ── Navegación ────────────────────────────────────────────────────────────
+  // Cada uno dice qué HAY en esa sección, no una metáfora suelta.
+  //
+  // Tablero: módulos de distinto tamaño, que es lo que se ve al entrar.
+  panel: 'M4 4.75A1.75 1.75 0 0 1 5.75 3h3.5A1.75 1.75 0 0 1 11 4.75v5.5A1.75 1.75 0 0 1 9.25 12h-3.5A1.75 1.75 0 0 1 4 10.25zM13 4.75A1.75 1.75 0 0 1 14.75 3h3.5A1.75 1.75 0 0 1 20 4.75v1.5A1.75 1.75 0 0 1 18.25 8h-3.5A1.75 1.75 0 0 1 13 6.25zM13 12.75A1.75 1.75 0 0 1 14.75 11h3.5A1.75 1.75 0 0 1 20 12.75v5.5A1.75 1.75 0 0 1 18.25 20h-3.5A1.75 1.75 0 0 1 13 18.25zM4 15.75A1.75 1.75 0 0 1 5.75 14h3.5A1.75 1.75 0 0 1 11 15.75v2.5A1.75 1.75 0 0 1 9.25 20h-3.5A1.75 1.75 0 0 1 4 18.25z',
+  // Un mapa de red no es un plano: es un grafo. Tres nodos unidos.
+  mapa: 'M5 8.3a2.3 2.3 0 1 0 0-4.6 2.3 2.3 0 0 0 0 4.6M19 8.3a2.3 2.3 0 1 0 0-4.6 2.3 2.3 0 0 0 0 4.6M12 20.3a2.3 2.3 0 1 0 0-4.6 2.3 2.3 0 0 0 0 4.6M7.3 6h9.4M6.4 7.9l4.3 8.2M17.6 7.9l-4.3 8.2',
+  // Equipo de rack, con su luz de estado.
+  equipo: 'M3 6.5A1.5 1.5 0 0 1 4.5 5h15A1.5 1.5 0 0 1 21 6.5v3A1.5 1.5 0 0 1 19.5 11h-15A1.5 1.5 0 0 1 3 9.5zM3 14.5A1.5 1.5 0 0 1 4.5 13h15a1.5 1.5 0 0 1 1.5 1.5v3a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5zM6.5 8h.01M6.5 16h.01',
+  // La línea que se corta y cae. No una campana: esto no es una notificación,
+  // es un evento medido con una hora.
+  caida: 'M3 7l5.5 5.5L12 9l9 9M21 13v5h-5',
+  // La porción cumplida de un total, con el reloj adentro.
+  disponibilidad: 'M12 20.5a8.5 8.5 0 1 0 0-17 8.5 8.5 0 0 0 0 17M12 3.5A8.5 8.5 0 0 1 20.5 12M12 7.5V12l3 2',
+  // Saltos encadenados hasta el destino.
+  camino: 'M4.5 13.8a1.8 1.8 0 1 0 0-3.6 1.8 1.8 0 0 0 0 3.6M12 13.8a1.8 1.8 0 1 0 0-3.6 1.8 1.8 0 0 0 0 3.6M19.5 13.8a1.8 1.8 0 1 0 0-3.6 1.8 1.8 0 0 0 0 3.6M6.3 12h3.9M13.8 12h3.9',
+  // La lista, con lo dado de baja tachado. Es literalmente lo que hace la página.
+  inventario: 'M4 6h11M4 12h11M4 18h7M16.5 15.5l4.5 4.5M21 15.5l-4.5 4.5',
+  buscar: 'M11 17.5a6.5 6.5 0 1 0 0-13 6.5 6.5 0 0 0 0 13m5 -1.5 4.5 4.5',
+  salir: 'M15 17v1.5A1.5 1.5 0 0 1 13.5 20h-7A1.5 1.5 0 0 1 5 18.5v-13A1.5 1.5 0 0 1 6.5 4h7A1.5 1.5 0 0 1 15 5.5V7M10 12h10m0 0-3-3m3 3-3 3',
+  sol: 'M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.4 1.4',
+  luna: 'M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z',
 };
 ---
 

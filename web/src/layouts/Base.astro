@@ -5,6 +5,7 @@ import Buscador from '@/components/Buscador.astro';
 import { ultimaSincronizacion } from '@/lib/consultas';
 import { reportarError } from '@/lib/errores';
 import { GUION_TEMA } from '@/lib/cabeceras';
+import Icono from '@/components/Icono.astro';
 
 interface Props {
   titulo: string;
@@ -34,15 +35,65 @@ const ruta = Astro.url.pathname;
 const activo = (prefijo: string) =>
   prefijo === '/' ? ruta === '/' : ruta === prefijo || ruta.startsWith(prefijo + '/');
 
+/**
+ * ── La navegación, en dos formas y una sola verdad ──────────────────────────
+ *
+ * 🔴 EL PROBLEMA QUE ESTO ARREGLA: `/inventario` y `/camino` existían y NO
+ *    estaban en el menú. Se llegaba desde otra página o no se llegaba. Dos
+ *    secciones completas invisibles para quien no supiera que están.
+ *
+ * No se podían agregar a la barra de abajo: el tope de cinco no es un capricho,
+ * es lo que entra en el pulgar de un teléfono sin errar el toque. Con seis, los
+ * blancos bajan de 44 px y se toca el que no era.
+ *
+ * La salida es la que corresponde a un panel de operación: en pantalla grande,
+ * BARRA LATERAL —que no tiene ese tope y además permite AGRUPAR—, y en teléfono
+ * la de abajo con las cinco de siempre. Es una sola lista con una marca de cuál
+ * va en el pulgar; no dos listas que se desincronizan al primer cambio.
+ */
 const NAV = [
-  { href: '/', texto: 'Panel', glifo: '▚' },
-  { href: '/mapas', texto: 'Mapas', glifo: '◈' },
-  { href: '/dispositivos', texto: 'Equipos', glifo: '▤' },
-  // Cinco y no más: la guía de navegación pone el tope en cinco para la barra
-  // inferior del teléfono, y acá la misma lista sirve arriba y abajo.
-  { href: '/caidas', texto: 'Caídas', glifo: '▼' },
-  { href: '/disponibilidad', texto: 'Disponib.', glifo: '◆' },
+  { href: '/', texto: 'Panel', icono: 'panel', pulgar: true,
+    grupo: 'Vigilar', pista: 'El estado de ahora, de un vistazo.' },
+  { href: '/mapas', texto: 'Mapas', icono: 'mapa', pulgar: true,
+    grupo: 'Vigilar', pista: 'La red dibujada, como la ve The Dude.' },
+  { href: '/dispositivos', texto: 'Equipos', icono: 'equipo', pulgar: true,
+    grupo: 'Vigilar', pista: 'Todos los equipos, con su ficha.' },
+
+  { href: '/caidas', texto: 'Caídas', icono: 'caida', pulgar: true,
+    grupo: 'Analizar', pista: 'Qué se cayó, cuándo y por cuánto.' },
+  { href: '/disponibilidad', texto: 'Disponib.', icono: 'disponibilidad', pulgar: true,
+    grupo: 'Analizar', pista: 'El porcentaje de servicio, por equipo.' },
+  { href: '/camino', texto: 'Camino', icono: 'camino', pulgar: false,
+    grupo: 'Analizar', pista: 'Dónde termina la red propia y empieza la del mayorista.' },
+
+  { href: '/inventario', texto: 'Inventario', icono: 'inventario', pulgar: false,
+    grupo: 'Mantener', pista: 'Qué sigue en servicio y qué es arrastre.' },
 ] as const;
+
+/** Los grupos, en el orden en que se muestran. Derivado: no puede desfasarse. */
+const GRUPOS = [...new Set(NAV.map((n) => n.grupo))];
+/** Las cinco del pulgar. El tope se comprueba solo, más abajo. */
+const EN_PULGAR = NAV.filter((n) => n.pulgar);
+/**
+ * 🔴 El tope de cinco se COMPRUEBA, no se recuerda.
+ *
+ *    Ya se rompió una vez: la barra de abajo tenía cinco destinos MÁS el botón
+ *    de buscar, o sea seis columnas en el ancho de un pulgar. Cada blanco
+ *    quedaba en 62 px de ancho útil y de madrugada se toca el de al lado.
+ *
+ *    Buscar salió de acá porque YA está en la cabecera, visible en todos los
+ *    tamaños y con Ctrl+K. Estaba dos veces en la misma pantalla.
+ *
+ *    Esto revienta la compilación, no la pantalla: agregar un sexto al pulgar
+ *    falla en `astro build` y no en el teléfono de alguien a las tres de la
+ *    mañana.
+ */
+if (EN_PULGAR.length > 5) {
+  throw new Error(
+    `La barra inferior tiene ${EN_PULGAR.length} destinos y el tope es 5. ` +
+      'Sacá uno del pulgar (pulgar: false) — en la lateral entran todos.',
+  );
+}
 ---
 
 <!doctype html>
@@ -70,7 +121,74 @@ const NAV = [
     <script is:inline set:html={GUION_TEMA} />
   </head>
 
-  <body class="bg-lienzo text-tinta flex min-h-full flex-col">
+  <body class="bg-lienzo text-tinta min-h-full lg:grid lg:grid-cols-[15rem_1fr]">
+    {/* ── Barra lateral · sólo desde 1024 px ────────────────────────────────
+        🔴 Aparece en escritorio y no en teléfono a propósito. En una pantalla
+           de NOC hay lugar de sobra y la navegación SIEMPRE visible ahorra un
+           toque por cada salto; en un teléfono, 15 rem de menú fijo se comen
+           media pantalla de mapa.
+
+        Va agrupada —Vigilar / Analizar / Mantener— porque siete destinos
+        planos son una lista que hay que leer entera cada vez. Agrupados son
+        tres decisiones cortas: primero QUÉ quiero hacer, después dónde. */}
+    <aside
+      class="border-borde bg-panel sticky top-0 hidden h-dvh flex-col border-r lg:flex"
+      aria-label="Navegación principal"
+    >
+      <a href="/" class="flex h-14 shrink-0 items-center gap-2.5 px-4 no-underline" aria-label="Ir al panel">
+        <span
+          class="bg-acento grid size-8 shrink-0 place-items-center rounded-lg font-mono text-sm font-bold text-white"
+          aria-hidden="true">T</span
+        >
+        <span class="text-sm leading-tight font-semibold">
+          el ISP<span class="text-tenue block text-2xs font-normal">Red · monitoreo</span>
+        </span>
+      </a>
+
+      <nav class="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+        {
+          GRUPOS.map((g) => (
+            <div class="mt-3 first:mt-0">
+              <h2 class="text-tenue text-2xs px-2 pb-1 font-semibold tracking-wide uppercase">{g}</h2>
+              <ul class="space-y-0.5">
+                {NAV.filter((n) => n.grupo === g).map((n) => (
+                  <li>
+                    <a
+                      href={n.href}
+                      aria-current={activo(n.href) ? 'page' : undefined}
+                      title={n.pista}
+                      class:list={[
+                        'group relative flex items-center gap-2.5 rounded-lg px-2 py-2 text-sm font-medium no-underline',
+                        'transition-colors duration-[--mov-base]',
+                        activo(n.href)
+                          ? 'bg-acento-bg text-acento-txt'
+                          : 'text-tenue hover:bg-panel-2 hover:text-tinta',
+                      ]}
+                    >
+                      {/* 🔴 La barrita de la izquierda es un SEGUNDO canal.
+                          El fondo teñido solo se pierde con poco contraste de
+                          pantalla o con daltonismo; una forma, no. */}
+                      <span
+                        class:list={[
+                          'bg-acento absolute top-1/2 left-0 h-5 w-[3px] -translate-y-1/2 rounded-r',
+                          'origin-left transition-transform duration-[--mov-base] ease-[--curva-resorte]',
+                          activo(n.href) ? 'scale-x-100' : 'scale-x-0',
+                        ]}
+                        aria-hidden="true"
+                      />
+                      <Icono nombre={n.icono} tam={18} />
+                      {n.texto}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))
+        }
+      </nav>
+    </aside>
+
+    <div class="flex min-h-dvh min-w-0 flex-col">
     <a
       href="#contenido"
       class="bg-acento sr-only rounded-md px-3 py-2 text-white focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50"
@@ -80,7 +198,9 @@ const NAV = [
 
     <header class="border-borde bg-panel/85 sticky top-0 z-30 border-b backdrop-blur-md">
       <div class="mx-auto flex h-14 max-w-[1600px] items-center gap-3 px-3 sm:px-5">
-        <a href="/" class="flex shrink-0 items-center gap-2 no-underline" aria-label="Ir al panel">
+        {/* En escritorio el logo vive en la barra lateral: acá se oculta para
+            no decir dos veces lo mismo en la misma pantalla. */}
+        <a href="/" class="flex shrink-0 items-center gap-2 no-underline lg:hidden" aria-label="Ir al panel">
           <span
             class="bg-acento grid size-7 place-items-center rounded-md font-mono text-sm font-bold text-white"
             aria-hidden="true">T</span
@@ -90,7 +210,9 @@ const NAV = [
           </span>
         </a>
 
-        <nav aria-label="Secciones" class="ml-1 hidden items-center gap-0.5 md:flex">
+        {/* Entre 768 y 1024 px no hay lateral y la de abajo ya no alcanza:
+            esta franja intermedia —tablet en vertical— usa la horizontal. */}
+        <nav aria-label="Secciones" class="ml-1 hidden items-center gap-0.5 md:flex lg:hidden">
           {
             NAV.map((n) => (
               <a
@@ -120,11 +242,7 @@ const NAV = [
             class="border-borde bg-panel-2 text-tenue hover:text-tinta hover:border-borde-fuerte flex items-center gap-2 rounded-lg border py-1.5 pr-1.5 pl-2.5 text-sm transition-colors"
             aria-label="Buscar equipos y mapas"
           >
-            <svg class="size-4" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="1.8"></circle>
-              <path d="m16 16 4.5 4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
-              ></path>
-            </svg>
+            <Icono nombre="buscar" tam={16} />
             <span class="hidden lg:inline">Buscar</span>
             <kbd
               class="border-borde bg-panel text-2xs text-tenue hidden rounded border px-1.5 py-0.5 font-sans lg:inline"
@@ -138,21 +256,8 @@ const NAV = [
             class="border-borde bg-panel-2 text-tenue hover:text-tinta grid size-8 place-items-center rounded-lg border transition-colors"
             aria-label="Cambiar entre tema claro y oscuro"
           >
-            <svg class="size-4 dark:hidden" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path
-                d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"
-                stroke="currentColor"
-                stroke-width="1.7"
-                stroke-linejoin="round"></path>
-            </svg>
-            <svg class="hidden size-4 dark:block" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="1.7"></circle>
-              <path
-                d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.4 1.4"
-                stroke="currentColor"
-                stroke-width="1.7"
-                stroke-linecap="round"></path>
-            </svg>
+            <span class="dark:hidden"><Icono nombre="luna" tam={16} /></span>
+            <span class="hidden dark:block"><Icono nombre="sol" tam={16} /></span>
           </button>
 
           {/* Cerrar sesión. Es un enlace y no un botón porque lleva a una
@@ -164,19 +269,7 @@ const NAV = [
             aria-label="Cerrar sesión"
             title="Cerrar sesión"
           >
-            <svg
-              class="size-4"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.7"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M15 17v1.5A1.5 1.5 0 0 1 13.5 20h-7A1.5 1.5 0 0 1 5 18.5v-13A1.5 1.5 0 0 1 6.5 4h7A1.5 1.5 0 0 1 15 5.5V7M10 12h10m0 0-3-3m3 3-3 3"
-              ></path>
-            </svg>
+            <Icono nombre="salir" tam={16} />
           </a>
         </div>
       </div>
@@ -192,8 +285,8 @@ const NAV = [
       id="contenido"
       class:list={[
         'flex-1',
-        ancho === 'normal' && 'mx-auto w-full max-w-[1600px] px-3 py-4 pb-24 sm:px-5 sm:py-6 md:pb-8',
-        ancho === 'completo' && 'flex min-h-0 flex-col pb-20 md:pb-0',
+        ancho === 'normal' && 'mx-auto w-full max-w-[1600px] px-3 py-4 pb-24 sm:px-5 sm:py-6 lg:pb-8',
+        ancho === 'completo' && 'flex min-h-0 flex-col pb-20 lg:pb-0',
       ]}
     >
       {
@@ -232,34 +325,39 @@ const NAV = [
         próxima vez que `NAV` cambie de tamaño. */}
     <nav
       aria-label="Secciones"
-      class="border-borde bg-panel/95 fixed inset-x-0 bottom-0 z-30 grid auto-cols-fr grid-flow-col border-t pb-[env(safe-area-inset-bottom)] backdrop-blur-md md:hidden"
+      class="border-borde bg-panel/95 fixed inset-x-0 bottom-0 z-30 grid auto-cols-fr grid-flow-col border-t pb-[env(safe-area-inset-bottom)] backdrop-blur-md lg:hidden"
     >
       {
-        NAV.map((n) => (
+        EN_PULGAR.map((n) => (
           <a
             href={n.href}
             aria-current={activo(n.href) ? 'page' : undefined}
             class:list={[
-              'flex flex-col items-center gap-0.5 py-2 text-2xs font-medium no-underline',
+              // 44 px de alto mínimo: es el blanco que un pulgar acierta sin
+              // mirar. Con menos, de madrugada se toca el de al lado.
+              'relative flex min-h-[3rem] flex-col items-center justify-center gap-0.5 py-1.5 text-2xs font-medium no-underline',
+              'transition-colors duration-[--mov-base]',
               activo(n.href) ? 'text-acento-txt' : 'text-tenue',
             ]}
           >
-            <span class="text-base leading-none" aria-hidden="true">
-              {n.glifo}
-            </span>
+            {/* La marca va ARRIBA, pegada al borde: abajo la tapa el gesto del
+                sistema en los teléfonos sin botón. */}
+            <span
+              class:list={[
+                'bg-acento absolute top-0 left-1/2 h-[3px] w-8 -translate-x-1/2 rounded-b',
+                'origin-top transition-transform duration-[--mov-base] ease-[--curva-resorte]',
+                activo(n.href) ? 'scale-y-100' : 'scale-y-0',
+              ]}
+              aria-hidden="true"
+            />
+            <Icono nombre={n.icono} tam={20} />
             {n.texto}
           </a>
         ))
       }
-      <button
-        type="button"
-        data-abrir-buscador
-        class="text-tenue text-2xs flex flex-col items-center gap-0.5 py-2 font-medium"
-      >
-        <span class="text-base leading-none" aria-hidden="true">⌕</span>
-        Buscar
-      </button>
     </nav>
+
+    </div>
 
     <Buscador />
 

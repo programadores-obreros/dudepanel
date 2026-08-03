@@ -42,8 +42,8 @@ const sanos = mapas.filter((m) => m.caidos === 0 && m.parcial === 0);
               Con problemas · {conProblemas.length}
             </h2>
             <ul class="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-              {conProblemas.map((m) => (
-                <TarjetaMapa mapa={m} />
+              {conProblemas.map((m, i) => (
+                <TarjetaMapa mapa={m} orden={i} />
               ))}
             </ul>
           </section>
@@ -57,8 +57,8 @@ const sanos = mapas.filter((m) => m.caidos === 0 && m.parcial === 0);
             <p class="text-tenue text-xs">Todos los mapas tienen algo caído.</p>
           ) : (
             <ul class="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-              {sanos.map((m) => (
-                <TarjetaMapa mapa={m} />
+              {sanos.map((m, i) => (
+                <TarjetaMapa mapa={m} orden={i} />
               ))}
             </ul>
           )}

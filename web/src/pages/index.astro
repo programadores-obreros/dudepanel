@@ -204,7 +204,7 @@ const TILES = [
             Equipos · {numero(eq?.total ?? 0)} en total
           </h2>
           <div class="grid grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-4">
-            <Kpi
+            <Kpi entra={0}
               titulo="Caídos"
               valor={eq?.caidos ?? 0}
               total={eq?.total}
@@ -213,7 +213,7 @@ const TILES = [
               clave="eq-caidos"
               href="/dispositivos?estado=3"
             />
-            <Kpi
+            <Kpi entra={1}
               titulo="Caída parcial"
               valor={eq?.parcial ?? 0}
               total={eq?.total}
@@ -222,7 +222,7 @@ const TILES = [
               clave="eq-parcial"
               href="/dispositivos?estado=2"
             />
-            <Kpi
+            <Kpi entra={2}
               titulo="Sin datos"
               valor={eq?.desconocidos ?? 0}
               total={eq?.total}
@@ -231,7 +231,7 @@ const TILES = [
               clave="eq-desc"
               href="/dispositivos?estado=0"
             />
-            <Kpi
+            <Kpi entra={3}
               titulo="Arriba"
               valor={eq?.arriba ?? 0}
               total={eq?.total}

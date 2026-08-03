@@ -11,9 +11,17 @@ interface Props {
   href?: string;
   /** Id para que el refresco en vivo pueda reemplazar sólo la cifra. */
   clave?: string;
+  /**
+   * Posición en la fila, para el desfase de entrada.
+   *
+   * Cuatro cifras que aparecen a la vez se leen como un bloque; con 40 ms entre
+   * una y otra se leen de izquierda a derecha, que es el orden en que están
+   * puestas y el orden en que importan.
+   */
+  entra?: number;
 }
 
-const { titulo, valor, total, tono = 'neutro', glifo, href, clave } = Astro.props;
+const { titulo, valor, total, tono = 'neutro', glifo, href, clave, entra } = Astro.props;
 
 const tonos = {
   up: 'text-up-txt border-up/35 bg-up-bg/45',
@@ -28,10 +36,16 @@ const Etiqueta = href ? 'a' : 'div';
 
 <Etiqueta
   href={href}
+  style={entra !== undefined ? `--i:${entra}` : undefined}
   class:list={[
     'relative flex flex-col justify-between gap-1 rounded-xl border p-3 sm:p-4 no-underline',
     tonos[tono],
-    href && 'transition-shadow hover:shadow-md focus-visible:shadow-md',
+    entra !== undefined && 'entra',
+    // La elevación al pasar por encima sale del sistema —`.tarjeta` en
+    // global.css— con la misma curva y duración que el resto. Tenerla acá
+    // otra vez era el mismo efecto con otro tiempo: dos tarjetas del mismo
+    // panel se movían distinto y nadie sabía por qué.
+    href && 'hover:shadow-[--sombra-2] transition-shadow duration-[--mov-base]',
   ]}
 >
   <div class="flex items-center gap-1.5">
