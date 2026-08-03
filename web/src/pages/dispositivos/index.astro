@@ -6,6 +6,7 @@ import { listarDispositivos, tiposDeDispositivo, type ColumnaOrden } from '@/lib
 import { reportarError } from '@/lib/errores';
 import { aEstado, ESTADOS } from '@/lib/estado';
 import { aAntiguedad, ANTIGUEDADES, metaAntiguedad } from '@/lib/antiguedad';
+import { DIAS_ACTIVO } from '@/lib/vida';
 import { numero } from '@/lib/formato';
 
 /**
@@ -42,13 +43,27 @@ const orden: ColumnaOrden = COLUMNAS.some((c) => c.clave === ordenPedido)
 const desc = p.get('dir') === 'desc';
 const pagina = Math.max(Number(p.get('pag')) || 1, 1);
 
+/**
+ * 🔴 Por omisión la lista NO muestra los que están en cola.
+ *
+ *    «En cola» = callado hace más de 30 días. En esta instalación son 420 de
+ *    885: casi la mitad. Una lista donde la mitad son fantasmas obliga a
+ *    filtrar mentalmente en CADA lectura, y ese filtro falla justo cuando hay
+ *    apuro.
+ *
+ *    No se pierde nada: siguen enteros en `/inventario`, con su ubicación, su
+ *    historia y su ficha, se pueden buscar y vuelven con un botón. Y cuando el
+ *    filtro está puesto, esta página lo dice arriba de la tabla.
+ */
+const soloEnServicio = Astro.url.searchParams.get('cola') !== '1';
+
 let datos: Awaited<ReturnType<typeof listarDispositivos>> | null = null;
 let tipos: Awaited<ReturnType<typeof tiposDeDispositivo>> = [];
 let error: string | null = null;
 
 try {
   [datos, tipos] = await Promise.all([
-    listarDispositivos({ estado, tipoId, texto, antiguedad, orden, desc, pagina, porPagina: 50 }),
+    listarDispositivos({ estado, tipoId, texto, antiguedad, orden, desc, pagina, porPagina: 50, soloEnServicio }),
     tiposDeDispositivo(),
   ]);
 } catch (e) {
@@ -79,6 +94,33 @@ const hayFiltros = estado !== null || tipoId !== null || !!texto || antiguedad !
     datos ? `${numero(datos.total)} ${hayFiltros ? 'coinciden con el filtro' : 'monitoreados'}` : undefined
   }
 >
+  {/* 🔴 El recorte se ANUNCIA, esté puesto o no.
+      Una lista que esconde 420 de 885 equipos sin decirlo es la misma mentira
+      que mostrarlos todos, sólo que más prolija: la primera vez que alguien
+      busque un equipo que sabe que existe y no lo encuentre, deja de confiar
+      en la página entera. */}
+  {
+    datos && (soloEnServicio ? datos.en_cola > 0 : true) && (
+      <p class="border-borde bg-panel-2 text-tenue mb-3 rounded-lg border px-3 py-2 text-xs">
+        {soloEnServicio ? (
+          <>
+            Se muestran los equipos <strong class="text-tinta">en servicio</strong>.{' '}
+            <strong class="text-tinta">{numero(datos.en_cola)}</strong> están en cola —callados hace
+            más de {DIAS_ACTIVO} días— y no se listan acá.{' '}
+            <a href={url({ cola: 1 })} class="underline">Incluirlos</a>
+            {' · '}
+            <a href="/inventario" class="underline">Ver la cola</a>
+          </>
+        ) : (
+          <>
+            Se muestran <strong class="text-tinta">todos</strong>, incluidos los que están en cola.{' '}
+            <a href={url({ cola: null })} class="underline">Volver a sólo los que están en servicio</a>
+          </>
+        )}
+      </p>
+    )
+  }
+
   {
     error ? (
       <div class="border-caido bg-caido-bg text-caido-txt rounded-xl border-2 p-4">

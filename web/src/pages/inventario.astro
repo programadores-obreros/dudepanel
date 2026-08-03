@@ -5,6 +5,7 @@ import { alcanceHistoria, estadosDeVida, marcarVida, olvidarVida } from '@/lib/c
 import { quien } from '@/lib/roles';
 import { clasificar, metaVida, VIDAS, DIAS_ACTIVO, DIAS_BAJA, type Vida } from '@/lib/vida';
 import { numero } from '@/lib/formato';
+import Icono from '@/components/Icono.astro';
 
 /**
  * Qué hay de verdad en la red, y qué es arrastre de un mapa que nadie tocó.
@@ -82,6 +83,21 @@ const ver: Vida = (VER as readonly string[]).includes(verPedido ?? '')
   : 'baja';
 const soloSondeados = Astro.url.searchParams.get('sondeados') === '1';
 
+/**
+ * 🔴 La búsqueda es lo que convierte esta lista en una COLA de trabajo.
+ *
+ *    Sin ella, 369 equipos de baja son un muro: no se puede volver a buscar
+ *    aquel que uno sabe que sí está en servicio, ni comprobar si un equipo
+ *    puntual quedó acá adentro. Un equipo que se puede ocultar pero no
+ *    encontrar está perdido, no archivado — y la promesa de esta página es
+ *    exactamente la contraria.
+ *
+ *    Busca por NOMBRE o por DIRECCIÓN: son las dos formas en que alguien tiene
+ *    el dato a mano. Quien viene del cliente trae el nombre; quien viene de un
+ *    log trae la IP.
+ */
+const q = (Astro.url.searchParams.get('q') ?? '').trim().slice(0, 80);
+
 let error: string | null = null;
 let filas: Awaited<ReturnType<typeof estadosDeVida>> = [];
 let alcance = 0;
@@ -102,6 +118,26 @@ const bajaSondeada = juzgadas.filter((j) => j.v.vida === 'baja' && j.f.probe_ena
 
 let lista = juzgadas.filter((j) => j.v.vida === ver);
 if (soloSondeados) lista = lista.filter((j) => j.f.probe_enabled);
+// Cuántos había ANTES de buscar: sin ese número, «3 resultados» de un grupo de
+// 369 se lee como si el grupo tuviera tres.
+const enElGrupo = lista.length;
+if (q) {
+  const t = q.toLowerCase();
+  lista = lista.filter(
+    (j) =>
+      j.f.name.toLowerCase().includes(t) ||
+      (j.f.direcciones ?? []).some((d) => d.includes(t)),
+  );
+}
+
+/** Conserva los demás filtros al armar un enlace. */
+function con(cambios: Record<string, string>): string {
+  const u = new URLSearchParams({ ver });
+  if (soloSondeados) u.set('sondeados', '1');
+  if (q) u.set('q', q);
+  for (const [k, v] of Object.entries(cambios)) v ? u.set(k, v) : u.delete(k);
+  return `?${u}`;
+}
 
 const ahora = filas[0]?.ahora ?? null;
 const fecha = (s: string | null) =>
@@ -221,10 +257,58 @@ const fecha = (s: string | null) =>
     )
   }
 
+  {/* ── Buscar dentro de la cola ─────────────────────────────────────────
+      🔴 Es un `<form method="get">`: sin JavaScript, y la búsqueda queda en la
+         URL. Eso importa más de lo que parece — «los equipos de la calle
+         Peniel que quedaron en la cola» se puede pegar en un chat y le llega
+         igual al otro. Un buscador que sólo vive en la memoria del navegador
+         no se puede compartir. */}
+  <form method="get" class="mb-3 flex flex-wrap items-center gap-2">
+    <input type="hidden" name="ver" value={ver} />
+    {soloSondeados && <input type="hidden" name="sondeados" value="1" />}
+    <label class="sr-only" for="q">Buscar por nombre o dirección</label>
+    {/* `text-base` en móvil y `sm:text-sm` en escritorio: por debajo de 16 px
+        iOS hace zoom solo al enfocar el campo y saca al operador del contexto
+        que estaba mirando. Es un salto que nadie pide y que después hay que
+        deshacer a dos dedos. */}
+    <div class="relative min-w-0 flex-1 sm:max-w-md">
+      <input
+        id="q"
+        name="q"
+        type="search"
+        value={q}
+        placeholder="Buscar por nombre o dirección…"
+        class="border-borde bg-panel-2 focus:border-acento w-full rounded-lg border py-2 pr-3 pl-9 text-base transition-colors duration-[--mov-base] sm:text-sm"
+      />
+      <span class="text-tenue pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2">
+        <Icono nombre="buscar" tam={16} />
+      </span>
+    </div>
+    <button
+      type="submit"
+      class="border-borde bg-panel-2 hover:border-borde-fuerte hover:text-tinta text-tenue rounded-lg border px-3 py-2 text-sm font-medium transition-colors duration-[--mov-base]"
+    >
+      Buscar
+    </button>
+    {
+      q && (
+        <a href={con({ q: '' })} class="text-acento-txt text-sm">
+          Limpiar
+        </a>
+      )
+    }
+  </form>
+
   <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
     <h2 class="text-lg font-bold">
       {metaVida(ver).etiqueta}: {numero(lista.length)}
+      {/* 🔴 Cuántos había ANTES de buscar. Sin este número, «3 resultados» de
+          un grupo de 369 se lee como si el grupo entero tuviera tres. */}
+      {q && enElGrupo !== lista.length && (
+        <span class="text-tenue font-normal"> de {numero(enElGrupo)}</span>
+      )}
       {soloSondeados && <span class="text-tenue font-normal"> · sólo los que se siguen sondeando</span>}
+      {q && <span class="text-tenue font-normal"> · «{q}»</span>}
     </h2>
     {
       soloSondeados && (
@@ -238,7 +322,17 @@ const fecha = (s: string | null) =>
   {
     lista.length === 0 ? (
       <p class="text-tenue border-borde bg-panel-2 rounded-xl border p-4 text-sm">
-        No hay ningún equipo en este grupo.
+        {/* «No hay» y «no encontré» son dos cosas distintas, y decirlas igual
+            hace que alguien concluya que la cola está vacía cuando lo que pasa
+            es que su búsqueda no coincidió. */}
+        {q ? (
+          <>
+            Ningún equipo de este grupo coincide con «<strong class="text-tinta">{q}</strong>».{' '}
+            <a href={con({ q: '' })} class="underline">Ver los {numero(enElGrupo)} del grupo</a>.
+          </>
+        ) : (
+          'No hay ningún equipo en este grupo.'
+        )}
       </p>
     ) : (
       <div class="border-borde bg-panel overflow-x-auto rounded-xl border">
@@ -259,6 +353,9 @@ const fecha = (s: string | null) =>
                   <a href={`/dispositivos/${f.device_id}`} class="font-medium">
                     {f.name}
                   </a>
+                  {f.direcciones.length > 0 && (
+                    <span class="text-tenue block font-mono text-2xs">{f.direcciones[0]}</span>
+                  )}
                   {v.manual && (
                     <span class="text-2xs text-tenue block">
                       {`Marcado por ${f.por_manual} el ${fecha(f.at_manual)}`}

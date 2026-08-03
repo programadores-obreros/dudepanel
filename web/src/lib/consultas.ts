@@ -753,6 +753,22 @@ export interface FiltrosDispositivos {
   texto?: string | null;
   /** Filtro por hace cuánto que el equipo está como está. Ver `antiguedad.ts`. */
   antiguedad?: Antiguedad | null;
+  /**
+   * Sacar de la lista los que están EN COLA. **Por omisión, sí.**
+   *
+   * 🔴 «En cola» = todo lo que no está en servicio: callado hace más de 30
+   *    días. En esta instalación son 420 de 885, casi la mitad.
+   *
+   *    El valor por omisión es la decisión importante. Una lista de equipos
+   *    donde la mitad son fantasmas obliga a filtrar mentalmente en CADA
+   *    lectura, y ese filtro mental falla justo cuando hay apuro. La cola no
+   *    borra nada: los equipos siguen enteros en `/inventario`, con su
+   *    ubicación, su historia y su ficha, y vuelven con un botón.
+   *
+   *    Y cuando el filtro está puesto, la página lo DICE. Un recorte silencioso
+   *    sería cambiar una mentira por otra más prolija.
+   */
+  soloEnServicio?: boolean;
   orden?: ColumnaOrden;
   desc?: boolean;
   pagina?: number;
@@ -762,6 +778,8 @@ export interface FiltrosDispositivos {
 export interface PaginaDispositivos {
   filas: FilaDispositivo[];
   total: number;
+  /** Cuántos quedaron fuera por estar en cola. Se muestra siempre. */
+  en_cola: number;
   pagina: number;
   porPagina: number;
   paginas: number;
@@ -783,6 +801,13 @@ export async function listarDispositivos(f: FiltrosDispositivos = {}): Promise<P
   const porPagina = Math.min(Math.max(f.porPagina ?? 50, 10), 200);
   const pagina = Math.max(f.pagina ?? 1, 1);
 
+  const soloEnServicio = f.soloEnServicio ?? true;
+  // El predicado sale del MISMO módulo que la clasificación de la interfaz
+  // (`lib/vida`), no escrito otra vez acá. Ver `sqlEsActivo`: hay un test que
+  // corre las 48 combinaciones contra Postgres y las compara con `clasificar`.
+  const filtroCola = soloEnServicio ? `AND ${sqlEsActivo('dv', '$7::int')}` : '';
+  const unirVida = 'LEFT JOIN v_device_estado dv ON dv.device_id = d.id';
+
   const where = `
     WHERE ($1::smallint IS NULL OR COALESCE(d.status, 0) = $1)
       AND ($2::bigint   IS NULL OR d.type_id = $2)
@@ -791,8 +816,13 @@ export async function listarDispositivos(f: FiltrosDispositivos = {}): Promise<P
                       WHERE host(a) LIKE $3 || '%'))
       AND ($4::text     IS NULL
            OR ${sqlAntiguedad('sc.estado_desde', '$5::int', '$6::int')} = $4)
+      ${filtroCola}
   `;
-  const params = [
+  // 🔴 Los marcadores se numeran DISTINTO según haya filtro o no, y el LIMIT
+  //    va después. Escribir `$7` a mano en los dos lugares es cómo se cuela un
+  //    parámetro que apunta a otra cosa: Postgres no se queja — devuelve otro
+  //    resultado. Se calcula una vez y se reusa.
+  const params: unknown[] = [
     f.estado ?? null,
     f.tipoId ?? null,
     f.texto?.trim() || null,
@@ -800,16 +830,36 @@ export async function listarDispositivos(f: FiltrosDispositivos = {}): Promise<P
     DIAS_RECIENTE,
     DIAS_RESIDUO,
   ];
+  if (soloEnServicio) params.push(DIAS_ACTIVO);
+  const nLim = params.length + 1;
 
-  const totalFila = await consultarUna<{ n: number }>(
-    `SELECT count(*)::int AS n
+  const totalFila = await consultarUna<{ n: number; en_cola: number }>(
+    `SELECT count(*)::int AS n,
+            0::int AS en_cola
      FROM devices d
      LEFT JOIN device_types dt ON dt.id = d.type_id
+     ${unirVida}
      ${JOIN_ESTADO_DESDE}
      ${where}`,
     params,
   );
   const total = totalFila?.n ?? 0;
+
+  // Cuántos quedaron fuera por la cola: los MISMOS filtros, sin el de vida.
+  // Se pregunta aparte y no con un FILTER para no arrastrar el JOIN cuando el
+  // filtro está apagado.
+  let enCola = 0;
+  if (soloEnServicio) {
+    const sinCola = await consultarUna<{ n: number }>(
+      `SELECT count(*)::int AS n
+       FROM devices d
+       LEFT JOIN device_types dt ON dt.id = d.type_id
+       ${JOIN_ESTADO_DESDE}
+       ${where.replace(filtroCola, '')}`,
+      params.slice(0, 6),
+    );
+    enCola = Math.max((sinCola?.n ?? 0) - total, 0);
+  }
   const paginas = Math.max(1, Math.ceil(total / porPagina));
   const paginaReal = Math.min(pagina, paginas);
 
@@ -825,14 +875,15 @@ export async function listarDispositivos(f: FiltrosDispositivos = {}): Promise<P
             sc.estado_desde
      FROM devices d
      LEFT JOIN device_types dt ON dt.id = d.type_id
+     ${unirVida}
      ${JOIN_ESTADO_DESDE}
      ${where}
      ORDER BY ${ORDEN[orden]} ${dir}${nulos}, lower(d.name) ASC
-     LIMIT $7 OFFSET $8`,
+     LIMIT $${nLim} OFFSET $${nLim + 1}`,
     [...params, porPagina, (paginaReal - 1) * porPagina],
   );
 
-  return { filas, total, pagina: paginaReal, porPagina, paginas };
+  return { filas, total, en_cola: enCola, pagina: paginaReal, porPagina, paginas };
 }
 
 export async function tiposDeDispositivo(): Promise<{ id: number; nombre: string; n: number }[]> {
@@ -2503,6 +2554,8 @@ export interface FilaVida extends SenalDeVida {
   status: number | null;
   status_label: string | null;
   probe_enabled: boolean | null;
+  /** Para poder buscar por IP: quien viene de un log trae la dirección, no el nombre. */
+  direcciones: string[];
   ultima_senal: string | null;
   /** El «presente» del cálculo: el mtime del volcado, no el reloj de pared. */
   ahora: string | null;
@@ -2545,11 +2598,13 @@ export async function alcanceHistoria(): Promise<number> {
 /** Todos los equipos con su última señal. 885 filas, 3 ms medidos. */
 export async function estadosDeVida(): Promise<FilaVida[]> {
   return consultar<FilaVida>(
-    `SELECT device_id, name, status, status_label, probe_enabled,
-            ultima_senal, ahora, dias_sin_senal, arriba_ahora,
-            estado_manual, nota_manual, por_manual, at_manual
-       FROM v_device_estado
-      ORDER BY dias_sin_senal DESC NULLS FIRST, name`,
+    `SELECT e.device_id, e.name, e.status, e.status_label, e.probe_enabled,
+            ARRAY(SELECT host(a) FROM unnest(d.addresses) a) AS direcciones,
+            e.ultima_senal, e.ahora, e.dias_sin_senal, e.arriba_ahora,
+            e.estado_manual, e.nota_manual, e.por_manual, e.at_manual
+       FROM v_device_estado e
+       JOIN devices d ON d.id = e.device_id
+      ORDER BY e.dias_sin_senal DESC NULLS FIRST, e.name`,
   );
 }
 
