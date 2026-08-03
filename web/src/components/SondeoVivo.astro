@@ -127,9 +127,25 @@ const grupos = [...juntos.values()].filter((n) => n > 1);
             motivo cuando lo hay. Un botón que no hace nada visible es cómo se
             pierde la confianza en una herramienta: si no se pudo, hay que
             decir por qué. */}
+        {/* 🔴 Dos tonos, y la diferencia importa.
+
+            Una ESPERA es el enfriamiento funcionando: se muestra en tono neutro,
+            porque el rojo que se gasta en lo que anda bien es el rojo que nadie
+            mira cuando algo se rompe. Un ERROR de verdad —el servicio caído, el
+            destino que no está en la base— sí va en rojo.
+
+            Lo reportó el usuario: «esperá 1 s» en un recuadro rojo de alarma. */}
         {resultado && !resultado.ok && (
-          <div class="border-caido bg-caido-bg text-caido-txt mt-3 rounded-lg border p-2 text-xs">
-            <p class="font-semibold">{resultado.error}</p>
+          <div
+            class:list={[
+              'mt-3 rounded-lg border p-2 text-xs',
+              resultado.espera
+                ? 'border-borde bg-panel-2 text-tenue'
+                : 'border-caido bg-caido-bg text-caido-txt',
+            ]}
+            role="status"
+          >
+            <p class:list={[!resultado.espera && 'font-semibold']}>{resultado.error}</p>
             {resultado.motivo && <p class="mt-0.5 opacity-90">{resultado.motivo}</p>}
           </div>
         )}

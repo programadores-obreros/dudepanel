@@ -95,9 +95,25 @@ SONDAS_PING = int(os.environ.get("SONDA_PING_SONDAS", "5"))
 TIMEOUT_PING_S = float(os.environ.get("SONDA_PING_TIMEOUT_S", "1.0"))
 TIMEOUT_PUERTO_S = float(os.environ.get("SONDA_PUERTO_TIMEOUT_S", "1.5"))
 
-#: Mínimo entre dos sondeos al MISMO destino. Apretar el botón diez veces no
-#: manda diez ráfagas: la segunda y siguientes reciben el resultado guardado.
+#: Mínimo entre dos sondeos IGUALES: mismo destino Y misma pregunta.
+#:
+#: 🔴 Por PAR (destino, acción), no por destino. La primera versión frenaba por
+#:    destino y rompía el flujo que esta herramienta viene a facilitar: ping,
+#:    después puertos, después camino — tres preguntas DISTINTAS al mismo equipo,
+#:    que es literalmente cómo se diagnostica. Lo reportó el usuario apretando
+#:    «Ping» y después «Camino» y recibiendo «esperá 1 s».
+#:
+#:    Repetir la MISMA pregunta a los dos segundos no aporta nada; hacer otra
+#:    sí. El freno tiene que distinguirlas.
 ENFRIAMIENTO_S = float(os.environ.get("SONDA_ENFRIAMIENTO_S", "10"))
+
+#: Si lo que falta es menos que esto, el servidor ESPERA en vez de negarse.
+#:
+#: 🔴 Decirle a alguien «esperá 1 segundo» es peor que esperar el segundo.
+#:    Le pasa el trabajo de contar y volver a apretar por un ahorro de una
+#:    sonda. Por debajo de este umbral se duerme y se contesta con el dato,
+#:    que es lo que la persona vino a buscar.
+ESPERA_CORTA_S = float(os.environ.get("SONDA_ESPERA_CORTA_S", "3"))
 #: Tope global de sondeos por minuto, sumando todos los usuarios y destinos.
 POR_MINUTO = int(os.environ.get("SONDA_POR_MINUTO", "60"))
 
@@ -154,19 +170,34 @@ class Freno:
         self._ultimo: dict[str, float] = {}
         self._minuto: list[float] = []
 
-    def permite(self, destino: str) -> tuple[bool, str]:
+    def permite(self, destino: str, accion: str) -> tuple[bool, str, float]:
+        """Devuelve (permitido, motivo, segundos_que_faltan)."""
+        clave = f"{accion}@{destino}"
         ahora = time.monotonic()
         with self._lock:
             self._minuto = [t for t in self._minuto if ahora - t < 60]
+            # 🔴 El tope global NO se espera: es la protección de verdad contra
+            #    alguien martillando, y dormir ahí sería acumular pedidos en
+            #    vez de frenarlos.
             if len(self._minuto) >= POR_MINUTO:
-                return False, f"tope global de {POR_MINUTO} sondeos por minuto"
-            previo = self._ultimo.get(destino)
-            if previo is not None and ahora - previo < ENFRIAMIENTO_S:
+                return False, f"tope global de {POR_MINUTO} sondeos por minuto", 0.0
+            previo = self._ultimo.get(clave)
+            if previo is not None:
                 falta = ENFRIAMIENTO_S - (ahora - previo)
-                return False, f"esperá {falta:.0f} s antes de volver a sondear {destino}"
-            self._ultimo[destino] = ahora
+                if falta > ESPERA_CORTA_S:
+                    return (False,
+                            f"Este mismo sondeo se hizo recién. Se puede repetir en "
+                            f"{falta:.0f} s — las otras tres preguntas están disponibles ya.",
+                            falta)
+                if falta > 0:
+                    # Se reserva el turno ANTES de soltar el lock y dormir: si no,
+                    # dos pedidos simultáneos esperan lo mismo y salen juntos.
+                    self._ultimo[clave] = ahora + falta
+                    self._minuto.append(ahora)
+                    return True, "", falta
+            self._ultimo[clave] = ahora
             self._minuto.append(ahora)
-            return True, ""
+            return True, "", 0.0
 
 
 FRENO = Freno()
@@ -368,9 +399,17 @@ class Manejador(BaseHTTPRequestHandler):
             log.error("no pude validar el destino: %s", e)
             return self._json({"error": "no se pudo validar el destino"}, 503)
 
-        permite, motivo = FRENO.permite(destino)
+        permite, motivo, falta = FRENO.permite(destino, que)
         if not permite:
-            return self._json({"error": motivo}, 429)
+            # 🔴 `espera: true` para que la pantalla NO lo pinte de rojo. Un
+            #    enfriamiento es funcionamiento normal, no una falla — y el rojo
+            #    que se usa para lo que no está roto es el rojo que después
+            #    nadie mira cuando algo sí lo está.
+            return self._json({"error": motivo, "espera": True,
+                               "segundos": round(falta)}, 429)
+        if falta > 0:
+            # Menos de `ESPERA_CORTA_S`: se espera y se contesta con el dato.
+            time.sleep(falta)
 
         t0 = time.perf_counter()
         try:

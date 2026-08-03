@@ -141,7 +141,23 @@ export type Resultado =
   | { ok: true; accion: 'puertos'; datos: Puertos }
   | { ok: true; accion: 'traza'; datos: Traza }
   | { ok: true; accion: 'snmp'; datos: Snmp }
-  | { ok: false; error: string; motivo?: string; estado: number };
+  | {
+      ok: false;
+      error: string;
+      motivo?: string;
+      estado: number;
+      /**
+       * 🔴 Esto NO es una falla: es el enfriamiento haciendo su trabajo.
+       *
+       *    Se distingue para que la pantalla no lo pinte de rojo. El rojo que
+       *    se gasta en lo que funciona bien es el rojo que después nadie mira
+       *    cuando algo se rompe de verdad — y este panel existe justamente
+       *    porque las alarmas que suenan de más enseñan a ignorarlas.
+       */
+      espera?: boolean;
+      /** Cuántos segundos faltan, para poder decirlo con un número. */
+      segundos?: number;
+    };
 
 /**
  * @param timeoutMs  tope de espera. Un traceroute de 20 saltos con timeout de
@@ -172,6 +188,8 @@ export async function sondear(
         estado: r.status,
         error: String(cuerpo.error ?? `el servicio de sondeo contestó ${r.status}`),
         motivo: typeof cuerpo.motivo === 'string' ? cuerpo.motivo : undefined,
+        espera: cuerpo.espera === true,
+        segundos: typeof cuerpo.segundos === 'number' ? cuerpo.segundos : undefined,
       };
     }
     // 🔴 Se comprueba la forma antes de afirmarla.
