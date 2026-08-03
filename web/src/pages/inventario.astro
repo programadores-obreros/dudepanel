@@ -130,6 +130,33 @@ if (q) {
   );
 }
 
+/**
+ * 🔴 Dónde MÁS está lo que se buscó.
+ *
+ *    La búsqueda mira sólo el grupo abierto, y eso obliga a adivinar la
+ *    pestaña: se busca «suarez», sale «0 resultados», y la conclusión natural
+ *    —equivocada— es que ese equipo no está. Un buscador que devuelve cero
+ *    cuando el dato SÍ existe es peor que no tener buscador, porque cierra la
+ *    pregunta en falso.
+ *
+ *    Se cuentan las coincidencias en los otros dos grupos y se ofrecen. Cuesta
+ *    recorrer una lista de 885 en memoria, que ya está traída.
+ */
+const otrosGrupos = q
+  ? (['activo', 'dudoso', 'baja'] as const)
+      .filter((g) => g !== ver)
+      .map((g) => ({
+        grupo: g,
+        n: juzgadas.filter(
+          (j) =>
+            j.v.vida === g &&
+            (j.f.name.toLowerCase().includes(q.toLowerCase()) ||
+              (j.f.direcciones ?? []).some((d) => d.includes(q.toLowerCase()))),
+        ).length,
+      }))
+      .filter((x) => x.n > 0)
+  : [];
+
 /** Conserva los demás filtros al armar un enlace. */
 function con(cambios: Record<string, string>): string {
   const u = new URLSearchParams({ ver });
@@ -318,6 +345,24 @@ const fecha = (s: string | null) =>
       )
     }
   </div>
+
+  {
+    otrosGrupos.length > 0 && (
+      <p class="border-acento/40 bg-acento-bg text-acento-txt mb-3 rounded-lg border px-3 py-2 text-xs">
+        «{q}» también coincide en{' '}
+        {otrosGrupos.map((o, i) => (
+          <>
+            {i > 0 && ' y '}
+            <a href={`?ver=${o.grupo}&q=${encodeURIComponent(q)}`} class="font-semibold underline">
+              {metaVida(o.grupo).etiqueta}
+            </a>{' '}
+            ({numero(o.n)})
+          </>
+        ))}
+        .
+      </p>
+    )
+  }
 
   {
     lista.length === 0 ? (
