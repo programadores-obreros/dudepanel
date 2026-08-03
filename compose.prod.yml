@@ -116,6 +116,9 @@ services:
       DUDE_DB: /origen/dude.db
       DUDE_FILES: /origen/files
       SYNC_INTERVAL: ${SYNC_INTERVAL:-30}
+      # Días de muestras `raw` que se conservan. Ver `podar_raw` en sync.py:
+      # sin poda, esta tabla crece 6 millones de filas y 250 MB por día.
+      CHART_RAW_DIAS: ${CHART_RAW_DIAS:-1}
 
     volumes:
       # 🔴 `:ro` NO ES DECORATIVO. Del otro lado está el monitoreo de un ISP.

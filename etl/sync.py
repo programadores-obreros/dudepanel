@@ -82,10 +82,29 @@ CHART_MAX_FILAS = int(os.environ.get("CHART_MAX_FILAS", "250000"))
 #:    Y el 86,5 % de esas filas valen 0: son el relleno de casillero vacío, no
 #:    mediciones. Se está pagando disco por guardar ceros.
 #:
-#:    Tres días alcanzan de sobra: el panel usa `raw` sólo para rangos de hasta
-#:    12 horas (ver `cajonPara` en `web/src/lib/consultas.ts`); de ahí en más
-#:    usa los promedios, que es justo para lo que existen.
-CHART_RAW_DIAS = int(os.environ.get("CHART_RAW_DIAS", "3"))
+#:    🔴 UN DÍA, y el número se MIDIÓ. La primera versión puso tres «de sobra»
+#:       y no servía para nada: de 14.381.390 filas `raw`, las que tenían más de
+#:       tres días eran **101.329**. El 0,7 %. La poda corría, informaba miles de
+#:       filas borradas, y la tabla seguía creciendo.
+#:
+#:       El reparto real, medido en producción:
+#:
+#:           > 3 días      101.329
+#:           > 2 días    2.295.836
+#:           > 1 día     8.316.609   ← el 58 %
+#:           > 12 horas 11.336.944
+#:
+#:       Con un día se recuperan 8,3 millones de filas y la tabla se estabiliza
+#:       en torno a 6 millones (~400 MB) en vez de crecer sin techo.
+#:
+#:    Y un día sigue siendo el DOBLE de lo que el panel necesita: usa `raw` sólo
+#:    para rangos de hasta 12 horas (ver `cajonPara` en
+#:    `web/src/lib/consultas.ts`); de ahí en más usa los promedios, que es justo
+#:    para lo que existen.
+#:
+#:    La lección: una retención elegida «por las dudas» no es conservadora, es
+#:    inútil. Hay que mirar cuántas filas caen realmente en la ventana.
+CHART_RAW_DIAS = int(os.environ.get("CHART_RAW_DIAS", "1"))
 #: Tope de borrado por corrida. Acotado a propósito: un DELETE de millones de
 #: filas toma locks largos y hace crecer el WAL de golpe. Se poda de a poco en
 #: cada vuelta y converge solo.
