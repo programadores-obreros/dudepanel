@@ -1350,8 +1350,18 @@ export interface SerieHistoria {
  *    mismo, y en una tabla de series temporales casi nunca lo es.
  */
 function cajonPara(horas: number): { bucket: string; segundos: number } {
-  // `raw` mientras la ventana entre en su cobertura medida (43 días).
-  if (horas <= 24 * 30) return { bucket: 'raw', segundos: 60 };
+  // 🔴 `raw` SÓLO para rangos cortos. Antes se usaba hasta 30 DÍAS.
+  //
+  //    `raw` es una muestra cada ~2 segundos: 6 millones de filas por día en
+  //    esta instalación, contra 167 mil de `10min`. Pedirle un mes a `raw` es
+  //    leer cientos de millones de filas para dibujar 200 puntos — y encima
+  //    los promedios ya están calculados en los otros cajones.
+  //
+  //    Los cortes siguen a lo que The Dude realmente guarda y a lo que este
+  //    panel conserva (ver la poda de `raw` en `etl/sync.py`).
+  if (horas <= 12) return { bucket: 'raw', segundos: 60 };
+  if (horas <= 24 * 3) return { bucket: '10min', segundos: 600 };
+  if (horas <= 24 * 30) return { bucket: '2hour', segundos: 7200 };
   return { bucket: '1day', segundos: 86400 };
 }
 
@@ -1412,11 +1422,27 @@ export async function historiaDe(
   const filas = await consultar<{
     fuente_id: string; nombre: string; unidad: string | null; t: string; v: string;
   }>(
+    // 🔴 UNION y no `OR`, y la diferencia es 21×.
+    //
+    //    Con `WHERE device_id = $1 OR service_id IN (…)`, Postgres no sabe
+    //    estimar la combinación: calculaba **547 fuentes** donde hay **11**. Con
+    //    esa estimación descartaba el índice y recorría `chart_values` entera —
+    //    15,7 millones de filas— en cada carga de ficha.
+    //
+    //    Medido sobre el equipo 54465979:
+    //      OR    · Parallel Seq Scan · 6.059.598 filas leídas · 1.762 ms
+    //      UNION · Bitmap Index Scan ·       784 filas leídas ·    84 ms
+    //
+    //    Con la tabla creciendo 6 millones de filas por día, ese plan pasó de
+    //    lento a agotar el `statement_timeout`: la ficha del equipo devolvía
+    //    «No se pudo consultar la base de datos». Reportado desde producción.
+    //
+    //    Las dos ramas por separado sí se estiman bien, y el UNION deduplica.
     `WITH fuentes AS (
-       SELECT cs.id, cs.name, cs.unit
-         FROM chart_sources cs
-        WHERE cs.device_id = $1
-           OR cs.service_id IN (SELECT id FROM services WHERE device_id = $1)
+       SELECT cs.id, cs.name, cs.unit FROM chart_sources cs WHERE cs.device_id = $1
+       UNION
+       SELECT cs.id, cs.name, cs.unit FROM chart_sources cs
+        WHERE cs.service_id IN (SELECT id FROM services WHERE device_id = $1)
      )
      SELECT f.id AS fuente_id, f.name AS nombre, f.unit AS unidad,
             extract(epoch FROM date_bin(

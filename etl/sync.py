@@ -68,6 +68,29 @@ OUTAGES_RETROCESO_S = int(os.environ.get("OUTAGES_RETROCESO_S", 24 * 3600))
 #: vueltas y el panel queda usable desde la primera.
 CHART_MAX_FILAS = int(os.environ.get("CHART_MAX_FILAS", "250000"))
 
+#: 🔴 CUÁNTOS DÍAS DE `raw` SE CONSERVAN. Sin esto el panel choca contra el disco.
+#:
+#:    `raw` es una muestra cada ~2 segundos por fuente: medido en producción,
+#:    **6 millones de filas por día**, contra 167 mil de `10min`. El ETL nunca
+#:    borraba nada, así que `chart_values` llegó a **15,7 millones de filas y
+#:    1,95 GB** en pocos días, y creciendo 250 MB diarios.
+#:
+#:    Con 12 GB libres en la VM eso son unos 48 días hasta llenar el disco. Es
+#:    exactamente la misma pared contra la que murió The Dude en junio: su base
+#:    creció hasta el límite de 2 GB y hubo que rearmarla de cero.
+#:
+#:    Y el 86,5 % de esas filas valen 0: son el relleno de casillero vacío, no
+#:    mediciones. Se está pagando disco por guardar ceros.
+#:
+#:    Tres días alcanzan de sobra: el panel usa `raw` sólo para rangos de hasta
+#:    12 horas (ver `cajonPara` en `web/src/lib/consultas.ts`); de ahí en más
+#:    usa los promedios, que es justo para lo que existen.
+CHART_RAW_DIAS = int(os.environ.get("CHART_RAW_DIAS", "3"))
+#: Tope de borrado por corrida. Acotado a propósito: un DELETE de millones de
+#: filas toma locks largos y hace crecer el WAL de golpe. Se poda de a poco en
+#: cada vuelta y converge solo.
+CHART_PODA_MAX = int(os.environ.get("CHART_PODA_MAX", "200000"))
+
 #: Guarda anti-desastre. Si el origen devuelve de golpe menos de esta fracción
 #: de los dispositivos de la última corrida buena, se aborta. Es la diferencia
 #: entre "la red se cayó entera" y "leí la base a mitad de escritura": lo
@@ -675,6 +698,28 @@ def sincronizar_chart_values(
     return insertadas
 
 
+def podar_raw(cur: psycopg.Cursor) -> int:
+    """Borra las muestras `raw` más viejas que `CHART_RAW_DIAS`.
+
+    🔴 Va DESPUÉS de insertar, no antes: si se podara primero, la marca de agua
+       —que sale de `max(ts)` por fuente— no cambia, pero una fuente que sólo
+       tuviera filas viejas quedaría sin marca y se reimportaría entera en la
+       vuelta siguiente. Podando al final, lo que se borra ya está contado.
+
+    Acotado a `CHART_PODA_MAX` por corrida: un DELETE de millones de filas toma
+    locks largos y hace crecer el WAL de golpe, y este proceso corre cada 30 s
+    contra la misma base que sirve el panel. De a poco converge igual.
+    """
+    cur.execute(
+        "DELETE FROM chart_values WHERE ctid IN ("
+        "  SELECT ctid FROM chart_values"
+        "   WHERE bucket = 'raw' AND ts < now() - make_interval(days => %s)"
+        "   LIMIT %s)",
+        (CHART_RAW_DIAS, CHART_PODA_MAX),
+    )
+    return cur.rowcount
+
+
 def refrescar_vida(cur: psycopg.Cursor) -> int:
     """Rehace `device_vida` a partir de `v_device_senal`.
 
@@ -786,6 +831,7 @@ def corrida(con: psycopg.Connection, ruta: str) -> None:
                 datos["chart_values_inserted"] = sincronizar_chart_values(
                     cur, origen, [f[0] for f in s.chart_sources]
                 )
+                datos["chart_values_podadas"] = podar_raw(cur)
                 refrescar_vida(cur)
             finally:
                 origen.close()

@@ -50,8 +50,18 @@ CREATE TABLE IF NOT EXISTS sync_runs (
 
     -- La historia es incremental: interesa cuánto entró en ESTA corrida.
     outages_upserted      integer,
-    chart_values_inserted integer
+    chart_values_inserted integer,
+    -- Y cuánto SALIÓ: la poda de `raw`. Ver `podar_raw` en `sync.py`.
+    chart_values_podadas  integer
 );
+
+-- 🔴 `CREATE TABLE IF NOT EXISTS` NO agrega columnas a una tabla que ya existe.
+--
+--    Esta base ya está en producción, así que la columna de arriba no aparece
+--    sola: hace falta el ALTER. Y hace falta ACÁ, porque el ETL construye su
+--    `UPDATE sync_runs` con las claves que trae —una columna que falta no da
+--    un aviso, **aborta la corrida entera** y el panel deja de actualizarse.
+ALTER TABLE sync_runs ADD COLUMN IF NOT EXISTS chart_values_podadas integer;
 
 CREATE INDEX IF NOT EXISTS sync_runs_started_idx ON sync_runs (started_at DESC);
 
