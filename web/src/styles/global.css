@@ -508,7 +508,29 @@
 #tarjeta-nodo[data-modo='flotante'] {
   /* Aparece sin animación de entrada: 140 ms de demora ya son la transición.
      Un desvanecido encima agrega latencia percibida donde no hace falta. */
-  pointer-events: auto;
+
+  /* 🔴 EN VISTA PREVIA LA TARJETA NO RECIBE EL PUNTERO. Y acá decía `auto`.
+   *
+   *    La tarjeta se coloca A LA DERECHA del nodo — que en un mapa denso es
+   *    justo encima del nodo de al lado. Siendo interactiva:
+   *
+   *      1. apuntás al nodo A y la tarjeta aparece tapando al nodo B
+   *      2. movés hacia B y el puntero entra en la TARJETA, no en B
+   *      3. hacés click creyendo que tocás B y tocás un enlace de A
+   *
+   *    Reportado como «hago click en un equipo y se va a otro equipo».
+   *
+   *    🔴 Y ESTA REGLA ES LA QUE MANDA, no la clase de utilidad.
+   *
+   *       El script hacía `classList.toggle('pointer-events-none', …)` y no
+   *       pasaba nada: `#id[attr]` tiene especificidad 1-0-1 y le gana a una
+   *       clase 0-1-0. El arreglo se desplegó, la clase quedaba puesta en el
+   *       elemento, y el valor calculado seguía siendo `auto`. Sólo se vio
+   *       preguntándole al navegador qué regla estaba aplicando.
+   *
+   *       Por eso ahora el modo lo decide SÓLO el CSS por `data-modo`: un
+   *       mecanismo, no dos peleándose. */
+  pointer-events: none;
 }
 
 /* En pantalla táctil la tarjeta es una HOJA abajo de todo, no un globito al
