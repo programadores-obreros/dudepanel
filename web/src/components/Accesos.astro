@@ -38,15 +38,23 @@ const { accesos, nombre } = Astro.props;
          puede tocar `window.opener` y redirigir esta. */
       <ul class="flex flex-wrap gap-2" data-accesos>
         {accesos.map((a) => {
-          // 🔴 Sin `active:scale-[0.98]` ni anillo de foco propios.
+          // 🔴 Sin escala de pulsación ni anillo de foco propios: los pone el
+          //    sistema en `global.css` — `scale(0.97)` con `--mov-rapido`, y
+          //    `:focus-visible` con el color de acento.
           //
-          //    Los pone el sistema (`global.css`): la respuesta al toque es
-          //    `scale(0.97)` con `--mov-rapido`, y el foco es `:focus-visible`
-          //    con el color de acento. Tenerlos ACÁ además significaba que la
-          //    propiedad `scale: .98` y el `transform: scale(.97)` del sistema
-          //    se COMPONÍAN —0,98 × 0,97 = 0,95— y este botón se hundía más que
-          //    todos los demás del panel. Nadie lo habría reportado; se siente,
-          //    no se ve.
+          //    Tenerlos acá los COMPONÍA con los del sistema: la propiedad CSS
+          //    `scale` y `transform: scale()` se multiplican, así que este botón
+          //    se hundía a 0,95 mientras todos los demás iban a 0,97. Nadie lo
+          //    habría reportado nunca: no se ve, se siente.
+          //
+          // 🔴 Y OJO CON NOMBRAR LA CLASE VIEJA EN UN COMENTARIO.
+          //
+          //    Tailwind no parsea el código: busca en el texto cadenas que
+          //    parezcan una clase. Escribir el nombre de la utilidad acá —aunque
+          //    sea para explicar que se sacó— hace que la regla se SIGA
+          //    generando en el CSS. Se midió: la clase no estaba en ningún
+          //    elemento y el `.css` de producción la traía igual, sólo por
+          //    mencionarla en este comentario.
           const comun =
             'group border-borde bg-panel-2 hover:bg-panel hover:border-acento/60 ' +
             'inline-flex cursor-pointer items-center gap-2 ' +
