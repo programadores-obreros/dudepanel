@@ -796,9 +796,9 @@ def refrescar_vida(cur: psycopg.Cursor) -> int:
     cur.execute(
         "INSERT INTO device_vida"
         " (device_id, ultima_medicion, ultima_caida, ultima_syslog,"
-        "  ultima_senal, arriba_ahora, ahora)"
+        "  ultimo_cambio, ultima_senal, arriba_ahora, ahora)"
         " SELECT device_id, ultima_medicion, ultima_caida, ultima_syslog,"
-        "        ultima_senal, arriba_ahora, ahora"
+        "        ultimo_cambio, ultima_senal, arriba_ahora, ahora"
         "   FROM v_device_senal"
     )
     return cur.rowcount

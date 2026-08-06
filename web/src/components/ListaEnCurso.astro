@@ -1,0 +1,122 @@
+---
+/**
+ * Los equipos que están caídos AHORA, el más reciente arriba.
+ *
+ * 🔴 El orden es al revés que en el historial, y es la decisión de fondo.
+ *
+ *    Un historial se lee por gravedad: la caída de seis horas antes que la de
+ *    treinta segundos. Una guardia se lee por RECENCIA: lo que se rompió hace
+ *    veinte minutos es lo único que todavía se puede arreglar; lo que lleva
+ *    nueve días abajo ya tiene dueño, o no lo tiene y tampoco lo va a tener
+ *    porque lo mire otra vez el que está de turno a las tres de la mañana.
+ *
+ *    Por eso acá la duración se muestra pero NO ordena.
+ */
+import type { CaidaEnCurso } from '@/lib/consultas';
+import { duracion, fechaHora, fechaLarga } from '@/lib/formato';
+import { clasificar, metaVida } from '@/lib/vida';
+
+interface Props {
+  caidas: CaidaEnCurso[];
+  /** Alcance real de la historia, para no clasificar contra una ventana que no existe. */
+  alcanceDias: number;
+  vacio?: string;
+}
+
+const { caidas, alcanceDias, vacio = 'Ningún equipo caído.' } = Astro.props;
+
+/**
+ * Cuán urgente se ve, sólo por antigüedad.
+ *
+ * No es una escala de gravedad —no sabemos cuántos clientes cuelgan de cada
+ * equipo— sino de FRESCURA: qué tan probable es que todavía haya algo que
+ * hacer. Se dice así en la interfaz para no prometer lo que no se sabe.
+ */
+function frescura(s: number | null): { clase: string; texto: string } {
+  if (s == null) return { clase: 'bg-panel-2 text-tenue', texto: 'sin fecha' };
+  if (s < 3600) return { clase: 'bg-caido text-white', texto: 'recién' };
+  if (s < 86400) return { clase: 'bg-caido/70 text-white', texto: 'hoy' };
+  if (s < 7 * 86400) return { clase: 'bg-alerta/70 text-fondo', texto: 'esta semana' };
+  return { clase: 'bg-panel-2 text-tenue', texto: 'hace rato' };
+}
+---
+
+{
+  caidas.length === 0 ? (
+    <p class="text-tenue px-3 py-6 text-center text-xs">{vacio}</p>
+  ) : (
+    <ul class="divide-borde divide-y">
+      {caidas.map((c) => {
+        const v = clasificar(
+          {
+            dias_sin_senal: c.dias_sin_senal,
+            arriba_ahora: c.arriba_ahora,
+            estado_manual: (c.estado_manual as 'activo' | 'baja' | null) ?? null,
+          },
+          alcanceDias,
+        );
+        const f = frescura(c.duracion_s);
+        return (
+          <li class="flex items-center gap-3 px-3 py-2">
+            <span
+              class:list={['text-2xs shrink-0 rounded px-1.5 py-0.5 font-semibold', f.clase]}
+              aria-hidden="true"
+            >
+              {f.texto}
+            </span>
+
+            <span class="min-w-0 flex-1">
+              <span class="flex flex-wrap items-baseline gap-x-2">
+                <a
+                  href={`/dispositivos/${c.device_id}`}
+                  class="enlace truncate text-sm font-medium"
+                >
+                  {c.equipo}
+                </a>
+                {c.ips.length > 0 && (
+                  <span class="text-tenue text-2xs font-mono">{c.ips[0]}</span>
+                )}
+                {/* El veredicto de vida sólo se muestra cuando NO es «activo»:
+                    en una lista donde casi todo es activo, repetirlo en cada
+                    fila es ruido que tapa las dos que sí son dudosas. */}
+                {v.vida !== 'activo' && (
+                  <span
+                    class="border-borde text-tenue text-2xs rounded border px-1.5 py-0.5"
+                    title={v.motivo}
+                  >
+                    {metaVida(v.vida).etiqueta}
+                  </span>
+                )}
+              </span>
+              <span class="text-tenue text-2xs block">
+                {c.desde ? (
+                  <>
+                    Caído desde{' '}
+                    <time datetime={c.desde} title={fechaLarga(c.desde)}>
+                      {fechaHora(c.desde)}
+                    </time>
+                  </>
+                ) : (
+                  /* No se inventa una fecha. Que falte es un dato, y decirlo
+                     es lo que permite que alguien lo vaya a buscar. */
+                  <>Caído, sin fecha de inicio registrada</>
+                )}
+                {c.servicios_total > 1 && (
+                  <>
+                    {' · '}
+                    {c.servicios_caidos} de {c.servicios_total} sondas abajo
+                  </>
+                )}
+              </span>
+            </span>
+
+            <span class="cifra text-caido-txt shrink-0 text-xs font-semibold tabular-nums">
+              {c.duracion_s == null ? '—' : duracion(c.duracion_s)}
+              <span class="sr-only"> caído</span>
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  )
+}

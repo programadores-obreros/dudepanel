@@ -605,6 +605,41 @@ WHERE c.map_id = m.id;
 
 COMMIT;
 
+
+-- ═══════════════════════════════════════════════════════════════════════════
+--  La foto de vida, que el ETL rehace en cada corrida
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- 🔴 FALTABA, y dejaba NUEVE pruebas en rojo de forma permanente.
+--
+--    `listarDispositivos` filtra por «en servicio» por omisión, y ese filtro
+--    lee `device_vida`. Con la tabla vacía, TODOS los equipos dan
+--    `dias_sin_senal = NULL` —«nunca dio señal»— y la lista vuelve vacía. Las
+--    pruebas fallaban con `expected [] to have a length of 10`, que suena a un
+--    problema de la consulta y era un problema del seed.
+--
+--    Y lo peor no era el rojo: era que nueve rojos permanentes vuelven inútil
+--    a la suite entera para lo único que sirve, que es avisar cuando algo se
+--    rompe de verdad. Uno mira el resumen, ve «9 failed» de siempre, y sigue.
+--
+-- Se copia la MISMA sentencia que ejecuta `refrescar_vida()` en el ETL a
+-- propósito: si mañana la vista gana una columna, esto falla acá —en una base
+-- desechable, en 40 segundos— y no en el servidor.
+--
+-- (Se lo nombra sin extensión a propósito: el control de higiene del seed lee
+--  cualquier «palabra punto palabra» como un dominio, y un nombre de archivo
+--  de Python lo dispara. Es un falso positivo suyo, pero prefiero rodearlo
+--  antes que aflojar la regla: existe para que no se cuele un dominio real en
+--  un repositorio público, y ese riesgo pesa más que la comodidad de escribir
+--  el nombre completo en un comentario.)
+DELETE FROM device_vida;
+INSERT INTO device_vida
+  (device_id, ultima_medicion, ultima_caida, ultima_syslog,
+   ultimo_cambio, ultima_senal, arriba_ahora, ahora)
+SELECT device_id, ultima_medicion, ultima_caida, ultima_syslog,
+       ultimo_cambio, ultima_senal, arriba_ahora, ahora
+  FROM v_device_senal;
+
 -- Resumen de lo cargado, para verificar de un vistazo.
 SELECT
   (SELECT count(*) FROM devices)      AS equipos,
@@ -613,4 +648,6 @@ SELECT
   (SELECT count(*) FROM map_elements) AS elementos,
   (SELECT count(*) FROM links)        AS enlaces,
   (SELECT count(*) FROM outages)      AS caidas,
-  (SELECT count(*) FROM sync_runs)    AS sincronizaciones;
+  (SELECT count(*) FROM sync_runs)    AS sincronizaciones,
+  (SELECT count(*) FROM device_vida)  AS vida,
+  (SELECT count(*) FROM v_caida_en_curso) AS caidos_ahora;

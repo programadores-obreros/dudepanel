@@ -1,25 +1,60 @@
 ---
 /**
- * El historial de caídas. La página del operador de guardia.
+ * Las caídas. La página del operador de guardia, y tiene DOS vistas.
  *
- * 🔴 Existe porque la base tiene **12.146 caídas** y hasta ahora no había
- *    ninguna pantalla donde recorrerlas: sólo las últimas doce en el tablero y
- *    las de un equipo en su ficha. Un historial que no se puede consultar es
- *    un historial que no existe para quien está de guardia a las tres de la
- *    mañana con un cliente al teléfono.
+ * **En curso** — qué está roto ahora. Reconstruida, porque The Dude no la
+ * guarda: escribe la fila de una caída cuando el servicio se recupera, así que
+ * `outages` tiene 0 caídas abiertas de 11.988 por diseño. Ver `v_caida_en_curso`
+ * en `etl/schema.sql` y `caidasEnCurso()` en `lib/consultas.ts`.
  *
- * El filtro que la hace usable es el de duración mínima. Sin él, las caídas de
- * treinta segundos —ruido de sondeo, no incidentes— entierran a las de dos
- * horas, que son las que hay que mirar. Por eso arranca en un minuto.
+ * **Historial** — qué ya pasó. Existe porque la base tiene 12.146 caídas y no
+ * había ninguna pantalla donde recorrerlas: sólo las últimas doce en el tablero
+ * y las de un equipo en su ficha. El filtro que lo hace usable es el de
+ * duración mínima: sin él, las caídas de treinta segundos —ruido de sondeo, no
+ * incidentes— entierran a las de dos horas. Por eso arranca en un minuto.
  */
 import Base from '@/layouts/Base.astro';
 import ListaCaidas from '@/components/ListaCaidas.astro';
+import ListaEnCurso from '@/components/ListaEnCurso.astro';
 import Icono from '@/components/Icono.astro';
-import { historialCaidas, type PaginaCaidas } from '@/lib/consultas';
+import {
+  alcanceHistoria,
+  caidasEnCurso,
+  historialCaidas,
+  type CaidasEnCurso,
+  type PaginaCaidas,
+} from '@/lib/consultas';
 import { duracion, numero } from '@/lib/formato';
 import { reportarError } from '@/lib/errores';
 
 const p = Astro.url.searchParams;
+
+/**
+ * ═══ Dos vistas, y «en curso» es la que abre ════════════════════════════════
+ *
+ * 🔴 Cambiar el arranque de esta página no es una preferencia estética.
+ *
+ *    Hasta ahora `/caidas` abría en el historial y mostraba, arriba de todo,
+ *    una tarjeta que decía **«Sin resolver: 0»** mientras 341 equipos estaban
+ *    caídos en ese mismo instante. No era un error de cuenta: contaba bien la
+ *    tabla `outages`, que **estructuralmente no puede tener caídas abiertas**
+ *    —The Dude escribe la fila cuando el servicio se RECUPERA—.
+ *
+ *    O sea que la primera cifra que veía alguien de guardia era un cero que
+ *    afirmaba justo lo contrario de la realidad. Un panel que dice «todo bien»
+ *    con la red abajo es peor que no tener panel: el que no tiene panel va y
+ *    mira.
+ *
+ *    La primera pregunta de una guardia es «¿qué está roto AHORA?». La segunda
+ *    es «¿esto ya pasó antes?». En ese orden, y el panel tiene que abrir en la
+ *    primera.
+ */
+const VISTAS = [
+  { clave: 'curso', texto: 'En curso' },
+  { clave: 'historial', texto: 'Historial' },
+] as const;
+type Vista = (typeof VISTAS)[number]['clave'];
+const vista: Vista = p.get('vista') === 'historial' ? 'historial' : 'curso';
 
 const RANGOS = [
   { h: 24, texto: '24 h' },
@@ -34,8 +69,33 @@ const MINIMOS = [
   { s: 3600, texto: '≥ 1 h' },
 ];
 
-const horas = RANGOS.some((r) => r.h === Number(p.get('h'))) ? Number(p.get('h')) : 24 * 7;
-const minimo = MINIMOS.some((m) => m.s === Number(p.get('min'))) ? Number(p.get('min')) : 60;
+// `p.has` acá también: hoy no hace falta —RANGOS no tiene un 0— pero deja la
+// misma trampa armada para el día que alguien agregue una opción que valga 0.
+// Ver la explicación larga en `minimo`, abajo.
+const horasPedidas = Number(p.get('h'));
+const horas = p.has('h') && RANGOS.some((r) => r.h === horasPedidas) ? horasPedidas : 24 * 7;
+
+/**
+ * 🔴 `p.has('min')` y no sólo el `some(...)`. Acá había un defecto silencioso.
+ *
+ *    Se leía `MINIMOS.some((m) => m.s === Number(p.get('min')))`. Sin el
+ *    parámetro en la URL, `p.get('min')` es `null` y **`Number(null)` es 0** —
+ *    que es un valor VÁLIDO de la lista, el de «todas». Así que la condición
+ *    daba verdadero, tomaba esa rama, y el `: 60` de la derecha **no se
+ *    alcanzaba nunca**.
+ *
+ *    Resultado: la página abría mostrando todas las caídas, incluidas las de
+ *    23 segundos, que son reintentos de sondeo y no incidentes. Justo lo que
+ *    el filtro existe para evitar, y justo lo contrario de lo que el
+ *    comentario de arriba de este archivo afirmaba desde el primer día.
+ *
+ *    La lección: un valor por omisión escrito con `?:` sobre una validación
+ *    que acepta el 0 no es un valor por omisión. Hay que preguntar si el
+ *    parámetro ESTÁ, no si lo que se leyó es válido.
+ */
+const minimoPedido = Number(p.get('min'));
+const minimo =
+  p.has('min') && MINIMOS.some((m) => m.s === minimoPedido) ? minimoPedido : 60;
 const q = (p.get('q') ?? '').trim().slice(0, 80);
 const pagina = Math.max(Number(p.get('p')) || 1, 1);
 
@@ -54,9 +114,24 @@ const pagina = Math.max(Number(p.get('p')) || 1, 1);
 const soloActivos = p.get('todos') !== '1';
 
 let datos: PaginaCaidas | null = null;
+let curso: CaidasEnCurso | null = null;
+let alcance = 0;
 let error: string | null = null;
 try {
-  datos = await historialCaidas({ horas, minimo_s: minimo, q, pagina, soloActivos });
+  // 🔴 El recuento de «en curso» se pide SIEMPRE, esté o no en esa vista: es
+  //    lo que alimenta el número de la solapa. Una solapa que dice «En curso»
+  //    a secas no se toca; una que dice «En curso · 9» sí. Cuesta una consulta
+  //    de conteo sobre 885 filas.
+  //
+  //    Y para verse en la solapa el número tiene que estar antes de dibujarla,
+  //    así que no se puede diferir a la vista que lo usa.
+  [curso, alcance] = await Promise.all([
+    caidasEnCurso({ soloActivos }),
+    alcanceHistoria(),
+  ]);
+  if (vista === 'historial') {
+    datos = await historialCaidas({ horas, minimo_s: minimo, q, pagina, soloActivos });
+  }
 } catch (e) {
   error = reportarError('caidas', e);
 }
@@ -64,6 +139,7 @@ try {
 /** Arma una URL conservando los demás filtros. Volver a la página 1 al filtrar. */
 function con(cambios: Record<string, string | number>): string {
   const u = new URLSearchParams({ h: String(horas), min: String(minimo) });
+  if (vista !== 'curso') u.set('vista', vista);
   if (q) u.set('q', q);
   if (!soloActivos) u.set('todos', '1');
   for (const [k, v] of Object.entries(cambios)) u.set(k, String(v));
@@ -76,11 +152,54 @@ const rangoTexto = RANGOS.find((r) => r.h === horas)?.texto ?? '';
 
 <Base titulo="Caídas">
   <header class="mb-4">
-    <h1 class="text-xl font-semibold">Historial de caídas</h1>
+    <h1 class="text-xl font-semibold">Caídas</h1>
     <p class="text-tenue mt-1 text-sm">
-      Lo que registró The Dude. Cada fila es un servicio que dejó de responder y
-      —si terminó— cuándo volvió.
+      {
+        vista === 'curso'
+          ? 'Los equipos que están abajo en este momento, el más reciente primero.'
+          : 'Lo que registró The Dude. Cada fila es un servicio que dejó de responder y —si terminó— cuándo volvió.'
+      }
     </p>
+
+    {/* ── Las dos preguntas de una guardia, en orden ─────────────────────── */}
+    <nav class="mt-3 flex gap-1" aria-label="Vista">
+      {
+        VISTAS.map((v) => (
+          <a
+            href={`?${new URLSearchParams({
+              ...(v.clave === 'historial' ? { vista: 'historial' } : {}),
+              ...(soloActivos ? {} : { todos: '1' }),
+            })}`}
+            class:list={[
+              'rounded-lg px-3 py-2 text-sm transition-colors duration-150',
+              v.clave === vista
+                ? 'bg-acento text-fondo font-semibold'
+                : 'text-tenue hover:bg-panel-2 hover:text-texto border-borde border',
+            ]}
+            aria-current={v.clave === vista ? 'page' : undefined}
+          >
+            {v.texto}
+            {/* El número va en la solapa a propósito: es la diferencia entre
+                que alguien la toque y que no. Sólo en «En curso», porque el
+                total del historial depende de filtros que todavía no eligió. */}
+            {v.clave === 'curso' && curso && (
+              <span
+                class:list={[
+                  'ml-1.5 tabular-nums',
+                  v.clave === vista
+                    ? ''
+                    : curso.total > 0
+                      ? 'text-caido-txt font-semibold'
+                      : '',
+                ]}
+              >
+                · {numero(curso.total)}
+              </span>
+            )}
+          </a>
+        ))
+      }
+    </nav>
 
     {/* 🔴 El filtro se ANUNCIA, siempre, esté puesto o no.
         Una lista recortada que no avisa que está recortada es peor que la
@@ -116,6 +235,98 @@ const rangoTexto = RANGOS.find((r) => r.h === horas)?.texto ?? '';
   {
     error ? (
       <p class="tarjeta text-caido-txt p-4 text-sm">{error}</p>
+    ) : vista === 'curso' ? (
+      <>
+        {/* ═══ EN CURSO ═══════════════════════════════════════════════════ */}
+        <div class="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {[
+            {
+              t: 'Caídos ahora',
+              v: numero(curso!.total),
+              n: soloActivos ? 'en servicio' : 'todos',
+              alerta: curso!.total > 0,
+            },
+            /* Los tres salen de SQL sobre el TOTAL, no de la lista devuelta:
+               ver el comentario de `CaidasEnCurso` en `lib/consultas.ts`. */
+            {
+              t: 'Hace menos de 1 h',
+              v: numero(curso!.ultima_hora),
+              n: 'recién caídos',
+              alerta: curso!.ultima_hora > 0,
+            },
+            { t: 'Hace menos de 24 h', v: numero(curso!.ultimo_dia), n: 'del día' },
+            { t: 'La más vieja', v: duracion(curso!.mas_vieja_s), n: 'sigue abajo' },
+          ].map((k) => (
+            <div class="tarjeta p-3">
+              <p class="text-tenue text-2xs font-semibold tracking-wide uppercase">{k.t}</p>
+              <p
+                class:list={[
+                  'mt-1 text-2xl font-semibold tabular-nums',
+                  k.alerta && 'text-caido-txt',
+                ]}
+              >
+                {k.v}
+              </p>
+              <p class="text-tenue text-2xs mt-0.5">{k.n}</p>
+            </div>
+          ))}
+        </div>
+
+        {/* 🔴 De dónde sale esto, dicho en la página y no sólo en el código.
+            Quien mire esta lista va a comparar con el cliente de The Dude, y
+            los números NO van a coincidir con su ventana de «outages». Que se
+            entere acá y no concluya que el panel inventa. */}
+        <p class="border-borde bg-panel-2 text-tenue mb-4 rounded-lg border px-3 py-2 text-xs leading-relaxed">
+          Reconstruido del último cambio de estado de cada sonda.{' '}
+          <strong class="text-tinta">The Dude no guarda las caídas abiertas</strong>: escribe la
+          fila recién cuando el servicio se recupera, así que su historial tiene{' '}
+          <strong class="text-tinta">cero</strong> caídas en curso por diseño. Las duraciones se
+          miden contra la última lectura de <code>dude.db</code>, no contra el reloj de esta
+          máquina — si la sincronización se detuvo, estos números se quedan quietos en vez de
+          crecer solos.
+          {curso!.ocultas > 0 && (
+            <>
+              {' '}
+              Hay <strong class="text-tinta">{numero(curso!.ocultas)}</strong> equipos caídos que
+              no se muestran porque hace más de {numero(30)} días que no dan señal.{' '}
+              <a href={con({ todos: 1 })} class="underline">
+                Verlos igual
+              </a>
+              {' · '}
+              <a href="/inventario" class="underline">
+                Darlos de baja
+              </a>
+            </>
+          )}
+          {curso!.sin_fecha > 0 && (
+            <>
+              {' '}
+              <strong class="text-caido-txt">
+                {numero(curso!.sin_fecha)} sin fecha de inicio
+              </strong>{' '}
+              — están caídos pero ninguna de sus sondas dice desde cuándo.
+            </>
+          )}
+        </p>
+
+        <section class="tarjeta overflow-hidden" aria-label="Caídas en curso">
+          <ListaEnCurso
+            caidas={curso!.caidas}
+            alcanceDias={alcance}
+            vacio={
+              soloActivos
+                ? 'Ningún equipo en servicio está caído en este momento.'
+                : 'Ningún equipo caído.'
+            }
+          />
+        </section>
+
+        {curso!.total > curso!.caidas.length && (
+          <p class="text-tenue mt-3 text-xs">
+            Mostrando {numero(curso!.caidas.length)} de {numero(curso!.total)}.
+          </p>
+        )}
+      </>
     ) : (
       <>
         {/* ── Lo que se mira primero ─────────────────────────────────────── */}
@@ -129,10 +340,17 @@ const rangoTexto = RANGOS.find((r) => r.h === horas)?.texto ?? '';
             { t: 'Equipos afectados', v: numero(datos!.equipos_afectados), n: 'distintos' },
             { t: 'Tiempo fuera', v: duracion(datos!.tiempo_total_s), n: 'sumado' },
             {
-              t: 'Sin resolver',
-              v: numero(datos!.caidas.filter((c) => c.abierta).length),
-              n: 'en esta página',
-              alerta: datos!.caidas.some((c) => c.abierta),
+              /* 🔴 Acá decía «Sin resolver» y contaba `c.abierta` del historial,
+                 que es SIEMPRE cero: The Dude escribe la fila de una caída al
+                 recuperarse el servicio, así que `outages` no puede tener
+                 ninguna abierta. Con 341 equipos abajo, la tarjeta mostraba un
+                 cero tranquilizador.
+
+                 Ahora dice el número de verdad, y sale de la otra vista. */
+              t: 'Caídos ahora',
+              v: numero(curso?.total ?? 0),
+              n: 'ver «En curso»',
+              alerta: (curso?.total ?? 0) > 0,
             },
           ].map((k) => (
             <div class="tarjeta p-3">

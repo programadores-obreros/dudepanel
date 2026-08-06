@@ -1416,6 +1416,38 @@ caida_syslog AS (
       FROM syslog_outages
      WHERE device_id IS NOT NULL
      GROUP BY device_id
+),
+cambio_estado AS (
+    -- 🔴 LA CUARTA FUENTE, Y FALTABA. Un servicio que HOY está caído y cuyo
+    --    último cambio de estado fue el martes prueba que el martes estaba
+    --    ARRIBA: para caerse hay que haber estado en pie.
+    --
+    --    Sin esto la vista se perdía justo a los equipos más interesantes.
+    --    Medido sobre la instalación real el 06/08/2026, al agregarla:
+    --
+    --      equipos sin ninguna fecha de vida   256  →   30
+    --      con la fecha más reciente que antes       117
+    --      🔴 con la fecha hacia ATRÁS                 0
+    --
+    --    Cero retrocesos es el número que importa: la fuente nueva nunca
+    --    contradice a las otras tres, sólo agrega. Y los 226 que ganan fecha
+    --    no son ruido — entre ellos hay 3 equipos CAÍDOS AHORA que figuraban
+    --    como bajas de hace 1.846 días y en realidad son testigos de corte de
+    --    energía que parpadean todos los días. Su trabajo es prenderse y
+    --    apagarse; el panel no los veía porque no tienen serie de mediciones
+    --    y The Dude nunca les registró una caída.
+    --
+    -- ⚠️ El límite honesto: si The Dude fecha el ALTA de un servicio que nunca
+    --    respondió, eso entra acá como si fuera vida. No se pudo descartar del
+    --    todo. Se acota solo —un alta vieja queda fuera de la ventana de 30
+    --    días— y el caso que sí importa, un alta reciente que no responde, es
+    --    algo que igual hay que mirar. Se prefiere ese falso positivo antes
+    --    que seguir ocultando caídas reales.
+    SELECT s.device_id, max(s.status_changed_at) AS ts
+      FROM services s
+     WHERE s.device_id IS NOT NULL
+       AND s.status_changed_at IS NOT NULL
+     GROUP BY s.device_id
 )
 SELECT d.id                                   AS device_id,
        m.ts                                   AS ultima_medicion,
@@ -1441,14 +1473,21 @@ SELECT d.id                                   AS device_id,
        --    exactamente al revés del que este módulo viene a evitar, y en
        --    silencio: ninguna restricción lo habría atajado.
        CASE WHEN COALESCE(d.status IN (1, 2), false) THEN p.ahora
-            WHEN GREATEST(m.ts, cd.ts, cs.ts) IS NULL THEN NULL
-            ELSE LEAST(GREATEST(m.ts, cd.ts, cs.ts), p.ahora)
-       END                                    AS ultima_senal
+            WHEN GREATEST(m.ts, cd.ts, cs.ts, ce.ts) IS NULL THEN NULL
+            ELSE LEAST(GREATEST(m.ts, cd.ts, cs.ts, ce.ts), p.ahora)
+       END                                    AS ultima_senal,
+       -- 🔴 AL FINAL, y no donde correspondería por orden de lectura.
+       --    `CREATE OR REPLACE VIEW` sólo sabe AGREGAR columnas al final: meter
+       --    una en el medio falla con «cannot change name of view column». Un
+       --    orden lindo cuesta un DROP CASCADE, y eso se lleva puestas todas
+       --    las vistas que dependen de ésta.
+       ce.ts                                  AS ultimo_cambio
   FROM devices d
  CROSS JOIN presente p
-  LEFT JOIN medicion     m  ON m.device_id  = d.id
-  LEFT JOIN caida_dude   cd ON cd.device_id = d.id
-  LEFT JOIN caida_syslog cs ON cs.device_id = d.id;
+  LEFT JOIN medicion      m  ON m.device_id  = d.id
+  LEFT JOIN caida_dude    cd ON cd.device_id = d.id
+  LEFT JOIN caida_syslog  cs ON cs.device_id = d.id
+  LEFT JOIN cambio_estado ce ON ce.device_id = d.id;
 
 COMMENT ON VIEW v_device_senal IS
   'Última evidencia POSITIVA de vida por equipo, y de qué fuente salió. '
@@ -1472,11 +1511,19 @@ CREATE TABLE IF NOT EXISTS device_vida (
     ultima_medicion  timestamptz,
     ultima_caida     timestamptz,
     ultima_syslog    timestamptz,
+    ultimo_cambio    timestamptz,
     ultima_senal     timestamptz,
     arriba_ahora     boolean     NOT NULL DEFAULT false,
     ahora            timestamptz NOT NULL,
     calculada_at     timestamptz NOT NULL DEFAULT now()
 );
+
+-- 🔴 `CREATE TABLE IF NOT EXISTS` NO agrega columnas a una tabla que ya existe.
+--    En una instalación viva la de arriba no corre, así que la columna nueva
+--    hay que pedirla aparte. Sin esto el ETL falla con «column ultimo_cambio
+--    does not exist» en la primera corrida después de actualizar — y falla en
+--    el servidor, no acá.
+ALTER TABLE device_vida ADD COLUMN IF NOT EXISTS ultimo_cambio timestamptz;
 
 COMMENT ON TABLE device_vida IS
   'Foto de v_device_senal, rehecha por el ETL en cada corrida. Derivada al '
@@ -1512,7 +1559,8 @@ SELECT d.id                                        AS device_id,
        m.estado                                    AS estado_manual,
        m.nota                                      AS nota_manual,
        m.por                                       AS por_manual,
-       m.at                                        AS at_manual
+       m.at                                        AS at_manual,
+       v.ultimo_cambio  -- al final: ver la nota en v_device_senal
   FROM devices d
   LEFT JOIN device_vida           v ON v.device_id = d.id
   LEFT JOIN device_estado_manual  m ON m.device_id = d.id;
@@ -1521,5 +1569,136 @@ COMMENT ON VIEW v_device_estado IS
   'Una fila por equipo con su última señal de vida y el veredicto humano si lo '
   'hay. La clasificación en activo/dudoso/baja se hace en web/src/lib/vida.ts, '
   'no acá: los umbrales son política y cambian por ISP.';
+
+
+-- ═══════════════════════════════════════════════════════════════════════════
+--  Las caídas EN CURSO — reconstruidas, porque The Dude no las guarda
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- 🔴 `outages` NO TIENE NI UNA SOLA CAÍDA ABIERTA. Nunca. Medido sobre la
+--    instalación real el 06/08/2026:
+--
+--      outages · total                        11.988
+--      outages · con `ended_at IS NULL`             0
+--      equipos caídos en ese mismo instante       341
+--      de esos, presentes en `outages`              0
+--
+--    No es un defecto del ETL: es cómo funciona The Dude. **Escribe la fila
+--    cuando el servicio SE RECUPERA**, con principio y fin de una vez. Mientras
+--    el equipo está caído no hay ninguna fila que lo diga.
+--
+--    Consecuencia, y es grave: `/caidas` mostraba «Sin resolver: 0» con 341
+--    equipos abajo. No mentía por un error de cálculo — contaba bien una tabla
+--    que estructuralmente no puede tener lo que se le pedía. **El historial es
+--    exactamente lo contrario de lo que necesita una guardia: cuenta lo que ya
+--    terminó y calla lo que está pasando.**
+--
+-- ── De dónde sale entonces la fecha ─────────────────────────────────────────
+--
+-- De `services.status_changed_at`: el instante del último cambio de estado, que
+-- para un servicio caído es justo cuándo se cayó. Llega hasta 2012.
+--
+-- 🔴 OJO CON `services.time_since_changed`: **no es una duración, es un epoch.**
+--    El nombre viene del campo de The Dude y engaña. `status_changed_at` es su
+--    decodificación —`to_timestamp(time_since_changed)`, exacto— así que son la
+--    misma cosa y cruzarlas no valida nada. Se perdió una medición entera
+--    creyendo que eran dos fuentes independientes.
+--
+-- ── Cómo se comprobó que la fecha dice la verdad ────────────────────────────
+--
+-- Con `outages`, que sale de OTRO objeto de la base. Un servicio que hoy está
+-- ARRIBA cambió de estado al recuperarse, así que su `status_changed_at` tiene
+-- que coincidir con el `ended_at` de su última caída cerrada. Sobre 273 casos:
+--
+--      coinciden al segundo                            78
+--      status_changed_at POSTERIOR (hubo flaps luego)  194
+--      🔴 ANTERIOR — imposible si la columna miente      0
+--
+-- Cero imposibles es el resultado que importa. Los 194 posteriores son
+-- esperables: `outages` no registró los cambios de después.
+--
+-- Segunda comprobación, contra las mediciones: de 120 equipos caídos con serie,
+-- 92 tienen su última medición con valor > 0 dentro de la hora de la fecha de
+-- caída. La mediana da 47 min, y eso NO es error: la serie se guarda en cajones
+-- de 10 min, 2 h y 1 día, así que para un equipo caído hace semanas el último
+-- punto viene de un cajón diario. La resolución del cajón es el piso del
+-- desvío, no una discrepancia.
+--
+-- ── Decisiones de la vista ──────────────────────────────────────────────────
+--
+--  · El reloj es `source_mtime` —cuándo se leyó `dude.db` por última vez—, no
+--    `now()`. Si el ETL se detuvo, las duraciones NO crecen solas: quedan
+--    congeladas donde estaba el conocimiento real. Una duración que sigue
+--    corriendo sin datos nuevos es una afirmación que nadie verificó.
+--
+--  · `LEFT JOIN` a los servicios, no `JOIN`. Un equipo caído sin ningún
+--    servicio fechable sale igual, con `desde` en NULL. Hoy no hay ninguno
+--    —medido: 0 de 341— pero omitirlo en silencio el día que aparezca sería
+--    exactamente el error que este proyecto viene corrigiendo en otros lados:
+--    una lista recortada que no avisa que está recortada.
+--
+--  · No clasifica. `dias_sin_senal` y `estado_manual` viajan crudos y el
+--    veredicto activo/dudoso/baja lo pone `web/src/lib/vida.ts`, igual que en
+--    `v_device_estado`: los umbrales son política, y la política no va en SQL.
+CREATE OR REPLACE VIEW v_caida_en_curso AS
+WITH presente AS (
+  SELECT COALESCE(max(source_mtime), now()) AS ahora
+    FROM sync_runs
+   WHERE source_mtime IS NOT NULL
+),
+caidos AS (
+  -- Sólo los servicios que están abajo AHORA y tienen fecha de cuándo cayeron.
+  SELECT s.device_id,
+         min(s.status_changed_at)                        AS desde,
+         count(*)                                        AS servicios_caidos
+    FROM services s
+   WHERE s.device_id IS NOT NULL
+     AND COALESCE(s.status NOT IN (1, 2), false)
+     AND s.status_changed_at IS NOT NULL
+   GROUP BY s.device_id
+),
+totales AS (
+  SELECT device_id, count(*) AS servicios_total
+    FROM services
+   WHERE device_id IS NOT NULL
+   GROUP BY device_id
+)
+SELECT d.id                                              AS device_id,
+       d.name,
+       d.addresses,
+       d.status,
+       d.status_label,
+       c.desde,
+       p.ahora,
+       -- GREATEST contra 0: si el reloj del origen quedó detrás de la fecha de
+       -- caída —relojes distintos, o una corrida vieja— una duración negativa
+       -- se dibujaría como «hace -3 h», que es peor que no decir nada.
+       CASE WHEN c.desde IS NULL THEN NULL
+            ELSE GREATEST(EXTRACT(EPOCH FROM (p.ahora - c.desde))::bigint, 0)
+       END                                               AS duracion_s,
+       COALESCE(c.servicios_caidos, 0)                   AS servicios_caidos,
+       COALESCE(t.servicios_total, 0)                    AS servicios_total,
+       e.ultima_senal,
+       e.dias_sin_senal,
+       e.estado_manual,
+       e.nota_manual,
+       -- Redundante con el WHERE —acá todo está caído— pero se expone igual
+       -- porque `sqlEsActivo()` en web/src/lib/vida.ts la lee, y esa función
+       -- es el ÚNICO lugar donde vive la regla de qué equipo cuenta. Copiar
+       -- la regla acá con un `false` fijo sería crear una segunda versión que
+       -- se desincroniza sola el día que alguien cambie la de allá.
+       COALESCE(e.arriba_ahora, false)                   AS arriba_ahora
+  FROM devices d
+  CROSS JOIN presente p
+  LEFT JOIN caidos            c ON c.device_id = d.id
+  LEFT JOIN totales           t ON t.device_id = d.id
+  LEFT JOIN v_device_estado   e ON e.device_id = d.id
+ WHERE COALESCE(d.status NOT IN (1, 2), false);
+
+COMMENT ON VIEW v_caida_en_curso IS
+  'Una fila por equipo caído AHORA, con desde cuándo. Reconstruida de '
+  'services.status_changed_at porque outages sólo guarda caídas ya terminadas: '
+  'tiene 0 filas abiertas de 11.988. No clasifica activo/baja — eso es política '
+  'y vive en web/src/lib/vida.ts.';
 
 COMMIT;

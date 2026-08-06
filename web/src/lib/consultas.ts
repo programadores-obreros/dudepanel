@@ -1598,6 +1598,157 @@ export async function historialCaidas(f: FiltrosCaidas = {}): Promise<PaginaCaid
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Caídas EN CURSO — lo que está roto ahora
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Un equipo que está caído en este momento. */
+export interface CaidaEnCurso {
+  device_id: number;
+  equipo: string;
+  ips: string[];
+  /** Cuándo cayó. `null` si ningún servicio suyo tiene fecha — hoy no pasa. */
+  desde: string | null;
+  /** Segundos caído, medidos contra el reloj del ORIGEN, no contra `now()`. */
+  duracion_s: number | null;
+  servicios_caidos: number;
+  servicios_total: number;
+  /** Para clasificar con `lib/vida.ts`. */
+  ultima_senal: string | null;
+  dias_sin_senal: number | null;
+  estado_manual: string | null;
+  arriba_ahora: boolean;
+}
+
+export interface CaidasEnCurso {
+  caidas: CaidaEnCurso[];
+  /** Cuántas hay en total con el filtro puesto (la lista puede venir cortada). */
+  total: number;
+  /**
+   * Los recuentos por antigüedad, calculados en SQL SOBRE EL TOTAL.
+   *
+   * 🔴 No se derivan de `caidas`, y esa es la razón de que existan.
+   *
+   *    La primera versión los contaba en la página con un `.filter()` sobre la
+   *    lista devuelta —que viene cortada en `limite`—. Con 81 caídas y un tope
+   *    de 200 daba bien, así que la prueba pasaba. El día que la red se caiga
+   *    de verdad y haya 300, la tarjeta «hace menos de 1 h» empezaría a
+   *    subcontar **justo en el momento en que alguien la mira en serio**, sin
+   *    ningún aviso. Un recuento que sólo miente cuando importa es peor que
+   *    uno que miente siempre: nadie lo descubre a tiempo.
+   */
+  ultima_hora: number;
+  ultimo_dia: number;
+  /** Segundos de la caída más antigua que sigue abierta. `null` si no hay. */
+  mas_vieja_s: number | null;
+  /**
+   * Cuántas quedaron AFUERA por el filtro de vida. Se muestra siempre, aunque
+   * sea 0: una lista recortada que no dice cuánto recortó enseña a desconfiar.
+   */
+  ocultas: number;
+  /** Sin ninguna fecha de caída. Hoy 0, y si deja de serlo hay que verlo. */
+  sin_fecha: number;
+}
+
+/**
+ * Los equipos que están caídos AHORA.
+ *
+ * 🔴 Esto no sale de `outages`, y no puede salir de ahí.
+ *
+ *    The Dude escribe la fila de una caída **cuando el servicio se recupera**,
+ *    con principio y fin de una vez. Mientras el equipo está abajo no existe
+ *    ninguna fila. Medido sobre la instalación real el 06/08/2026:
+ *
+ *      outages · total                        11.988
+ *      outages · abiertas                          0
+ *      equipos caídos en ese instante            341
+ *      de esos, presentes en `outages`             0
+ *
+ *    Por eso `/caidas` mostraba «Sin resolver: 0» con 341 equipos abajo. No era
+ *    un error de cuenta: contaba bien una tabla que estructuralmente no puede
+ *    tener lo que se le pedía.
+ *
+ *    La reconstrucción sale de `services.status_changed_at`, y su validación
+ *    está documentada arriba de `v_caida_en_curso` en `etl/schema.sql`.
+ *
+ * ── Por qué el filtro por vida está encendido por omisión ───────────────────
+ *
+ * De los 341 caídos, **332 llevan más de 30 días abajo** y 155 no dieron señal
+ * jamás. Nueve son caídas de verdad. Mostrar las 341 no es «más completo»: es
+ * esconder nueve entre trescientas cuarenta y una.
+ *
+ * `alcanceDias` es el freno contra la trampa de siempre: si la base se rehizo
+ * hace poco —pasó en junio de 2026, al chocar contra el techo de 2 GB— nadie
+ * tiene 30 días de historia y el filtro daría de baja a la red entera. Con el
+ * alcance real, el umbral se recorta solo.
+ */
+export async function caidasEnCurso(
+  opciones: { soloActivos?: boolean; limite?: number; alcanceDias?: number } = {},
+): Promise<CaidasEnCurso> {
+  const soloActivos = opciones.soloActivos ?? true;
+  const limite = Math.min(Math.max(Math.round(opciones.limite ?? 200), 1), 1000);
+  const dias = Math.max(Math.round(opciones.alcanceDias ?? DIAS_ACTIVO), 1);
+
+  // El `AND` con la condición de filtro se arma una sola vez: los recuentos por
+  // antigüedad tienen que contar EL MISMO conjunto que la lista, o las tarjetas
+  // y las filas dirían cosas distintas de la misma pantalla.
+  const enConjunto = soloActivos ? `AND ${sqlEsActivo('c', '$1')}` : '';
+
+  const [conteo] = await consultar<{
+    todas: string;
+    activas: string;
+    sin_fecha: string;
+    hora: string;
+    dia: string;
+    vieja: string | null;
+  }>(
+    `SELECT count(*)                                          AS todas,
+            count(*) FILTER (WHERE ${sqlEsActivo('c', '$1')}) AS activas,
+            count(*) FILTER (WHERE c.desde IS NULL)           AS sin_fecha,
+            count(*) FILTER (WHERE c.duracion_s <  3600  ${enConjunto}) AS hora,
+            count(*) FILTER (WHERE c.duracion_s < 86400  ${enConjunto}) AS dia,
+            max(c.duracion_s) FILTER (WHERE true ${enConjunto})         AS vieja
+       FROM v_caida_en_curso c`,
+    [dias],
+  );
+
+  const todas = Number(conteo?.todas ?? 0);
+  const activas = Number(conteo?.activas ?? 0);
+  const total = soloActivos ? activas : todas;
+
+  const filas = await consultar<CaidaEnCurso>(
+    `SELECT c.device_id,
+            c.name                                          AS equipo,
+            COALESCE((SELECT array_agg(host(a)) FROM unnest(c.addresses) a), '{}') AS ips,
+            c.desde,
+            c.duracion_s,
+            c.servicios_caidos,
+            c.servicios_total,
+            c.ultima_senal,
+            c.dias_sin_senal,
+            c.estado_manual,
+            c.arriba_ahora
+       FROM v_caida_en_curso c
+      ${soloActivos ? `WHERE ${sqlEsActivo('c', '$1')}` : ''}
+      -- La más reciente primero: en una guardia, lo que acaba de romperse es
+      -- lo único que se puede llegar a arreglar. NULLS LAST porque un equipo
+      -- sin fecha no es urgente, es un dato que falta.
+      ORDER BY c.desde DESC NULLS LAST, c.name
+      LIMIT ${soloActivos ? '$2' : '$1'}`,
+    soloActivos ? [dias, limite] : [limite],
+  );
+
+  return {
+    caidas: filas,
+    total,
+    ultima_hora: Number(conteo?.hora ?? 0),
+    ultimo_dia: Number(conteo?.dia ?? 0),
+    mas_vieja_s: conteo?.vieja == null ? null : Number(conteo.vieja),
+    ocultas: todas - activas,
+    sin_fecha: Number(conteo?.sin_fecha ?? 0),
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Disponibilidad — el reporte facturable
 //
 // Acá está SÓLO la SQL. Toda la aritmética (porcentaje, MTBF, MTTR), la
