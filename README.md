@@ -162,6 +162,11 @@ certificado válido, sitio contestando 200 — y cero equipos.
 ```
 docs/FORMATO-DUDE.md   El contrato: cómo se lee el formato binario de The Dude.
                        Todo medido sobre una base real de 14.925 objetos.
+docs/DESPLIEGUE.md     Instalar el panel junto a The Dude, sin publicarlo.
+docs/PRODUCCION.md     Publicarlo en internet: TLS, autenticación, verificación.
+docs/PUBLICAR.md       Construir y publicar una versión nueva de las imágenes.
+                       Va ANTES de «actualizar» en PRODUCCION.md.
+deploy/digests.sh      Lee del registro el digest de cada imagen y lo fija.
 etl/dudeobj.py         Decodificador. Sólo lectura, sin credenciales.
 etl/schema.sql         Esquema de PostgreSQL. El contrato con el frontend.
 etl/sync.py            El servicio de sincronización.

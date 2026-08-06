@@ -365,6 +365,21 @@ un celular a las tres de la mañana esa cuenta no está ni cerca de ser pareja.
 El despliegue está atado a un **commit**, no a `latest`. Eso vuelve el
 procedimiento aburrido, que es exactamente lo que se busca.
 
+> ### 🔴 Antes: la imagen de ese commit tiene que existir
+>
+> Acá faltaba un paso, y sin él los de abajo no pueden funcionar. Las imágenes
+> **no se construyen solas**: no hay integración continua, y
+> `compose.prod.yml` no tiene sección `build:` —un
+> `docker compose build web` contesta `No services to build` y devuelve 0, que
+> es fácil de leer como «ya estaba construido»—.
+>
+> Hay que **construirlas en la VM, verificarlas por dentro y publicarlas en
+> GHCR** antes de tocar `PANEL_VERSION`. Ese procedimiento está en
+> [`PUBLICAR.md`](PUBLICAR.md).
+>
+> Si venís de ahí, `PANEL_VERSION` y los cuatro digests **ya quedaron
+> escritos** por `deploy/digests.sh --aplicar` y podés saltear el paso 3.
+
 ```bash
 # 1 · ANOTAR QUÉ ESTÁ CORRIENDO. Este es el paso que se saltea y se extraña.
 dp images
@@ -377,14 +392,23 @@ Guardá ese valor donde lo vayas a encontrar apurado. No en la terminal.
 # 2 · Actualizar el árbol (para `Caddyfile` y `etl/schema.sql`, que se montan)
 cd /opt/dudepanel && sudo git pull
 
-# 3 · Cambiar la versión
+# 3 · Cambiar la versión Y LOS DIGESTS. Los dos: la imagen está fijada por
+#     `etiqueta@digest`, así que mover sólo la etiqueta da una referencia que
+#     no existe y `dp pull` falla.
 sudo sed -i 's/^PANEL_VERSION=.*/PANEL_VERSION=<commit nuevo>/' .env.prod
+sudo ./deploy/digests.sh <commit nuevo> --aplicar
 
 # 4 · Bajar las imágenes ANTES de tocar nada que esté andando
 dp pull
 
 # 5 · Recrear
 dp up -d
+
+# 6 · Comprobar que lo que corre es lo que construiste. No es lo mismo que el
+#     paso 5 haya salido bien: entre la imagen y el contenedor pasan un push,
+#     un pull, una resolución de digest y una recreación.
+sudo docker inspect dudepanel-web-1 --format '{{.Config.Image}}'
+sudo docker exec dudepanel-web-1 sh -c 'grep -rl "<algo del cambio>" /app/dist/ | head'
 ```
 
 `dp pull` como paso separado no es ceremonia: si la imagen no existe o GHCR está
