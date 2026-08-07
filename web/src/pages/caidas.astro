@@ -26,6 +26,7 @@ import {
 } from '@/lib/consultas';
 import { duracion, numero } from '@/lib/formato';
 import { reportarError } from '@/lib/errores';
+import { resolverVentana, VENTANAS } from '@/lib/ventanas';
 
 const p = Astro.url.searchParams;
 
@@ -113,6 +114,16 @@ const pagina = Math.max(Number(p.get('p')) || 1, 1);
  */
 const soloActivos = p.get('todos') !== '1';
 
+/**
+ * La ventana de tiempo de «En curso»: sólo lo que cayó dentro de ella.
+ *
+ * Es lo que convierte la lista en una herramienta de análisis y no sólo en un
+ * inventario de lo roto. «Mostrame los que estaban andando y dejaron de andar
+ * en las últimas 6 horas» es una pregunta distinta de «mostrame lo que está
+ * caído», y hasta ahora el panel sólo sabía contestar la segunda.
+ */
+const ventana = resolverVentana(p.get('desde'));
+
 let datos: PaginaCaidas | null = null;
 let curso: CaidasEnCurso | null = null;
 let alcance = 0;
@@ -126,7 +137,7 @@ try {
   //    Y para verse en la solapa el número tiene que estar antes de dibujarla,
   //    así que no se puede diferir a la vista que lo usa.
   [curso, alcance] = await Promise.all([
-    caidasEnCurso({ soloActivos }),
+    caidasEnCurso({ soloActivos, ventanaH: ventana.horas }),
     alcanceHistoria(),
   ]);
   if (vista === 'historial') {
@@ -140,9 +151,16 @@ try {
 function con(cambios: Record<string, string | number>): string {
   const u = new URLSearchParams({ h: String(horas), min: String(minimo) });
   if (vista !== 'curso') u.set('vista', vista);
+  if (ventana.horas != null) u.set('desde', ventana.clave);
   if (q) u.set('q', q);
   if (!soloActivos) u.set('todos', '1');
-  for (const [k, v] of Object.entries(cambios)) u.set(k, String(v));
+  // Un valor vacío BORRA el parámetro en vez de dejar `?desde=` colgando: una
+  // URL con parámetros vacíos se pega en un chat y el que la abre no sabe si
+  // el filtro está puesto o no.
+  for (const [k, v] of Object.entries(cambios)) {
+    if (String(v) === '') u.delete(k);
+    else u.set(k, String(v));
+  }
   if (!('p' in cambios)) u.delete('p');
   return `?${u}`;
 }
@@ -168,6 +186,7 @@ const rangoTexto = RANGOS.find((r) => r.h === horas)?.texto ?? '';
           <a
             href={`?${new URLSearchParams({
               ...(v.clave === 'historial' ? { vista: 'historial' } : {}),
+              ...(ventana.horas != null ? { desde: ventana.clave } : {}),
               ...(soloActivos ? {} : { todos: '1' }),
             })}`}
             class:list={[
@@ -238,6 +257,52 @@ const rangoTexto = RANGOS.find((r) => r.h === horas)?.texto ?? '';
     ) : vista === 'curso' ? (
       <>
         {/* ═══ EN CURSO ═══════════════════════════════════════════════════ */}
+
+        {/* ── El recorte por tiempo, que es lo que permite analizar ─────────
+            🔴 CADA BOTÓN TRAE SU NÚMERO, y eso no es decoración: es el
+               análisis. Ver «1 h · 0 | 6 h · 1 | 24 h · 3 | 7 d · 6» de un
+               vistazo responde «¿esto se está desmoronando ahora o viene
+               goteando hace una semana?» sin apretar nada.
+
+               Los recuentos salen de SQL sobre el total, así que el número de
+               un botón dice a cuántos lleva apretarlo — no cuántos hay en la
+               página que estás viendo. */}
+        <fieldset class="tarjeta mb-4 flex flex-wrap items-center gap-x-4 gap-y-2 p-3">
+          <legend class="sr-only">Cayeron dentro de</legend>
+          <span class="text-tenue text-2xs font-semibold tracking-wide uppercase">
+            Cayeron en
+          </span>
+          <div class="flex flex-wrap gap-1" role="group">
+            {VENTANAS.map((v) => {
+              const n = curso!.por_ventana[v.clave] ?? 0;
+              const puesta = v.clave === ventana.clave;
+              return (
+                <a
+                  href={con(v.horas == null ? { desde: '' } : { desde: v.clave })}
+                  title={v.ayuda}
+                  class:list={[
+                    'text-2xs rounded px-2.5 py-2 transition-colors duration-150',
+                    puesta
+                      ? 'bg-acento text-fondo font-semibold'
+                      : 'text-tenue hover:bg-panel-2 hover:text-texto border-borde border',
+                  ]}
+                  aria-current={puesta ? 'true' : undefined}
+                >
+                  {v.texto}
+                  <span
+                    class:list={[
+                      'ml-1.5 tabular-nums',
+                      !puesta && n > 0 && 'text-caido-txt font-semibold',
+                    ]}
+                  >
+                    · {numero(n)}
+                  </span>
+                </a>
+              );
+            })}
+          </div>
+        </fieldset>
+
         <div class="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
           {[
             {

@@ -1647,14 +1647,41 @@ WITH presente AS (
    WHERE source_mtime IS NOT NULL
 ),
 caidos AS (
-  -- Sólo los servicios que están abajo AHORA y tienen fecha de cuándo cayeron.
+  /*
+   * 🔴 «DESDE CUÁNDO ESTÁ CAÍDO» YA TENÍA UNA DEFINICIÓN EN ESTE PROYECTO, Y
+   *    ACÁ HABÍA OTRA. Dos respuestas a la misma pregunta.
+   *
+   *    Esta vista usaba `min(status_changed_at)` sobre los servicios caídos —el
+   *    PRIMERO en caer— mientras `SQL_ESTADO_DESDE` en `web/src/lib/consultas.ts`
+   *    —que alimenta la ficha del equipo, el inventario y el mapa— usa el
+   *    ÚLTIMO. Y la de allá tiene razón:
+   *
+   *      un equipo con `ping` caído desde 2022 y `winbox` caído desde hoy
+   *      está caído ENTERO desde hoy, no desde 2022.
+   *
+   *      El último en caer es el que completó la caída. Con `min`, ese equipo
+   *      figuraba caído hace tres años en una pantalla y hace una hora en la
+   *      de al lado.
+   *
+   *    Medido sobre la instalación real el 06/08/2026: de 340 equipos caídos
+   *    sólo 3 tienen más de un servicio y sólo 2 dan distinto — pero la peor
+   *    discrepancia es de **2.408 días**. Poco alcance, error enorme: es
+   *    exactamente la clase de contradicción que hace que alguien deje de
+   *    creerle al panel entero por dos filas.
+   *
+   *    Se copia la fórmula en vez de importarla porque una vive en SQL y la
+   *    otra en TypeScript. Si cambia una, TIENE que cambiar la otra — por eso
+   *    están nombradas una en el comentario de la otra.
+   */
   SELECT s.device_id,
-         min(s.status_changed_at)                        AS desde,
-         count(*)                                        AS servicios_caidos
+         COALESCE(
+           max(s.status_changed_at) FILTER (WHERE s.status = 3),
+           max(s.status_changed_at)
+         )                                               AS desde,
+         count(*) FILTER (WHERE COALESCE(s.status NOT IN (1, 2), false))
+                                                         AS servicios_caidos
     FROM services s
    WHERE s.device_id IS NOT NULL
-     AND COALESCE(s.status NOT IN (1, 2), false)
-     AND s.status_changed_at IS NOT NULL
    GROUP BY s.device_id
 ),
 totales AS (

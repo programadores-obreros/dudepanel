@@ -735,3 +735,37 @@ tbody tr:hover {
   outline-offset: 2px;
   border-radius: 0.375rem;
 }
+
+
+/* ── Resalte por ventana de caída ──────────────────────────────────────────
+ *
+ * 🔴 Atenuar, NUNCA esconder. Ver el comentario de `ventanaH` en
+ *    `components/VisorMapa.astro`: en un mapa, esconder el contexto tira lo
+ *    único que el mapa aporta sobre una lista, que es el LUGAR. Seis equipos
+ *    caídos son seis renglones; seis equipos caídos colgando todos del mismo
+ *    nodo son un diagnóstico.
+ *
+ * El 0.18 salió de probarlo, no de elegir un número redondo: por debajo el
+ * mapa desaparece y el resalte queda flotando en negro; por encima los nodos
+ * apagados siguen compitiendo por la atención y el resalte no resalta.
+ */
+[data-visor][data-resaltando] .nodo-mapa:not([data-resalte]) {
+  opacity: 0.18;
+  transition: opacity var(--dur-media, 200ms) var(--curva-salida, ease-out);
+}
+[data-visor][data-resaltando] .enlace-mapa,
+[data-visor][data-resaltando] .rotulo-mapa {
+  opacity: 0.22;
+}
+[data-visor][data-resaltando] .nodo-mapa[data-resalte] .aro {
+  stroke: var(--color-caido);
+  stroke-width: 4;
+}
+
+/* 🔴 Quien pidió menos movimiento igual necesita VER el resalte: se le quita
+ *    la transición, no el contraste. Atenuar es información, no adorno. */
+@media (prefers-reduced-motion: reduce) {
+  [data-visor][data-resaltando] .nodo-mapa:not([data-resalte]) {
+    transition: none;
+  }
+}

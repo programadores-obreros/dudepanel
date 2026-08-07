@@ -10,6 +10,7 @@ import {
 } from './antiguedad';
 import type { ConteoSubmapa } from './plantillas';
 import { clasificar, DIAS_ACTIVO, sqlEsActivo, type SenalDeVida } from './vida';
+import { VENTANAS } from './ventanas';
 
 /**
  * Toda la SQL del panel vive acá.
@@ -105,6 +106,11 @@ export function saludSync(s: Sincronizacion | null): SaludSync {
  *    enterrada en cinco consultas justamente para que se pueda discutir en un
  *    solo lugar.
  */
+// ⚠️ Esta fórmula está DUPLICADA en la vista `v_caida_en_curso` de
+//    `etl/schema.sql`, porque una vive en TypeScript y la otra en SQL. Si
+//    cambia acá, tiene que cambiar allá: ya pasó una vez que se separaran, y
+//    dos equipos quedaron con 2.408 días de diferencia entre lo que decía su
+//    ficha y lo que decía la lista de caídas.
 const SQL_ESTADO_DESDE = `
   COALESCE(
     max(s.status_changed_at) FILTER (WHERE s.status = 3),
@@ -1623,6 +1629,8 @@ export interface CaidasEnCurso {
   caidas: CaidaEnCurso[];
   /** Cuántas hay en total con el filtro puesto (la lista puede venir cortada). */
   total: number;
+  /** Cuántas caen en cada ventana de `lib/ventanas.ts`, sobre el total. */
+  por_ventana: Record<string, number>;
   /**
    * Los recuentos por antigüedad, calculados en SQL SOBRE EL TOTAL.
    *
@@ -1682,9 +1690,16 @@ export interface CaidasEnCurso {
  * alcance real, el umbral se recorta solo.
  */
 export async function caidasEnCurso(
-  opciones: { soloActivos?: boolean; limite?: number; alcanceDias?: number } = {},
+  opciones: {
+    soloActivos?: boolean;
+    limite?: number;
+    alcanceDias?: number;
+    /** Sólo las que cayeron dentro de esta ventana. `null` = todas. */
+    ventanaH?: number | null;
+  } = {},
 ): Promise<CaidasEnCurso> {
   const soloActivos = opciones.soloActivos ?? true;
+  const ventanaH = opciones.ventanaH ?? null;
   const limite = Math.min(Math.max(Math.round(opciones.limite ?? 200), 1), 1000);
   const dias = Math.max(Math.round(opciones.alcanceDias ?? DIAS_ACTIVO), 1);
 
@@ -1693,6 +1708,23 @@ export async function caidasEnCurso(
   // y las filas dirían cosas distintas de la misma pantalla.
   const enConjunto = soloActivos ? `AND ${sqlEsActivo('c', '$1')}` : '';
 
+  // 🔴 Un `count(*) FILTER` por ventana, en la MISMA consulta, y no una consulta
+  //    por botón. Con seis ventanas eso serían seis recorridas de la vista para
+  //    contestar seis preguntas sobre las mismas filas. Postgres las resuelve
+  //    todas en un solo barrido.
+  //
+  //    Los umbrales van interpolados como enteros y no como parámetros a
+  //    propósito: salen de `VENTANAS`, que es una constante del código, no de
+  //    la URL. `Number()` en el `map` es el cerrojo por si algún día alguien
+  //    hace que esa lista venga de otro lado.
+  const buckets = VENTANAS.filter((v) => v.horas != null)
+    .map(
+      (v) =>
+        `count(*) FILTER (WHERE c.duracion_s <= ${Number(v.horas) * 3600} ${enConjunto})` +
+        ` AS "v_${v.clave}"`,
+    )
+    .join(',\n            ');
+
   const [conteo] = await consultar<{
     todas: string;
     activas: string;
@@ -1700,13 +1732,15 @@ export async function caidasEnCurso(
     hora: string;
     dia: string;
     vieja: string | null;
+    [ventana: string]: string | null;
   }>(
     `SELECT count(*)                                          AS todas,
             count(*) FILTER (WHERE ${sqlEsActivo('c', '$1')}) AS activas,
             count(*) FILTER (WHERE c.desde IS NULL)           AS sin_fecha,
             count(*) FILTER (WHERE c.duracion_s <  3600  ${enConjunto}) AS hora,
             count(*) FILTER (WHERE c.duracion_s < 86400  ${enConjunto}) AS dia,
-            max(c.duracion_s) FILTER (WHERE true ${enConjunto})         AS vieja
+            max(c.duracion_s) FILTER (WHERE true ${enConjunto})         AS vieja,
+            ${buckets}
        FROM v_caida_en_curso c`,
     [dias],
   );
@@ -1714,6 +1748,13 @@ export async function caidasEnCurso(
   const todas = Number(conteo?.todas ?? 0);
   const activas = Number(conteo?.activas ?? 0);
   const total = soloActivos ? activas : todas;
+
+  // La ventana recorta la LISTA. Los recuentos de arriba siguen contando todo,
+  // que es lo que permite que cada botón muestre a cuántos llevaría apretarlo.
+  const recorte =
+    ventanaH == null ? '' : `c.duracion_s IS NOT NULL AND c.duracion_s <= ${Number(ventanaH) * 3600}`;
+  const condiciones = [soloActivos ? sqlEsActivo('c', '$1') : '', recorte].filter(Boolean);
+  const donde = condiciones.length ? `WHERE ${condiciones.join(' AND ')}` : '';
 
   const filas = await consultar<CaidaEnCurso>(
     `SELECT c.device_id,
@@ -1728,7 +1769,7 @@ export async function caidasEnCurso(
             c.estado_manual,
             c.arriba_ahora
        FROM v_caida_en_curso c
-      ${soloActivos ? `WHERE ${sqlEsActivo('c', '$1')}` : ''}
+      ${donde}
       -- La más reciente primero: en una guardia, lo que acaba de romperse es
       -- lo único que se puede llegar a arreglar. NULLS LAST porque un equipo
       -- sin fecha no es urgente, es un dato que falta.
@@ -1740,6 +1781,12 @@ export async function caidasEnCurso(
   return {
     caidas: filas,
     total,
+    por_ventana: Object.fromEntries(
+      VENTANAS.map((v) => [
+        v.clave,
+        v.horas == null ? total : Number(conteo?.[`v_${v.clave}`] ?? 0),
+      ]),
+    ),
     ultima_hora: Number(conteo?.hora ?? 0),
     ultimo_dia: Number(conteo?.dia ?? 0),
     mas_vieja_s: conteo?.vieja == null ? null : Number(conteo.vieja),

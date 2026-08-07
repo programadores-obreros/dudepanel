@@ -15,6 +15,7 @@ import {
 } from '@/lib/consultas';
 import { quien } from '@/lib/roles';
 import { clasificar } from '@/lib/vida';
+import { resolverVentana } from '@/lib/ventanas';
 
 const id = Number(Astro.params.id);
 if (!Number.isInteger(id) || id <= 0) return Astro.redirect('/mapas', 302);
@@ -41,6 +42,19 @@ const CAPAS = [
 type Capa = (typeof CAPAS)[number]['valor'];
 const capa: Capa =
   (CAPAS.find((c) => c.valor === Astro.url.searchParams.get('capa'))?.valor as Capa) ?? 'activos';
+
+/**
+ * La ventana de «cayó recién», que RESALTA en vez de filtrar.
+ *
+ * Misma lista que en `/caidas` —`lib/ventanas.ts`— para que lo que se ve en una
+ * pantalla se pueda cruzar con lo que se ve en la otra. Un «6 h» que significa
+ * cosas distintas en dos lugares del mismo panel es peor que no tenerlo.
+ *
+ * 🔴 Acá NO recorta `elementos`, a diferencia de `capa`. Ver `ventanaH` en
+ *    `VisorMapa.astro`: en un mapa, esconder el contexto tira lo único que el
+ *    mapa aporta sobre una lista, que es el lugar.
+ */
+const ventana = resolverVentana(Astro.url.searchParams.get('desde'));
 
 let mapa = null;
 let elementos: Awaited<ReturnType<typeof lienzoMapa>> = [];
@@ -150,6 +164,7 @@ const movidos = elementos.filter((e) => e.movido).length;
           movidos={movidos}
           alcanceDias={alcance}
           capa={capa}
+          ventanaH={ventana.horas}
           ocultos={ocultos}
         />
       )

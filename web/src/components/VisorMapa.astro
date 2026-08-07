@@ -12,6 +12,7 @@ import { fabricante } from '@/lib/oui';
 import { metaEstado, ESTADOS } from '@/lib/estado';
 import { ANTIGUEDADES } from '@/lib/antiguedad';
 import { duracion, numero, porcentaje } from '@/lib/formato';
+import { VENTANAS } from '@/lib/ventanas';
 import TarjetaNodo from '@/components/TarjetaNodo.astro';
 
 interface Props {
@@ -39,6 +40,22 @@ interface Props {
   alcanceDias?: number;
   /** Qué capa está mirando. La elige la página por la URL. */
   capa?: 'activos' | 'dudosos' | 'todo';
+  /**
+   * Resaltar los que se CAYERON dentro de esta ventana, en horas.
+   *
+   * 🔴 RESALTA Y ATENÚA, no esconde. Y es una decisión, no una comodidad.
+   *
+   *    La petición fue «filtrá los equipos que dejaron de andar en las últimas
+   *    X horas». En una lista, filtrar es lo correcto. En un mapa **es lo peor
+   *    que se puede hacer**, porque tira justamente lo único que el mapa
+   *    aporta sobre la lista: el LUGAR.
+   *
+   *    Seis equipos caídos son seis renglones. Seis equipos caídos colgando
+   *    todos del mismo nodo son un diagnóstico — y eso sólo se ve si el resto
+   *    del mapa sigue dibujado, apagado, atrás. Escondiéndolos quedarían seis
+   *    puntos flotando en un vacío que no explica nada.
+   */
+  ventanaH?: number | null;
   /** Cuántos elementos quedaron afuera por esa capa. Se dice SIEMPRE. */
   ocultos?: number;
 }
@@ -46,12 +63,33 @@ interface Props {
 const {
   mapaId, nombre, elementos, submapas = new Map(), fuera, trafico,
   editable = false, movidos = 0, alcanceDias, capa = 'todo', ocultos = 0,
+  ventanaH = null,
 } = Astro.props;
 
 /**
  * Las tres capas, con su enlace. Vive acá y no en la página porque es lo que
  * se DIBUJA; la página sólo decide cuál está activa.
  */
+/**
+ * Arma un enlace cambiando UN parámetro y conservando los demás.
+ *
+ * 🔴 Antes acá decía `href={`?capa=${c.valor}`}`, y eso BORRA todo lo demás.
+ *    Con un solo filtro no se notaba. Al agregar la ventana de caída se
+ *    convierte en un defecto de verdad: elegís «cayó en 6 h», tocás «Todo»
+ *    para ver también las bajas, y la ventana se evapora sin decir nada.
+ *
+ *    Un valor vacío BORRA el parámetro en vez de dejarlo colgando: una URL con
+ *    `?desde=` no se distingue a simple vista de una con el filtro puesto, y
+ *    estas URLs están hechas para pegarse en un chat.
+ */
+function conParam(clave: string, valor: string): string {
+  const u = new URLSearchParams(Astro.url.search);
+  if (valor === '') u.delete(clave);
+  else u.set(clave, valor);
+  const q = u.toString();
+  return q ? `?${q}` : Astro.url.pathname;
+}
+
 const CAPAS = [
   { valor: 'activos', texto: 'En servicio' },
   { valor: 'dudosos', texto: '+ dudosos' },
@@ -146,6 +184,7 @@ const destinos = enOtroMapa > 0 ? (fuera?.destinos ?? []) : [];
   data-visor
   data-mapa-id={mapaId}
   data-editable={editable ? 'si' : undefined}
+  data-resaltando={ventanaH != null ? 'si' : undefined}
   {...(editable ? { 'data-offset-nodo': String(TAMANIO_NODO / 2) } : {})}
 >
   {/* ── Controles ─────────────────────────────────────────────────────── */}
@@ -260,7 +299,7 @@ const destinos = enOtroMapa > 0 ? (fuera?.destinos ?? []) : [];
         >
           {CAPAS.map((c) => (
             <a
-              href={`?capa=${c.valor}`}
+              href={conParam('capa', c.valor)}
               aria-current={c.valor === capa ? 'page' : undefined}
               class:list={[
                 'text-2xs rounded-md px-2 py-1 font-medium no-underline transition-colors',
@@ -284,6 +323,38 @@ const destinos = enOtroMapa > 0 ? (fuera?.destinos ?? []) : [];
         </nav>
       )
     }
+
+    {/* ── Resaltar lo que se cayó recién ────────────────────────────────────
+        🔴 Va SIEMPRE, no sólo cuando ya hay algo resaltado. Es la única forma
+           de que alguien descubra que la función existe: un control que
+           aparece recién cuando ya lo usaste no lo usa nadie la primera vez.
+
+           Y el número de cada ventana no se muestra acá, a diferencia de
+           `/caidas`: contarlos exigiría recorrer los elementos por cada
+           ventana en cada dibujo del mapa, y el mapa se dibuja mucho. El que
+           quiere los números los tiene en la lista, a un clic. */}
+    <nav
+      aria-label="Resaltar los que se cayeron recién"
+      class="border-borde bg-panel/90 pointer-events-auto flex items-center gap-0.5 rounded-lg border p-0.5 backdrop-blur"
+    >
+      <span class="text-tenue px-1.5 text-2xs">Cayó en</span>
+      {VENTANAS.map((v) => {
+        const puesta = v.horas == null ? ventanaH == null : ventanaH === v.horas;
+        return (
+          <a
+            href={conParam('desde', v.horas == null ? '' : v.clave)}
+            title={v.ayuda}
+            aria-current={puesta ? 'page' : undefined}
+            class:list={[
+              'text-2xs rounded-md px-2 py-1 font-medium no-underline transition-colors',
+              puesta ? 'bg-acento-bg text-acento-txt' : 'text-tenue hover:bg-panel-2 hover:text-tinta',
+            ]}
+          >
+            {v.texto}
+          </a>
+        );
+      })}
+    </nav>
   </div>
 
   {/* ── Referencia de estados ─────────────────────────────────────────────
@@ -450,6 +521,14 @@ const destinos = enOtroMapa > 0 ? (fuera?.destinos ?? []) : [];
             //    lector de pantalla tiene que escuchar la misma advertencia, o
             //    para esa persona un nodo dudoso suena igual que uno sano.
             const aviso = n.vida === 'dudoso' ? ' — sin señales de vida recientes' : '';
+            // `data-resalte`: el servidor decide quién entra en la ventana de
+            // caída, el CSS sólo lo dibuja. Se MARCA, no se filtra — ver
+            // `ventanaH` en las props.
+            //
+            // 🔴 Y esta explicación va acá y no entre los atributos del nodo,
+            //    porque un comentario JSX entre atributos NO COMPILA y el error
+            //    que tira apunta a la etiqueta de cierre, cien líneas más
+            //    abajo. Es la cuarta vez en este proyecto.
             return (
               <Nodo
                 class="nodo-mapa"
@@ -457,6 +536,15 @@ const destinos = enOtroMapa > 0 ? (fuera?.destinos ?? []) : [];
                 data-id={n.id}
                 data-antiguedad={n.antiguedad ?? undefined}
                 data-edad={n.edad_s != null ? Math.round(n.edad_s) : undefined}
+                data-resalte={
+                  ventanaH != null &&
+                  n.estado !== 1 &&
+                  n.estado !== 2 &&
+                  n.edad_s != null &&
+                  n.edad_s <= ventanaH * 3600
+                    ? 'si'
+                    : undefined
+                }
                 data-dev={n.deviceId ?? undefined}
                 data-vida={n.vida ?? undefined}
                 href={n.href ?? undefined}
