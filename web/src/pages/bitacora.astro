@@ -1,0 +1,326 @@
+---
+/**
+ * La bitácora — lo que The Dude registra y después pisa.
+ *
+ * 🔴 ESTA PÁGINA MUESTRA DATOS QUE EN THE DUDE YA NO EXISTEN.
+ *
+ *    Cada bitácora suya es un buffer circular con tope declarado. Medido sobre
+ *    la instalación real el 08/08/2026:
+ *
+ *      Syslog   5.000 entradas  →  19,5 días
+ *      Evento   1.000 entradas  →   2,8 días
+ *      Action   1.000 entradas  →  45,0 días
+ *      Event    1.000 entradas  →  38,5 días
+ *
+ *    Dos días y veinte horas para la de eventos. El ETL las copia en cada
+ *    corrida y **nunca borra**, así que esta copia arranca igual que la de The
+ *    Dude y con el tiempo la supera. Cuanto más viejo el dato, más vale.
+ *
+ * Dos vistas, porque son dos preguntas distintas:
+ *
+ *   · **Eventos** — qué pasó. La bitácora cruda, buscable.
+ *   · **Accesos** — quién entró a The Dude, desde dónde. Eso no estaba en
+ *     ningún lado del panel y contesta, de paso, desde qué redes trabaja la
+ *     gente — que es el dato que hace falta para el cortafuegos.
+ */
+import Base from '@/layouts/Base.astro';
+import Icono from '@/components/Icono.astro';
+import {
+  accesosDude,
+  bitacoras,
+  eventosBitacora,
+  type Acceso,
+  type Bitacora,
+  type PaginaEventos,
+} from '@/lib/consultas';
+import { fechaHora, fechaLarga, numero } from '@/lib/formato';
+import { reportarError } from '@/lib/errores';
+
+const p = Astro.url.searchParams;
+
+const VISTAS = [
+  { clave: 'eventos', texto: 'Eventos' },
+  { clave: 'accesos', texto: 'Accesos' },
+] as const;
+type Vista = (typeof VISTAS)[number]['clave'];
+const vista: Vista = p.get('vista') === 'accesos' ? 'accesos' : 'eventos';
+
+const RANGOS = [
+  { h: 24, texto: '24 h' },
+  { h: 24 * 7, texto: '7 días' },
+  { h: 24 * 30, texto: '30 días' },
+  { h: null, texto: 'todo' },
+] as const;
+
+/* `p.has` y no sólo la validación: ver la nota larga en `caidas.astro`. Sin
+   eso, `Number(null)` es 0 y el valor por omisión no se alcanza nunca. */
+const horasPedidas = Number(p.get('h'));
+const horas: number | null = p.has('h')
+  ? (RANGOS.find((r) => r.h === horasPedidas)?.h ?? null)
+  : null;
+
+const q = (p.get('q') ?? '').trim().slice(0, 120);
+const pagina = Math.max(Number(p.get('p')) || 1, 1);
+const bitacoraId = p.has('b') && Number(p.get('b')) > 0 ? Number(p.get('b')) : null;
+
+let libros: Bitacora[] = [];
+let datos: PaginaEventos | null = null;
+let accesos: Acceso[] = [];
+let error: string | null = null;
+try {
+  libros = await bitacoras();
+  if (vista === 'accesos') accesos = await accesosDude(90);
+  else datos = await eventosBitacora({ bitacoraId, q, horas, pagina });
+} catch (e) {
+  error = reportarError('bitacora', e);
+}
+
+function con(cambios: Record<string, string | number>): string {
+  const u = new URLSearchParams();
+  if (vista !== 'eventos') u.set('vista', vista);
+  if (horas != null) u.set('h', String(horas));
+  if (q) u.set('q', q);
+  if (bitacoraId != null) u.set('b', String(bitacoraId));
+  for (const [k, v] of Object.entries(cambios)) {
+    if (String(v) === '') u.delete(k);
+    else u.set(k, String(v));
+  }
+  if (!('p' in cambios)) u.delete('p');
+  const s = u.toString();
+  return s ? `?${s}` : '?';
+}
+
+const guardadasTotal = libros.reduce((n, b) => n + b.guardadas, 0);
+const topeTotal = libros.reduce((n, b) => n + (b.tope ?? 0), 0);
+/* Lo que The Dude ya no tiene y nosotros sí. Es el valor de la página, en un
+   número: mientras sea 0 esto no aporta nada todavía, y crece solo. */
+const rescatados = Math.max(guardadasTotal - topeTotal, 0);
+---
+
+<Base titulo="Bitácora">
+  <header class="mb-4">
+    <h1 class="text-xl font-semibold">Bitácora</h1>
+    <p class="text-tenue mt-1 text-sm">
+      Lo que The Dude registra — y después pisa. Acá se conserva.
+    </p>
+
+    <nav class="mt-3 flex gap-1" aria-label="Vista">
+      {
+        VISTAS.map((v) => (
+          <a
+            href={v.clave === 'eventos' ? '?' : '?vista=accesos'}
+            class:list={[
+              'rounded-lg px-3 py-2 text-sm transition-colors duration-150',
+              v.clave === vista
+                ? 'bg-acento text-fondo font-semibold'
+                : 'text-tenue hover:bg-panel-2 hover:text-texto border-borde border',
+            ]}
+            aria-current={v.clave === vista ? 'page' : undefined}
+          >
+            {v.texto}
+          </a>
+        ))
+      }
+    </nav>
+  </header>
+
+  {
+    error ? (
+      <p class="tarjeta text-caido-txt p-4 text-sm">{error}</p>
+    ) : (
+      <>
+        {/* ── Por qué esta página existe, dicho en números ────────────────── */}
+        <p class="border-borde bg-panel-2 text-tenue mb-4 rounded-lg border px-3 py-2 text-xs leading-relaxed">
+          The Dude guarda cada bitácora en un <strong class="text-tinta">buffer circular</strong>:
+          cuando se llena, pisa lo más viejo. La de «Evento» conserva menos de tres días. El panel
+          las copia en cada sincronización y <strong class="text-tinta">nunca borra</strong>.
+          {rescatados > 0 ? (
+            <>
+              {' '}
+              Hoy tenemos <strong class="text-acento-txt">{numero(rescatados)}</strong> entradas
+              que The Dude <strong class="text-tinta">ya perdió</strong>.
+            </>
+          ) : (
+            <>
+              {' '}
+              Todavía no superamos lo que él conserva — esa diferencia empieza a crecer sola desde
+              la primera vez que pisa algo.
+            </>
+          )}
+        </p>
+
+        {/* ── Las bitácoras ──────────────────────────────────────────────── */}
+        <div class="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+          {libros.map((b) => (
+            <a
+              href={con({ b: bitacoraId === b.id ? '' : b.id, vista: '' })}
+              class:list={[
+                'tarjeta block p-3 transition-colors duration-150',
+                bitacoraId === b.id ? 'border-acento' : 'hover:bg-panel-2',
+              ]}
+              aria-current={bitacoraId === b.id ? 'true' : undefined}
+            >
+              <p class="text-tenue text-2xs font-semibold tracking-wide uppercase">{b.nombre}</p>
+              <p class="mt-1 text-xl font-semibold tabular-nums">{numero(b.guardadas)}</p>
+              <p class="text-tenue text-2xs mt-0.5">
+                {b.tope ? `él guarda ${numero(b.tope)}` : 'sin tope declarado'}
+              </p>
+            </a>
+          ))}
+        </div>
+
+        {vista === 'accesos' ? (
+          <>
+            {/* ═══ ACCESOS ═════════════════════════════════════════════════ */}
+            <p class="text-tenue mb-3 flex items-start gap-2 text-xs leading-relaxed">
+              <Icono nombre="alerta" tam={14} clase="mt-0.5" />
+              <span>
+                Quién entró a The Dude en los últimos 90 días, y desde qué dirección. Sale de la
+                bitácora, no de una configuración: es lo que <strong class="text-texto">pasó</strong>,
+                no lo que está permitido.
+              </span>
+            </p>
+            <section class="tarjeta overflow-hidden" aria-label="Accesos a The Dude">
+              {accesos.length === 0 ? (
+                <p class="text-tenue px-3 py-6 text-center text-xs">
+                  Ningún acceso registrado todavía. La bitácora se copia en cada sincronización.
+                </p>
+              ) : (
+                <ul class="divide-borde divide-y">
+                  {accesos.map((a) => (
+                    <li class="flex items-center gap-3 px-3 py-2">
+                      <span class="min-w-0 flex-1">
+                        <span class="flex flex-wrap items-baseline gap-x-2">
+                          <strong class="text-sm font-medium">{a.usuario}</strong>
+                          {a.desde && (
+                            <span class="text-tenue text-2xs font-mono">desde {a.desde}</span>
+                          )}
+                        </span>
+                        <span class="text-tenue text-2xs block">
+                          última vez{' '}
+                          <time datetime={a.ultima} title={fechaLarga(a.ultima)}>
+                            {fechaHora(a.ultima)}
+                          </time>
+                        </span>
+                      </span>
+                      <span class="cifra text-tenue shrink-0 text-xs font-semibold tabular-nums">
+                        {numero(a.entradas)}
+                        <span class="sr-only"> accesos</span>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          </>
+        ) : (
+          <>
+            {/* ═══ EVENTOS ═════════════════════════════════════════════════ */}
+            <form class="tarjeta mb-4 flex flex-wrap items-end gap-x-4 gap-y-3 p-3" method="get" role="search">
+              <div class="min-w-48 flex-1">
+                <label for="q" class="text-tenue text-2xs mb-1 block font-semibold uppercase">
+                  Buscar
+                </label>
+                <input
+                  id="q"
+                  name="q"
+                  type="search"
+                  value={q}
+                  placeholder="nombre de equipo, IP, usuario…"
+                  autocomplete="off"
+                  class="border-borde bg-panel-2 focus-visible:outline-acento w-full rounded-lg border px-3 py-2 text-sm focus-visible:outline-2"
+                />
+              </div>
+              <fieldset class="flex flex-col gap-1">
+                <legend class="text-tenue text-2xs mb-1 font-semibold uppercase">Cuándo</legend>
+                <div class="flex gap-1" role="group">
+                  {RANGOS.map((r) => (
+                    <a
+                      href={con({ h: r.h ?? '' })}
+                      class:list={[
+                        'text-2xs rounded px-2.5 py-2 transition-colors duration-150',
+                        r.h === horas
+                          ? 'bg-acento text-fondo font-semibold'
+                          : 'text-tenue hover:bg-panel-2 hover:text-texto border-borde border',
+                      ]}
+                      aria-current={r.h === horas ? 'true' : undefined}
+                    >
+                      {r.texto}
+                    </a>
+                  ))}
+                </div>
+              </fieldset>
+              {horas != null && <input type="hidden" name="h" value={horas} />}
+              {bitacoraId != null && <input type="hidden" name="b" value={bitacoraId} />}
+              <button
+                type="submit"
+                class="border-borde bg-panel-2 hover:bg-panel focus-visible:outline-acento cursor-pointer rounded-lg border px-4 py-2 text-sm font-medium transition-colors duration-150 focus-visible:outline-2"
+              >
+                Buscar
+              </button>
+            </form>
+
+            <section class="tarjeta overflow-hidden" aria-label="Eventos">
+              {datos!.eventos.length === 0 ? (
+                <p class="text-tenue px-3 py-6 text-center text-xs">
+                  {q ? `Ningún evento con «${q}».` : 'Ningún evento en este rango.'}
+                </p>
+              ) : (
+                <ul class="divide-borde divide-y">
+                  {datos!.eventos.map((e) => (
+                    <li class="flex items-baseline gap-3 px-3 py-1.5">
+                      <time
+                        datetime={e.ocurrido_at}
+                        title={fechaLarga(e.ocurrido_at)}
+                        class="text-tenue text-2xs w-28 shrink-0 tabular-nums"
+                      >
+                        {fechaHora(e.ocurrido_at)}
+                      </time>
+                      {e.bitacora && (
+                        <span class="border-borde text-tenue text-2xs w-16 shrink-0 truncate rounded border px-1.5 text-center">
+                          {e.bitacora}
+                        </span>
+                      )}
+                      {/* `break-words` y no `truncate`: un mensaje cortado obliga
+                          a abrir algo para leerlo, y no hay dónde abrirlo. */}
+                      <span class="min-w-0 flex-1 font-mono text-xs break-words">{e.mensaje}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+
+            {datos!.paginas > 1 && (
+              <nav class="mt-3 flex items-center justify-between gap-2 text-sm" aria-label="Paginación">
+                <a
+                  href={con({ p: datos!.pagina - 1 })}
+                  class:list={[
+                    'border-borde hover:bg-panel-2 rounded-lg border px-3 py-2 transition-colors duration-150',
+                    datos!.pagina <= 1 && 'pointer-events-none opacity-40',
+                  ]}
+                  aria-disabled={datos!.pagina <= 1 ? 'true' : undefined}
+                >
+                  Anterior
+                </a>
+                <span class="text-tenue text-xs tabular-nums">
+                  Página {numero(datos!.pagina)} de {numero(datos!.paginas)} ·{' '}
+                  {numero(datos!.total)} eventos
+                </span>
+                <a
+                  href={con({ p: datos!.pagina + 1 })}
+                  class:list={[
+                    'border-borde hover:bg-panel-2 rounded-lg border px-3 py-2 transition-colors duration-150',
+                    datos!.pagina >= datos!.paginas && 'pointer-events-none opacity-40',
+                  ]}
+                  aria-disabled={datos!.pagina >= datos!.paginas ? 'true' : undefined}
+                >
+                  Siguiente
+                </a>
+              </nav>
+            )}
+          </>
+        )}
+      </>
+    )
+  }
+</Base>

@@ -926,3 +926,155 @@ def test_la_marca_sobrevive_a_la_poda(pg, monkeypatch):
     pg.execute("DELETE FROM chart_values")
     quedan = pg.execute("SELECT count(*) FROM chart_marca").fetchone()[0]
     assert quedan > 0, "la marca se fue con los datos"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Las bitácoras — lo que The Dude pisa y nosotros guardamos
+#
+# 🔴 La propiedad que se prueba acá NO es «copia bien». Es **«nunca pierde»**.
+#    Un ETL que copia bien pero borra lo que el origen ya no tiene sería,
+#    para este caso, exactamente igual de inútil que no copiar nada.
+# ─────────────────────────────────────────────────────────────────────────────
+
+#: Los de la base real al 08/08/2026. Seis bitácoras, 8.000 entradas.
+BITACORAS = 6
+EVENTOS = 8_000
+
+
+@sin_postgres
+def test_las_bitacoras_se_descubren_solas(pg):
+    """Los tipos de las entradas salen de `entriesID`, no de una lista fija.
+
+    🔴 Esto es lo que hace que el ETL sirva en OTRA instalación. `sys-type` por
+       encima de 0x100 es una instancia: los 1000, 1003, 1168 y 1169 de esta
+       máquina no existen en otra. Si alguien "simplifica" esto clavando los
+       números, la prueba sigue pasando acá y el ETL deja de andar en cualquier
+       otro lado — por eso se afirma la RELACIÓN, no los valores.
+    """
+    sync.corrida(pg, MUESTRA)
+
+    filas = pg.execute(
+        "SELECT id, nombre, entradas_id, tope FROM dude_bitacoras ORDER BY id"
+    ).fetchall()
+    assert len(filas) == BITACORAS
+
+    # Cada bitácora declara el tipo de sus entradas, y ese tipo es el que se
+    # usó para recolectarlas: si alguna quedó sin `entradas_id`, no se pudo
+    # haber copiado nada suyo.
+    for _id, nombre, entradas_id, tope in filas:
+        assert entradas_id is not None, f"«{nombre}» no declara entriesID"
+        assert tope and tope > 0, f"«{nombre}» sin tope declarado"
+
+    # Y los eventos apuntan a bitácoras que existen.
+    huerfanos = pg.execute(
+        "SELECT count(*) FROM dude_eventos e"
+        " WHERE NOT EXISTS (SELECT 1 FROM dude_bitacoras b WHERE b.id = e.bitacora_id)"
+    ).fetchone()[0]
+    assert huerfanos == 0
+
+
+@sin_postgres
+def test_los_eventos_se_copian(pg):
+    sync.corrida(pg, MUESTRA)
+    assert pg.execute("SELECT count(*) FROM dude_eventos").fetchone()[0] == EVENTOS
+    # Y quedan repartidos: si todos cayeran en una sola bitácora, el `bitacora_id`
+    # estaría mal resuelto y el conteo total no lo delataría.
+    assert pg.execute(
+        "SELECT count(DISTINCT bitacora_id) FROM dude_eventos"
+    ).fetchone()[0] >= 4
+
+
+@sin_postgres
+def test_un_evento_que_el_origen_ya_piso_SOBREVIVE(pg):
+    """La razón de ser de todo esto.
+
+    The Dude conserva entre 2,8 y 45 días según la bitácora. Si el ETL reflejara
+    el origen en vez de acumular, nuestra copia se vaciaría al mismo ritmo y no
+    habríamos ganado nada.
+    """
+    sync.corrida(pg, MUESTRA)
+    pg.execute(
+        "INSERT INTO dude_eventos (id, ocurrido_at, bitacora_id, mensaje)"
+        " VALUES (1, '2020-01-01 10:00:00+00', 10206, 'ya pisado por The Dude')"
+        " ON CONFLICT DO NOTHING"
+    )
+    antes = pg.execute("SELECT count(*) FROM dude_eventos").fetchone()[0]
+
+    sync.corrida(pg, MUESTRA)   # el origen NO tiene ese evento
+
+    assert pg.execute(
+        "SELECT count(*) FROM dude_eventos WHERE id = 1"
+    ).fetchone()[0] == 1, "se perdió un evento que el origen ya no tiene"
+    assert pg.execute("SELECT count(*) FROM dude_eventos").fetchone()[0] == antes
+
+
+@sin_postgres
+def test_dos_corridas_no_duplican(pg):
+    sync.corrida(pg, MUESTRA)
+    n1 = pg.execute("SELECT count(*) FROM dude_eventos").fetchone()[0]
+    sync.corrida(pg, MUESTRA)
+    n2 = pg.execute("SELECT count(*) FROM dude_eventos").fetchone()[0]
+    assert n1 == n2
+
+    # Y la segunda corrida lo DICE: cero eventos nuevos.
+    assert pg.execute(
+        "SELECT eventos_nuevos FROM sync_runs WHERE ok ORDER BY id DESC LIMIT 1"
+    ).fetchone()[0] == 0
+
+
+@sin_postgres
+def test_un_id_reciclado_entra_como_fila_nueva(pg):
+    """Por qué la clave es `(id, ocurrido_at)` y no `id` a secas.
+
+    Los identificadores del origen ya andan por 2.915.356.899 y 2³² es
+    4.294.967.296: están al 68 % del espacio de 32 bits. El día que den la
+    vuelta, con la clave en `id` solo pasaría una de dos —el evento nuevo se
+    descarta, o pisa al viejo— y las dos son pérdida en silencio.
+    """
+    sync.corrida(pg, MUESTRA)
+    pg.execute(
+        "INSERT INTO dude_eventos (id, ocurrido_at, bitacora_id, mensaje)"
+        " VALUES (777, '2019-05-05 00:00:00+00', 10206, 'el viejo')"
+        " ON CONFLICT DO NOTHING"
+    )
+    pg.execute(
+        "INSERT INTO dude_eventos (id, ocurrido_at, bitacora_id, mensaje)"
+        " VALUES (777, '2031-05-05 00:00:00+00', 10206, 'el reciclado')"
+        " ON CONFLICT DO NOTHING"
+    )
+    mensajes = [
+        m for (m,) in pg.execute(
+            "SELECT mensaje FROM dude_eventos WHERE id = 777 ORDER BY ocurrido_at"
+        ).fetchall()
+    ]
+    assert mensajes == ["el viejo", "el reciclado"], "un id reciclado pisó al anterior"
+
+
+@sin_postgres
+def test_la_vista_de_accesos_parte_el_texto(pg):
+    """`v_dude_accesos` interpreta la frase de la bitácora.
+
+    Se prueba con datos plantados y no con los de la muestra: si mañana cambia
+    la redacción de MikroTik, esta prueba tiene que fallar por la VISTA y no por
+    haber cambiado de golpe los datos reales.
+    """
+    sync.corrida(pg, MUESTRA)
+    pg.execute(
+        "INSERT INTO dude_eventos (id, ocurrido_at, bitacora_id, mensaje) VALUES"
+        " (901, '2026-01-01 00:00:00+00', 3715774,"
+        "  'User pepe logged in from 10.1.2.3 via tcp'),"
+        " (902, '2026-01-01 00:01:00+00', 3715774,"
+        "  'User pepe logged out from 10.1.2.3 via tcp'),"
+        " (903, '2026-01-01 00:02:00+00', 3715774,"
+        "  'Service ping on algo is now up (ok)')"
+        " ON CONFLICT DO NOTHING"
+    )
+    filas = pg.execute(
+        "SELECT usuario, desde, via, entro FROM v_dude_accesos"
+        " WHERE id IN (901,902,903) ORDER BY id"
+    ).fetchall()
+
+    # El tercero NO es un acceso y la vista no lo tiene que traer.
+    assert len(filas) == 2, "la vista trajo algo que no es un acceso"
+    assert filas[0] == ("pepe", "10.1.2.3", "tcp", True)
+    assert filas[1] == ("pepe", "10.1.2.3", "tcp", False)

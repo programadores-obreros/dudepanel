@@ -1796,6 +1796,145 @@ export async function caidasEnCurso(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Bitácoras — lo que The Dude pisa y nosotros guardamos
+//
+// 🔴 Esto NO existe en The Dude pasados unos días. Cada bitácora suya es un
+//    buffer circular: la de «Evento» conserva 2,8 días, la de «Action» 45. Lo
+//    que se ve acá es la copia acumulada, que sólo crece.
+//
+//    Consecuencia práctica: al principio nuestra copia y la de The Dude dicen
+//    lo mismo, y con el tiempo la nuestra dice MÁS. Cuanto más viejo el dato,
+//    más valor tiene esta tabla.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface Bitacora {
+  id: number;
+  nombre: string;
+  /** Cuántas entradas conserva The Dude antes de pisar. */
+  tope: number | null;
+  /** Cuántas tenemos NOSOTROS. La diferencia es lo que se habría perdido. */
+  guardadas: number;
+  desde: string | null;
+  hasta: string | null;
+}
+
+export interface EventoBitacora {
+  id: number;
+  ocurrido_at: string;
+  bitacora: string | null;
+  mensaje: string;
+}
+
+export interface PaginaEventos {
+  eventos: EventoBitacora[];
+  total: number;
+  pagina: number;
+  paginas: number;
+}
+
+/** Las bitácoras, con cuánto guardamos de cada una. */
+export async function bitacoras(): Promise<Bitacora[]> {
+  return consultar<Bitacora>(
+    `SELECT b.id, b.nombre, b.tope,
+            count(e.id)::int AS guardadas,
+            min(e.ocurrido_at) AS desde,
+            max(e.ocurrido_at) AS hasta
+       FROM dude_bitacoras b
+       LEFT JOIN dude_eventos e ON e.bitacora_id = b.id
+      GROUP BY b.id, b.nombre, b.tope
+      ORDER BY count(e.id) DESC, b.nombre`,
+  );
+}
+
+/**
+ * Los eventos, filtrables y paginados.
+ *
+ * 🔴 El texto se busca con `ILIKE` y no con búsqueda de texto completo, y es a
+ *    propósito. Estos mensajes son frases de máquina —«Service ping on X is now
+ *    down (timeout)»— y lo que uno busca es un NOMBRE DE EQUIPO o una IP. El
+ *    índice de texto completo tokeniza y se come los puntos: buscar
+ *    «10.227.4» dejaría de encontrar nada.
+ */
+export async function eventosBitacora(f: {
+  bitacoraId?: number | null;
+  q?: string;
+  horas?: number | null;
+  pagina?: number;
+  porPagina?: number;
+} = {}): Promise<PaginaEventos> {
+  const q = (f.q ?? '').trim();
+  const porPagina = Math.min(Math.max(Math.round(f.porPagina ?? 100), 10), 500);
+  const pagina = Math.max(Math.round(f.pagina ?? 1), 1);
+
+  const cond: string[] = [];
+  const par: unknown[] = [];
+  if (f.bitacoraId != null) {
+    par.push(f.bitacoraId);
+    cond.push(`e.bitacora_id = $${par.length}`);
+  }
+  if (q) {
+    par.push(`%${q}%`);
+    cond.push(`e.mensaje ILIKE $${par.length}`);
+  }
+  if (f.horas != null) {
+    par.push(Math.round(f.horas));
+    cond.push(`e.ocurrido_at >= now() - make_interval(hours => $${par.length}::int)`);
+  }
+  const donde = cond.length ? `WHERE ${cond.join(' AND ')}` : '';
+
+  const [tot] = await consultar<{ n: string }>(
+    `SELECT count(*) AS n FROM dude_eventos e ${donde}`,
+    par,
+  );
+  const total = Number(tot?.n ?? 0);
+  const paginas = Math.max(Math.ceil(total / porPagina), 1);
+  const p = Math.min(pagina, paginas);
+
+  const eventos = await consultar<EventoBitacora>(
+    `SELECT e.id, e.ocurrido_at, b.nombre AS bitacora, e.mensaje
+       FROM dude_eventos e
+       LEFT JOIN dude_bitacoras b ON b.id = e.bitacora_id
+      ${donde}
+      ORDER BY e.ocurrido_at DESC, e.id DESC
+      LIMIT ${porPagina} OFFSET ${(p - 1) * porPagina}`,
+    par,
+  );
+  return { eventos, total, pagina: p, paginas };
+}
+
+export interface Acceso {
+  usuario: string;
+  desde: string | null;
+  entradas: number;
+  ultima: string;
+}
+
+/**
+ * Quién entró a The Dude, desde dónde y cuántas veces.
+ *
+ * 🔴 Este dato no existía en el panel de ninguna otra forma, y contesta dos
+ *    preguntas que venían sin respuesta: **quién usa el monitoreo** y **desde
+ *    qué redes se conectan** — que es exactamente lo que hace falta para saber
+ *    qué orígenes habilitar en el cortafuegos sin ir agregándolos de a uno
+ *    cada vez que alguien no puede entrar.
+ */
+export async function accesosDude(dias = 90): Promise<Acceso[]> {
+  return consultar<Acceso>(
+    `SELECT usuario,
+            desde,
+            count(*)::int   AS entradas,
+            max(ocurrido_at) AS ultima
+       FROM v_dude_accesos
+      WHERE entro
+        AND usuario IS NOT NULL
+        AND ocurrido_at >= now() - make_interval(days => $1::int)
+      GROUP BY usuario, desde
+      ORDER BY count(*) DESC, usuario`,
+    [Math.max(Math.round(dias), 1)],
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Disponibilidad — el reporte facturable
 //
 // Acá está SÓLO la SQL. Toda la aritmética (porcentaje, MTBF, MTTR), la

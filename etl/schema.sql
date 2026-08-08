@@ -675,6 +675,121 @@ COMMENT ON VIEW v_topologia_aristas IS
   'porque no está en el dato: se infiere en web/src/lib/topologia.ts y sale '
   'con nivel de confianza. tipo_* es equipo | sitio | union.';
 
+-- ═══════════════════════════════════════════════════════════════════════════
+--  Las bitácoras de The Dude — lo que él tira y nosotros guardamos
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- 🔴 THE DUDE PISA SUS PROPIAS BITÁCORAS. Cada una es un buffer circular con
+--    tope fijo, y el tope está declarado en el propio objeto. Medido sobre la
+--    instalación real el 08/08/2026:
+--
+--      bitácora    tope    ventana real    qué guarda
+--      ─────────   ─────   ────────────    ────────────────────────────────
+--      Syslog      5.000     19,5 días     «Service ping on X is now down»
+--      Evento      1.000      2,8 días     eventos de servicio
+--      Action      1.000     45,0 días     «Link added» — cambios de config
+--      Event       1.000     38,5 días     «User wf logged in from 172.27.4.173»
+--
+--    **La de Evento sobrevive dos días y veinte horas.** Después, lo que pasó
+--    se borró y no vuelve. Es exactamente el mismo argumento por el que se
+--    replican `chart_values` y `outages`: si no lo copiamos, se pierde.
+--
+--    Y hay cosas ahí que el panel no tenía de ninguna otra forma: **quién entró
+--    a The Dude, desde qué IP y cuándo**, y **quién cambió la configuración**.
+--
+-- ── Por qué NO se clavan los números de tipo ────────────────────────────────
+--
+-- `sys-type` por debajo de 0x100 es el esquema, igual en toda instalación. Por
+-- encima son INSTANCIAS: cada bitácora recibe el suyo al crearse. Los 1000,
+-- 1003, 1168 y 1169 de esta máquina no existen en otra.
+--
+-- La forma correcta es descubrirlas: cada objeto `0x07` declara en `entriesID`
+-- el `sys-type` de sus entradas. El ETL lee las bitácoras primero y de ahí saca
+-- qué tipos recolectar. Sin números mágicos y sin depender de esta instalación.
+CREATE TABLE IF NOT EXISTS dude_bitacoras (
+    id           bigint PRIMARY KEY,
+    nombre       text        NOT NULL,
+    --: El `sys-type` de sus entradas. Es lo que las liga.
+    entradas_id  bigint UNIQUE,
+    --: `showEntryCount`: cuántas entradas conserva antes de pisar.
+    tope         integer,
+    visto_at     timestamptz NOT NULL DEFAULT now()
+);
+
+COMMENT ON TABLE dude_bitacoras IS
+  'Las bitácoras que declara The Dude. Se descubren solas leyendo los objetos '
+  '0x07: cada una dice en entriesID el sys-type de sus entradas.';
+
+-- ── Las entradas ────────────────────────────────────────────────────────────
+--
+-- 🔴 LA CLAVE PRIMARIA ES (id, ocurrido_at) Y NO SÓLO `id`. No es rebuscado:
+--    es lo que hace que NUNCA se pierda un evento.
+--
+--    Medido: los identificadores son únicos, coinciden con el rowid y crecen
+--    con el tiempo — o sea que se asignan en orden y hoy no se reciclan. Pero
+--    ya andan por 2.915.356.899, y 2³² es 4.294.967.296. **Están al 68 % del
+--    espacio de 32 bits.**
+--
+--    Si algún día dan la vuelta, con la clave en `id` a secas pasaría una de
+--    dos: o el `DO NOTHING` descarta el evento nuevo, o el `DO UPDATE` pisa el
+--    viejo. Las dos son pérdida de datos en silencio, que es la peor clase.
+--
+--    Con `(id, ocurrido_at)` un identificador reciclado entra como fila nueva
+--    y no toca nada. El costo sería un duplicado si The Dude cambiara la fecha
+--    de una entrada existente — y no lo hace: una entrada de bitácora es
+--    inmutable por definición.
+CREATE TABLE IF NOT EXISTS dude_eventos (
+    id           bigint      NOT NULL,
+    ocurrido_at  timestamptz NOT NULL,
+    --: A qué bitácora pertenece. Sin FK: `dude_bitacoras` se reescribe.
+    bitacora_id  bigint,
+    mensaje      text        NOT NULL,
+    --: Cuándo lo copiamos NOSOTROS. Permite ver el retraso del ETL y, sobre
+    --: todo, distinguir «no pasó nada» de «no lo copiamos».
+    copiado_at   timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (id, ocurrido_at)
+);
+
+CREATE INDEX IF NOT EXISTS dude_eventos_ts_idx
+    ON dude_eventos (ocurrido_at DESC);
+CREATE INDEX IF NOT EXISTS dude_eventos_bitacora_idx
+    ON dude_eventos (bitacora_id, ocurrido_at DESC);
+
+COMMENT ON TABLE dude_eventos IS
+  'Copia acumulada de las bitácoras de The Dude, que él pisa cada 2,8 a 45 '
+  'días. Sólo crece: nunca se borra una fila acá.';
+
+ALTER TABLE sync_runs ADD COLUMN IF NOT EXISTS eventos_nuevos integer;
+
+
+-- ── Quién entró a The Dude ──────────────────────────────────────────────────
+--
+-- El dato crudo es una frase: «User wf logged in from 172.27.4.173 via tcp».
+-- Acá se parte en columnas para poder preguntarle cosas.
+--
+-- 🔴 Se hace en una VISTA y no en el ETL a propósito. Si mañana MikroTik
+--    cambiara el texto, una vista se corrige con un `CREATE OR REPLACE` y los
+--    datos crudos siguen intactos. Interpretando en el ETL, un cambio de
+--    redacción se llevaría puesto el dato original y no habría vuelta atrás.
+--
+-- El `~` filtra antes de que el `substring` corra: no todas las entradas de esa
+-- bitácora son accesos.
+CREATE OR REPLACE VIEW v_dude_accesos AS
+SELECT e.id,
+       e.ocurrido_at,
+       substring(e.mensaje FROM 'User ([^ ]+) logged')                AS usuario,
+       substring(e.mensaje FROM 'from ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)') AS desde,
+       substring(e.mensaje FROM 'via ([a-z]+)')                       AS via,
+       e.mensaje LIKE '%logged in%'                                   AS entro,
+       e.mensaje
+  FROM dude_eventos e
+ WHERE e.mensaje ~ '^User .* logged (in|out)';
+
+COMMENT ON VIEW v_dude_accesos IS
+  'Los accesos a The Dude, partidos en columnas desde el texto de la bitácora. '
+  'La interpretación vive acá y no en el ETL: si cambia la redacción se '
+  'corrige la vista, y el dato crudo de dude_eventos queda intacto.';
+
 COMMIT;
 
 

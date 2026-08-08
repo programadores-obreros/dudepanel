@@ -165,6 +165,9 @@ class Snapshot:
     maps: list[tuple] = field(default_factory=list)
     map_elements: list[tuple] = field(default_factory=list)
     chart_sources: list[tuple] = field(default_factory=list)
+    bitacoras: list[tuple] = field(default_factory=list)
+    #: Las entradas de bitácora. NO entran en `huella()`: ver el comentario ahí.
+    eventos: list[tuple] = field(default_factory=list)
 
     def huella(self) -> str:
         """Hash del contenido. Si no cambió, no hace falta reescribir nada.
@@ -178,7 +181,20 @@ class Snapshot:
         for nombre in (
             "files", "device_types", "probes", "link_types", "snmp_profiles",
             "notifications", "devices", "device_parents", "services", "links",
-            "maps", "map_elements", "chart_sources",
+            "maps", "map_elements", "chart_sources", "bitacoras",
+            # 🔴 `eventos` NO va acá, y es deliberado.
+            #
+            #    La huella existe para saltear la reescritura del NÚCLEO cuando
+            #    el inventario no cambió. Las bitácoras, en cambio, se mueven
+            #    todo el tiempo: un evento nuevo cada pocos segundos.
+            #
+            #    Metiéndolos, la huella cambiaría en casi todas las corridas y
+            #    la optimización entera dejaría de servir — volveríamos a
+            #    reescribir 12.000 tuplas por minuto en tablas que nadie tocó,
+            #    que es justo lo que esa función vino a evitar.
+            #
+            #    Los eventos se replican igual: su sincronización es
+            #    incremental y corre fuera del camino de la huella.
         ):
             h.update(nombre.encode())
             for fila in getattr(self, nombre):
@@ -273,6 +289,43 @@ def extraer(ruta: str) -> Snapshot:
             o.id, o.nombre or str(o.id), tipo, NOTIFICACION.get(tipo),
             o.bool_("enabled"), o.txt("mailSubject"),
         ))
+
+    # ── Bitácoras, y las entradas que The Dude va a pisar ────────────────────
+    #
+    # 🔴 LOS TIPOS DE LAS ENTRADAS SE DESCUBREN, NO SE CLAVAN.
+    #
+    #    `sys-type` bajo 0x100 es el esquema; por encima son instancias, y cada
+    #    bitácora recibe el suyo al crearse. En esta instalación las entradas
+    #    salen con 1000, 1003, 1168 y 1169 — números que en otra máquina no
+    #    existen. Escribirlos en el código sería hacer un ETL que anda en un
+    #    solo lugar.
+    #
+    #    Cada objeto 0x07 declara `entriesID`: ese ES el `sys-type` de sus
+    #    entradas. Se leen las bitácoras primero y de ahí sale qué recolectar.
+    #
+    # ⚠️ Y hay que hacerlo en DOS pasadas sobre `objs`, no en una: las entradas
+    #    pueden venir antes que su bitácora en el recorrido, y con una sola
+    #    pasada se perderían las que aparecen primero. `de()` ya trabaja sobre
+    #    la lista completa en memoria, así que la segunda pasada no cuesta E/S.
+    por_entradas: dict[int, int] = {}
+    for o in de(0x07):
+        eid = o.num("entriesID")
+        s.bitacoras.append((o.id, o.nombre or str(o.id), eid, o.num("showEntryCount")))
+        if eid is not None:
+            por_entradas[eid] = o.id
+
+    if por_entradas:
+        for o in objs:
+            bid = por_entradas.get(o.sys_type or -1)
+            if bid is None:
+                continue
+            t = o.num("time")
+            if not t:
+                # Sin fecha no se puede acumular: la clave primaria la incluye.
+                # Descartar es correcto — una entrada de bitácora sin instante
+                # no se puede ubicar ni ordenar, así que no informa nada.
+                continue
+            s.eventos.append((o.id, _fecha(t), bid, o.nombre or ""))
 
     # ── Servicios primero: los dispositivos necesitan su agregado ────────────
     dispositivos = de(0x0F)
@@ -653,6 +706,66 @@ def sincronizar_outages(cur: psycopg.Cursor, origen: sqlite3.Connection) -> int:
     return cur.rowcount
 
 
+def sincronizar_eventos(cur: psycopg.Cursor, s: Snapshot) -> int:
+    """Acumula las bitácoras de The Dude. **Sólo agrega: nunca borra.**
+
+    🔴 ESTA FUNCIÓN EXISTE PORQUE THE DUDE PISA SUS PROPIAS BITÁCORAS.
+
+       Cada una es un buffer circular con tope declarado. Medido el 08/08/2026
+       sobre la instalación real: la bitácora «Evento» conserva **2,8 días**.
+       Lo de antes se borró y no vuelve.
+
+       Es el mismo motivo por el que se replican `outages` y `chart_values`, y
+       la misma consecuencia si no se hace: la historia existe hasta que deja
+       de existir, sin que nadie se entere.
+
+    ── Por qué no hay marca de agua ────────────────────────────────────────
+
+    `sincronizar_outages` relee una ventana de 24 h y hace UPSERT. Acá no hace
+    falta ninguna ventana: el origen tiene como mucho 8.000 entradas en total
+    —la suma de todos los topes— y se leen enteras en cada corrida. Filtrar por
+    fecha para ahorrarse ocho mil filas sería complejidad sin premio.
+
+    El `DO NOTHING` sobre la clave `(id, ocurrido_at)` hace todo el trabajo: lo
+    que ya está no se toca, lo nuevo entra.
+    """
+    if s.bitacoras:
+        cur.executemany(
+            "INSERT INTO dude_bitacoras (id, nombre, entradas_id, tope)"
+            " VALUES (%s,%s,%s,%s)"
+            " ON CONFLICT (id) DO UPDATE"
+            "    SET nombre = EXCLUDED.nombre,"
+            "        entradas_id = EXCLUDED.entradas_id,"
+            "        tope = EXCLUDED.tope,"
+            "        visto_at = now()",
+            s.bitacoras,
+        )
+    if not s.eventos:
+        return 0
+
+    cur.execute(
+        "CREATE TEMP TABLE tmp_eventos"
+        " (id bigint, ocurrido_at timestamptz, bitacora_id bigint, mensaje text)"
+        " ON COMMIT DROP"
+    )
+    with cur.copy("COPY tmp_eventos FROM STDIN (FORMAT BINARY)") as cp:
+        cp.set_types(["int8", "timestamptz", "int8", "text"])
+        for fila in s.eventos:
+            cp.write_row(fila)
+
+    # DISTINCT ON: si el origen trajera dos entradas con la misma clave en la
+    # MISMA corrida, `ON CONFLICT` no las ve entre sí y Postgres aborta con
+    # «cannot affect row a second time». Es el error que aparece una vez cada
+    # tanto y cuesta media hora encontrar.
+    cur.execute(
+        "INSERT INTO dude_eventos (id, ocurrido_at, bitacora_id, mensaje)"
+        " SELECT DISTINCT ON (id, ocurrido_at) id, ocurrido_at, bitacora_id, mensaje"
+        "   FROM tmp_eventos ORDER BY id, ocurrido_at"
+        " ON CONFLICT (id, ocurrido_at) DO NOTHING"
+    )
+    return cur.rowcount
+
+
 def sincronizar_chart_values(
     cur: psycopg.Cursor, origen: sqlite3.Connection, fuentes: list[int]
 ) -> int:
@@ -879,6 +992,12 @@ def corrida(con: psycopg.Connection, ruta: str) -> None:
             origen = dudeobj.abrir(copia)
             try:
                 datos["outages_upserted"] = sincronizar_outages(cur, origen)
+                # 🔴 FUERA del `if reusa`, a propósito. Las bitácoras cambian
+                #    aunque el inventario no: un evento nuevo cada pocos
+                #    segundos. Metiéndolas adentro, una red estable —que es lo
+                #    normal— dejaría de copiar eventos justo cuando la huella
+                #    no cambia, y nadie lo notaría hasta buscarlos.
+                datos["eventos_nuevos"] = sincronizar_eventos(cur, s)
                 datos["chart_values_inserted"] = sincronizar_chart_values(
                     cur, origen, [f[0] for f in s.chart_sources]
                 )
@@ -908,11 +1027,13 @@ def corrida(con: psycopg.Connection, ruta: str) -> None:
     if error is None:
         log.info(
             "corrida %d ok en %d ms — %d dispositivos, %d servicios, %d enlaces, "
-            "%d mapas, %d elementos%s | historia: +%s caídas, +%s mediciones",
+            "%d mapas, %d elementos%s | historia: +%s caídas, +%s mediciones, "
+            "+%s eventos",
             run_id, datos["duration_ms"], datos["devices"], datos["services"],
             datos["links"], datos["maps"], datos["map_elements"],
             " (sin cambios)" if datos.get("snapshot_reused") else "",
             datos.get("outages_upserted", 0), datos.get("chart_values_inserted", 0),
+            datos.get("eventos_nuevos", 0),
         )
 
 
